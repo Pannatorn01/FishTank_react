@@ -1,0 +1,919 @@
+import type React from 'react';
+import { useEffect, useRef, useState } from 'react';
+import {
+  bresenhamLine,
+  flipFrameH,
+  flipFrameV,
+  inEllipseLocal,
+  normalizeBox,
+  paintFrameCells,
+  rotateFrame,
+  shiftBox,
+} from '@/lib/pixelMath';
+import * as storage from '@/lib/storage';
+import type { Cell, Frame, SelectionBox, Sprite, SymmetryMode, ToolName } from '@/lib/types';
+
+export const COLORS = [
+  '#1a1a1a', '#ffffff', '#e74c3c', '#ff7043', '#f5c518', '#8bc34a',
+  '#2e7d32', '#26c6da', '#1e88e5', '#5e35b1', '#d81b60', '#8d6e63',
+  '#ffccbc', '#b3e5fc', '#c8e6c9', '#9e9e9e',
+];
+
+const FRAME_LIMIT = 3;
+const BASE_CELL_PX = 20;
+export const ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];
+const PREVIEW_CELL_PX_BASE = 96;
+const UNDO_LIMIT = 50;
+const TOOL_KEYS: Record<string, ToolName> = {
+  b: 'pen', e: 'eraser', g: 'fill', i: 'eyedropper', l: 'line', r: 'rect', c: 'ellipse',
+  s: 'select', m: 'move',
+};
+
+function blankSprite(): Sprite {
+  const size = storage.DEFAULT_GRID_SIZE;
+  return { id: null, name: '', type: 'fish', size, frames: [storage.emptyFrame(size)] };
+}
+
+function cloneSprite(sprite: Sprite): Sprite {
+  return JSON.parse(JSON.stringify(sprite));
+}
+
+interface MoveBufferCell extends Cell {
+  color: string;
+}
+
+interface Snapshot {
+  frames: Frame[];
+  size: number;
+  frameIndex: number;
+}
+
+class PixelEditorEngine {
+  canvas: HTMLCanvasElement | null = null;
+  ctx: CanvasRenderingContext2D | null = null;
+  previewCanvas: HTMLCanvasElement | null = null;
+  previewCtx: CanvasRenderingContext2D | null = null;
+
+  sprites: Sprite[] = [];
+  current: Sprite = blankSprite();
+  frameIndex = 0;
+  tool: ToolName = 'pen';
+  color = COLORS[3];
+  painting = false;
+  lastPaintCell: Cell | null = null;
+  shapeStart: Cell | null = null;
+  shapePreviewCells: Cell[] | null = null;
+  shapeFilled = false;
+  selection: SelectionBox | null = null;
+  selectStart: Cell | null = null;
+  selectionDraft: SelectionBox | null = null;
+  moveBuffer: { cells: MoveBufferCell[] } | null = null;
+  moveStartCell: Cell | null = null;
+  moveDelta = { dx: 0, dy: 0 };
+  symmetry: SymmetryMode = 'none';
+  zoomIndex = 2;
+  showGrid = true;
+  onionSkin = false;
+  transformAllFrames = false;
+  undoStack: Snapshot[] = [];
+  redoStack: Snapshot[] = [];
+  previewFrame = 0;
+  dirty = false;
+  active = true;
+  /** Bumped only when a *different* sprite becomes current (new/load), never on save-in-place. */
+  loadToken = 0;
+
+  private previewTimer: ReturnType<typeof setInterval> | null = null;
+  private reactNotify: () => void = () => {};
+  private windowListeners: Array<() => void> = [];
+
+  init(notify: () => void): void {
+    this.reactNotify = notify;
+    const loaded = storage.loadSprites();
+    if (loaded === null) {
+      this.sprites = storage.buildDefaultSprites();
+      storage.saveSprites(this.sprites);
+    } else {
+      this.sprites = loaded;
+    }
+
+    this.previewTimer = setInterval(() => this.tickPreview(), 400);
+
+    const endGesture = () => this.onPointerUp();
+    const forceEndGesture = () => {
+      if (!this.painting) return;
+      this.resetGestureState();
+      this.refresh();
+    };
+    const onVisibility = () => {
+      if (document.hidden) forceEndGesture();
+    };
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!this.dirty) return;
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    const onKeyDownGlobal = (e: KeyboardEvent) => this.onKeyDown(e);
+
+    window.addEventListener('pointerup', endGesture);
+    window.addEventListener('pointercancel', endGesture);
+    window.addEventListener('blur', forceEndGesture);
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('beforeunload', onBeforeUnload);
+    document.addEventListener('keydown', onKeyDownGlobal);
+
+    this.windowListeners = [
+      () => window.removeEventListener('pointerup', endGesture),
+      () => window.removeEventListener('pointercancel', endGesture),
+      () => window.removeEventListener('blur', forceEndGesture),
+      () => document.removeEventListener('visibilitychange', onVisibility),
+      () => window.removeEventListener('beforeunload', onBeforeUnload),
+      () => document.removeEventListener('keydown', onKeyDownGlobal),
+    ];
+
+    this.reactNotify();
+  }
+
+  destroy(): void {
+    if (this.previewTimer) clearInterval(this.previewTimer);
+    this.windowListeners.forEach((off) => off());
+    this.windowListeners = [];
+  }
+
+  private refresh(): void {
+    this.drawGrid();
+    this.reactNotify();
+  }
+
+  attachCanvas(el: HTMLCanvasElement | null): void {
+    this.canvas = el;
+    this.ctx = el ? el.getContext('2d') : null;
+    if (el) {
+      this.recomputeCanvasSize();
+      this.drawGrid();
+    }
+  }
+
+  attachPreviewCanvas(el: HTMLCanvasElement | null): void {
+    this.previewCanvas = el;
+    this.previewCtx = el ? el.getContext('2d') : null;
+  }
+
+  setActive(active: boolean): void {
+    this.active = active;
+  }
+
+  effectiveCellPx(): number {
+    return BASE_CELL_PX * ZOOM_LEVELS[this.zoomIndex];
+  }
+
+  recomputeCanvasSize(): void {
+    if (!this.canvas) return;
+    const size = this.current.size;
+    const cellPx = this.effectiveCellPx();
+    this.canvas.width = size * cellPx;
+    this.canvas.height = size * cellPx;
+    this.canvas.style.backgroundSize = `${cellPx * 2}px ${cellPx * 2}px`;
+  }
+
+  zoomLabel(): string {
+    return `${Math.round(ZOOM_LEVELS[this.zoomIndex] * 100)}%`;
+  }
+
+  canUndo(): boolean {
+    return this.undoStack.length > 0;
+  }
+
+  canRedo(): boolean {
+    return this.redoStack.length > 0;
+  }
+
+  // --- tool / color / toggles ---
+
+  setTool(tool: ToolName): void {
+    this.tool = tool;
+    this.reactNotify();
+  }
+
+  setColor(color: string): void {
+    this.color = color;
+    if (this.tool === 'eyedropper') this.tool = 'pen';
+    this.reactNotify();
+  }
+
+  setShapeFilled(v: boolean): void {
+    this.shapeFilled = v;
+    this.reactNotify();
+  }
+
+  setShowGrid(v: boolean): void {
+    this.showGrid = v;
+    this.refresh();
+  }
+
+  setOnionSkin(v: boolean): void {
+    this.onionSkin = v;
+    this.refresh();
+  }
+
+  setSymmetry(mode: SymmetryMode): void {
+    this.symmetry = mode;
+    this.refresh();
+  }
+
+  setTransformAllFrames(v: boolean): void {
+    this.transformAllFrames = v;
+    this.reactNotify();
+  }
+
+  zoomIn(): void {
+    this.zoomIndex = Math.min(ZOOM_LEVELS.length - 1, this.zoomIndex + 1);
+    this.recomputeCanvasSize();
+    this.refresh();
+  }
+
+  zoomOut(): void {
+    this.zoomIndex = Math.max(0, this.zoomIndex - 1);
+    this.recomputeCanvasSize();
+    this.refresh();
+  }
+
+  setGridSize(newSize: number): void {
+    if (newSize === this.current.size) return;
+    this.pushUndo();
+    this.current.frames = this.current.frames.map((f) => storage.resampleFrame(f, this.current.size, newSize));
+    this.current.size = newSize;
+    this.frameIndex = Math.min(this.frameIndex, this.current.frames.length - 1);
+    this.selection = null;
+    this.recomputeCanvasSize();
+    this.refresh();
+  }
+
+  deselect(): void {
+    if (!this.selection) return;
+    this.selection = null;
+    this.refresh();
+  }
+
+  // --- frames ---
+
+  selectFrame(i: number): void {
+    this.frameIndex = i;
+    this.refresh();
+  }
+
+  addFrame(): void {
+    if (this.current.frames.length >= FRAME_LIMIT) return;
+    this.pushUndo();
+    this.current.frames.push(storage.emptyFrame(this.current.size));
+    this.frameIndex = this.current.frames.length - 1;
+    this.refresh();
+  }
+
+  dupFrame(): void {
+    if (this.current.frames.length >= FRAME_LIMIT) return;
+    this.pushUndo();
+    this.current.frames.splice(this.frameIndex + 1, 0, this.current.frames[this.frameIndex].slice());
+    this.frameIndex += 1;
+    this.refresh();
+  }
+
+  delFrame(): void {
+    if (this.current.frames.length <= 1) return;
+    this.pushUndo();
+    this.current.frames.splice(this.frameIndex, 1);
+    this.frameIndex = Math.max(0, this.frameIndex - 1);
+    this.refresh();
+  }
+
+  clearFrame(): void {
+    this.pushUndo();
+    this.current.frames[this.frameIndex] = storage.emptyFrame(this.current.size);
+    this.refresh();
+  }
+
+  frameLimitReached(): boolean {
+    return this.current.frames.length >= FRAME_LIMIT;
+  }
+
+  // --- transform ---
+
+  transformFrames(fn: (f: Frame, size: number) => Frame): void {
+    this.pushUndo();
+    const size = this.current.size;
+    if (this.transformAllFrames) {
+      this.current.frames = this.current.frames.map((f) => fn(f, size));
+    } else {
+      this.current.frames[this.frameIndex] = fn(this.current.frames[this.frameIndex], size);
+    }
+    this.selection = null;
+    this.refresh();
+  }
+
+  flipH(): void {
+    this.transformFrames((f, size) => flipFrameH(f, size));
+  }
+
+  flipV(): void {
+    this.transformFrames((f, size) => flipFrameV(f, size));
+  }
+
+  rotateCW(): void {
+    this.transformFrames((f, size) => rotateFrame(f, size, true));
+  }
+
+  rotateCCW(): void {
+    this.transformFrames((f, size) => rotateFrame(f, size, false));
+  }
+
+  // --- keyboard ---
+
+  onKeyDown(e: KeyboardEvent): void {
+    const tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) return;
+    if (!this.active) return;
+    if (this.painting) return;
+
+    const key = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      this.undo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) {
+      e.preventDefault();
+      this.redo();
+      return;
+    }
+    if (key === 'escape') {
+      this.deselect();
+      return;
+    }
+    if (key === 'v') {
+      this.setSymmetry(this.symmetry === 'vertical' ? 'none' : 'vertical');
+      return;
+    }
+    if (TOOL_KEYS[key]) {
+      this.setTool(TOOL_KEYS[key]);
+    }
+  }
+
+  // --- pointer / drawing gesture ---
+
+  private cellFromEvent(e: { clientX: number; clientY: number }): Cell | null {
+    if (!this.canvas) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const cellPx = this.effectiveCellPx();
+    const x = Math.floor((e.clientX - rect.left) / cellPx);
+    const y = Math.floor((e.clientY - rect.top) / cellPx);
+    const size = this.current.size;
+    if (x < 0 || y < 0 || x >= size || y >= size) return null;
+    return { x, y };
+  }
+
+  private commitMove(): void {
+    if (!this.moveBuffer) return;
+    const { dx, dy } = this.moveDelta;
+    const size = this.current.size;
+    const frame = this.current.frames[this.frameIndex];
+    this.moveBuffer.cells.forEach((c) => {
+      const nx = c.x + dx;
+      const ny = c.y + dy;
+      if (nx >= 0 && ny >= 0 && nx < size && ny < size) frame[ny * size + nx] = c.color;
+    });
+    if (this.selection) this.selection = shiftBox(this.selection, this.moveDelta);
+    this.moveBuffer = null;
+    this.moveStartCell = null;
+    this.moveDelta = { dx: 0, dy: 0 };
+    this.refresh();
+  }
+
+  private resetGestureState(): void {
+    // A pending move already cleared its source cells from the frame data at
+    // gesture start, so an interrupted move must be committed back (at its last
+    // known position), never just discarded - dropping it would silently delete
+    // the pixels the user picked up.
+    if (this.moveBuffer) this.commitMove();
+    this.painting = false;
+    this.lastPaintCell = null;
+    this.shapeStart = null;
+    this.shapePreviewCells = null;
+    this.selectStart = null;
+    this.selectionDraft = null;
+    this.moveBuffer = null;
+    this.moveStartCell = null;
+    this.moveDelta = { dx: 0, dy: 0 };
+  }
+
+  onPointerDown(e: React.PointerEvent<HTMLCanvasElement>): void {
+    const cell = this.cellFromEvent(e);
+    if (!cell) return;
+    if (this.painting) this.resetGestureState();
+    this.canvas?.setPointerCapture(e.pointerId);
+
+    if (this.tool === 'eyedropper') {
+      this.pickColor(cell.x, cell.y);
+      return;
+    }
+
+    if (this.tool === 'select') {
+      this.painting = true;
+      this.selectStart = cell;
+      this.selectionDraft = { x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y };
+      this.refresh();
+      return;
+    }
+
+    if (this.tool === 'move') {
+      this.pushUndo();
+      this.painting = true;
+      const size = this.current.size;
+      const frame = this.current.frames[this.frameIndex];
+      const box = this.selection || { x0: 0, y0: 0, x1: size - 1, y1: size - 1 };
+      const cells: MoveBufferCell[] = [];
+      for (let y = box.y0; y <= box.y1; y++) {
+        for (let x = box.x0; x <= box.x1; x++) {
+          const c = frame[y * size + x];
+          if (c) cells.push({ x, y, color: c });
+          frame[y * size + x] = null;
+        }
+      }
+      this.moveBuffer = { cells };
+      this.moveStartCell = cell;
+      this.moveDelta = { dx: 0, dy: 0 };
+      this.refresh();
+      return;
+    }
+
+    this.pushUndo();
+    this.painting = true;
+
+    if (this.tool === 'line' || this.tool === 'rect' || this.tool === 'ellipse') {
+      this.shapeStart = cell;
+      this.shapePreviewCells = this.mirroredExpand(this.computeShapeCells(cell, cell));
+      this.drawGrid(this.shapePreviewCells);
+      this.reactNotify();
+    } else if (this.tool === 'fill') {
+      const frame = this.current.frames[this.frameIndex];
+      const size = this.current.size;
+      this.mirrorCells(cell.x, cell.y).forEach((m) => {
+        this.floodFill(frame, size, m.x, m.y, frame[m.y * size + m.x]);
+      });
+      this.refresh();
+    } else {
+      this.lastPaintCell = null;
+      this.paintCell(cell.x, cell.y);
+    }
+  }
+
+  onPointerMove(e: React.PointerEvent<HTMLCanvasElement>): void {
+    if (!this.painting) return;
+    const cell = this.cellFromEvent(e);
+
+    if (this.tool === 'select') {
+      if (!cell || !this.selectStart) return;
+      this.selectionDraft = normalizeBox(this.selectStart, cell);
+      this.drawGrid();
+      return;
+    }
+
+    if (this.moveBuffer) {
+      if (!cell || !this.moveStartCell) return;
+      this.moveDelta = { dx: cell.x - this.moveStartCell.x, dy: cell.y - this.moveStartCell.y };
+      this.drawGrid();
+      return;
+    }
+
+    if (!cell) return;
+    if (this.shapeStart) {
+      this.shapePreviewCells = this.mirroredExpand(this.computeShapeCells(this.shapeStart, cell));
+      this.drawGrid(this.shapePreviewCells);
+    } else if (this.tool === 'pen' || this.tool === 'eraser') {
+      this.paintCell(cell.x, cell.y, true);
+    }
+  }
+
+  onPointerUp(): void {
+    if (!this.painting) return;
+    this.painting = false;
+
+    if (this.tool === 'select') {
+      const d = this.selectionDraft;
+      this.selection = d && (d.x0 !== d.x1 || d.y0 !== d.y1) ? d : null;
+      this.selectStart = null;
+      this.selectionDraft = null;
+      this.refresh();
+      return;
+    }
+
+    if (this.moveBuffer) {
+      this.commitMove();
+      return;
+    }
+
+    if (this.shapeStart && this.shapePreviewCells) {
+      const frame = this.current.frames[this.frameIndex];
+      const size = this.current.size;
+      this.shapePreviewCells.forEach((c) => {
+        if (c.x >= 0 && c.y >= 0 && c.x < size && c.y < size) frame[c.y * size + c.x] = this.color;
+      });
+      this.shapeStart = null;
+      this.shapePreviewCells = null;
+    }
+    this.lastPaintCell = null;
+    this.refresh();
+  }
+
+  private computeShapeCells(start: Cell, end: Cell): Cell[] {
+    if (this.tool === 'line') {
+      return bresenhamLine(start.x, start.y, end.x, end.y);
+    }
+    if (this.tool === 'rect') {
+      const x0 = Math.min(start.x, end.x);
+      const x1 = Math.max(start.x, end.x);
+      const y0 = Math.min(start.y, end.y);
+      const y1 = Math.max(start.y, end.y);
+      const cells: Cell[] = [];
+      for (let y = y0; y <= y1; y++) {
+        for (let x = x0; x <= x1; x++) {
+          if (this.shapeFilled || x === x0 || x === x1 || y === y0 || y === y1) cells.push({ x, y });
+        }
+      }
+      return cells;
+    }
+    // ellipse
+    const x0 = Math.min(start.x, end.x);
+    const x1 = Math.max(start.x, end.x);
+    const y0 = Math.min(start.y, end.y);
+    const y1 = Math.max(start.y, end.y);
+    const cx = (x0 + x1) / 2 + 0.5;
+    const cy = (y0 + y1) / 2 + 0.5;
+    const rx = Math.max(0.5, (x1 - x0 + 1) / 2);
+    const ry = Math.max(0.5, (y1 - y0 + 1) / 2);
+    const cells: Cell[] = [];
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (!inEllipseLocal(x + 0.5, y + 0.5, cx, cy, rx, ry)) continue;
+        if (this.shapeFilled) {
+          cells.push({ x, y });
+          continue;
+        }
+        if (!inEllipseLocal(x + 0.5, y + 0.5, cx, cy, Math.max(0.5, rx - 1), Math.max(0.5, ry - 1))) cells.push({ x, y });
+      }
+    }
+    return cells;
+  }
+
+  private mirrorCells(x: number, y: number): Cell[] {
+    const size = this.current.size;
+    const pts: Cell[] = [{ x, y }];
+    const mirrorX = size - 1 - x;
+    const mirrorY = size - 1 - y;
+    if (this.symmetry === 'vertical' || this.symmetry === 'both') pts.push({ x: mirrorX, y });
+    if (this.symmetry === 'horizontal' || this.symmetry === 'both') pts.push({ x, y: mirrorY });
+    if (this.symmetry === 'both') pts.push({ x: mirrorX, y: mirrorY });
+    return pts;
+  }
+
+  private mirroredExpand(cells: Cell[]): Cell[] {
+    if (this.symmetry === 'none') return cells;
+    const seen = new Set<string>();
+    const out: Cell[] = [];
+    cells.forEach((c) => {
+      this.mirrorCells(c.x, c.y).forEach((m) => {
+        const key = `${m.x},${m.y}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push(m);
+        }
+      });
+    });
+    return out;
+  }
+
+  private paintCell(x: number, y: number, isMove?: boolean): void {
+    const size = this.current.size;
+    const frame = this.current.frames[this.frameIndex];
+    const color = this.tool === 'eraser' ? null : this.color;
+
+    const applyAt = (px: number, py: number) => {
+      this.mirrorCells(px, py).forEach((m) => {
+        if (m.x >= 0 && m.y >= 0 && m.x < size && m.y < size) frame[m.y * size + m.x] = color;
+      });
+    };
+
+    if (isMove && this.lastPaintCell) {
+      bresenhamLine(this.lastPaintCell.x, this.lastPaintCell.y, x, y).forEach((p) => {
+        if (p.x >= 0 && p.y >= 0 && p.x < size && p.y < size) applyAt(p.x, p.y);
+      });
+    } else if (x >= 0 && y >= 0 && x < size && y < size) {
+      applyAt(x, y);
+    }
+    this.lastPaintCell = { x, y };
+    this.refresh();
+  }
+
+  private pickColor(x: number, y: number): void {
+    const size = this.current.size;
+    const sampled = this.current.frames[this.frameIndex][y * size + x];
+    if (!sampled) return;
+    this.color = sampled;
+    this.tool = 'pen';
+    this.reactNotify();
+  }
+
+  private floodFill(frame: Frame, size: number, x: number, y: number, target: string | null): void {
+    if (target === this.color) return;
+    const stack: [number, number][] = [[x, y]];
+    while (stack.length) {
+      const [cx, cy] = stack.pop()!;
+      if (cx < 0 || cy < 0 || cx >= size || cy >= size) continue;
+      const idx = cy * size + cx;
+      if (frame[idx] !== target) continue;
+      frame[idx] = this.color;
+      stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+    }
+  }
+
+  // --- rendering ---
+
+  drawGrid(overlayCells?: Cell[]): void {
+    if (!this.canvas || !this.ctx) return;
+    const size = this.current.size;
+    const cellPx = this.effectiveCellPx();
+    const canvas = this.canvas;
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (this.onionSkin && this.current.frames.length > 1) {
+      const prevIdx = (this.frameIndex - 1 + this.current.frames.length) % this.current.frames.length;
+      ctx.globalAlpha = 0.3;
+      paintFrameCells(ctx, this.current.frames[prevIdx], size, cellPx);
+      ctx.globalAlpha = 1;
+    }
+
+    paintFrameCells(ctx, this.current.frames[this.frameIndex], size, cellPx);
+
+    if (this.moveBuffer) {
+      const { dx, dy } = this.moveDelta;
+      this.moveBuffer.cells.forEach((c) => {
+        const nx = c.x + dx;
+        const ny = c.y + dy;
+        if (nx < 0 || ny < 0 || nx >= size || ny >= size) return;
+        ctx.fillStyle = c.color;
+        ctx.fillRect(nx * cellPx, ny * cellPx, cellPx, cellPx);
+      });
+    }
+
+    if (overlayCells) {
+      ctx.fillStyle = this.color;
+      overlayCells.forEach((c) => {
+        if (c.x < 0 || c.y < 0 || c.x >= size || c.y >= size) return;
+        ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
+      });
+    }
+
+    if (this.symmetry !== 'none') {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(0,229,255,0.6)';
+      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 1;
+      if (this.symmetry === 'vertical' || this.symmetry === 'both') {
+        ctx.beginPath();
+        ctx.moveTo((size * cellPx) / 2, 0);
+        ctx.lineTo((size * cellPx) / 2, size * cellPx);
+        ctx.stroke();
+      }
+      if (this.symmetry === 'horizontal' || this.symmetry === 'both') {
+        ctx.beginPath();
+        ctx.moveTo(0, (size * cellPx) / 2);
+        ctx.lineTo(size * cellPx, (size * cellPx) / 2);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    const activeBox = this.selectionDraft || this.selection;
+    if (activeBox) {
+      const shown = this.moveBuffer && this.selection && !this.selectionDraft ? shiftBox(activeBox, this.moveDelta) : activeBox;
+      ctx.save();
+      ctx.strokeStyle = '#ffcc00';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(shown.x0 * cellPx, shown.y0 * cellPx, (shown.x1 - shown.x0 + 1) * cellPx, (shown.y1 - shown.y0 + 1) * cellPx);
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
+    if (this.showGrid) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= size; i++) {
+        ctx.beginPath();
+        ctx.moveTo(i * cellPx + 0.5, 0);
+        ctx.lineTo(i * cellPx + 0.5, size * cellPx);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(0, i * cellPx + 0.5);
+        ctx.lineTo(size * cellPx, i * cellPx + 0.5);
+        ctx.stroke();
+      }
+    }
+  }
+
+  private tickPreview(): void {
+    if (!this.previewCanvas || !this.previewCtx) return;
+    const frames = this.current.frames;
+    this.previewFrame = (this.previewFrame + 1) % frames.length;
+    const cellPx = PREVIEW_CELL_PX_BASE / this.current.size;
+    this.previewCtx.clearRect(0, 0, this.previewCanvas.width, this.previewCanvas.height);
+    paintFrameCells(this.previewCtx, frames[this.previewFrame], this.current.size, cellPx);
+  }
+
+  // --- undo/redo ---
+
+  private snapshot(): Snapshot {
+    return {
+      frames: JSON.parse(JSON.stringify(this.current.frames)),
+      size: this.current.size,
+      frameIndex: this.frameIndex,
+    };
+  }
+
+  private restoreSnapshot(s: Snapshot): void {
+    this.current.frames = s.frames;
+    this.current.size = s.size;
+    this.frameIndex = Math.min(s.frameIndex, s.frames.length - 1);
+    this.selection = null;
+    this.moveBuffer = null;
+    this.recomputeCanvasSize();
+    this.refresh();
+  }
+
+  pushUndo(): void {
+    this.undoStack.push(this.snapshot());
+    if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
+    this.redoStack = [];
+    this.dirty = true;
+  }
+
+  undo(): void {
+    if (!this.undoStack.length) return;
+    this.redoStack.push(this.snapshot());
+    this.restoreSnapshot(this.undoStack.pop()!);
+  }
+
+  redo(): void {
+    if (!this.redoStack.length) return;
+    this.undoStack.push(this.snapshot());
+    this.restoreSnapshot(this.redoStack.pop()!);
+  }
+
+  // --- export ---
+
+  private downloadBlob(blob: Blob | null, filename: string): void {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  exportFramePng(): void {
+    const size = this.current.size;
+    const scale = Math.max(4, Math.round(256 / size));
+    const off = document.createElement('canvas');
+    off.width = size * scale;
+    off.height = size * scale;
+    const ctx = off.getContext('2d')!;
+    paintFrameCells(ctx, this.current.frames[this.frameIndex], size, scale);
+    const name = (this.current.name || 'sprite').trim() || 'sprite';
+    off.toBlob((blob) => this.downloadBlob(blob, `${name}_frame${this.frameIndex + 1}.png`));
+  }
+
+  exportSpriteSheetPng(): void {
+    const size = this.current.size;
+    const scale = Math.max(4, Math.round(256 / size));
+    const frames = this.current.frames;
+    const off = document.createElement('canvas');
+    off.width = size * scale * frames.length;
+    off.height = size * scale;
+    const octx = off.getContext('2d')!;
+    frames.forEach((f, i) => {
+      octx.save();
+      octx.translate(i * size * scale, 0);
+      paintFrameCells(octx, f, size, scale);
+      octx.restore();
+    });
+    const name = (this.current.name || 'sprite').trim() || 'sprite';
+    off.toBlob((blob) => this.downloadBlob(blob, `${name}_sheet.png`));
+  }
+
+  // --- sprite library ---
+
+  newSprite(confirmDiscard: () => boolean): void {
+    if (this.dirty && !confirmDiscard()) return;
+    this.current = blankSprite();
+    this.frameIndex = 0;
+    this.selection = null;
+    this.moveBuffer = null;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.dirty = false;
+    this.loadToken += 1;
+    this.recomputeCanvasSize();
+    this.refresh();
+  }
+
+  saveCurrentSprite(name: string, type: Sprite['type'], onError: (msg: string) => void): void {
+    const finalName = name.trim() || (type === 'fish' ? 'ปลาไม่มีชื่อ' : 'ของตกแต่งไม่มีชื่อ');
+    this.current.name = finalName;
+    this.current.type = type;
+
+    const previousSprites = this.sprites;
+    if (this.current.id) {
+      const idx = this.sprites.findIndex((s) => s.id === this.current.id);
+      if (idx >= 0) this.sprites[idx] = cloneSprite(this.current);
+    } else {
+      this.current.id = storage.uid('sprite');
+      this.sprites.push(cloneSprite(this.current));
+    }
+
+    try {
+      storage.saveSprites(this.sprites);
+    } catch (err) {
+      console.error('saveSprites failed', err);
+      this.sprites = previousSprites;
+      onError('บันทึกไม่สำเร็จ (พื้นที่จัดเก็บในเบราว์เซอร์อาจเต็ม) กรุณาลบของเก่าออกแล้วลองใหม่');
+      return;
+    }
+    this.dirty = false;
+    this.reactNotify();
+    window.dispatchEvent(new CustomEvent('ft:sprites-updated'));
+  }
+
+  loadSpriteForEdit(sprite: Sprite, confirmDiscard: () => boolean): void {
+    if (this.dirty && !confirmDiscard()) return;
+    this.current = cloneSprite(sprite);
+    if (!this.current.size) this.current.size = storage.DEFAULT_GRID_SIZE;
+    this.frameIndex = 0;
+    this.previewFrame = 0;
+    this.selection = null;
+    this.moveBuffer = null;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.dirty = false;
+    this.loadToken += 1;
+    this.recomputeCanvasSize();
+    this.refresh();
+  }
+
+  deleteSprite(id: string, confirmDelete: () => boolean, onError: (msg: string) => void): void {
+    if (!confirmDelete()) return;
+    const previousSprites = this.sprites;
+    this.sprites = this.sprites.filter((s) => s.id !== id);
+    try {
+      storage.saveSprites(this.sprites);
+    } catch (err) {
+      console.error('saveSprites failed', err);
+      this.sprites = previousSprites;
+      onError('ลบไม่สำเร็จ กรุณาลองใหม่');
+      return;
+    }
+    if (this.current.id === id) {
+      this.current = blankSprite();
+      this.selection = null;
+      this.moveBuffer = null;
+      this.loadToken += 1;
+      this.recomputeCanvasSize();
+      this.refresh();
+    } else {
+      this.reactNotify();
+    }
+    window.dispatchEvent(new CustomEvent('ft:sprite-deleted', { detail: { id } }));
+  }
+}
+
+export function usePixelEditor() {
+  const engineRef = useRef<PixelEditorEngine | null>(null);
+  const [, setTick] = useState(0);
+  if (!engineRef.current) {
+    engineRef.current = new PixelEditorEngine();
+  }
+  const engine = engineRef.current;
+
+  useEffect(() => {
+    engine.init(() => setTick((t) => t + 1));
+    return () => engine.destroy();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return engine;
+}
+
+export type { PixelEditorEngine };
