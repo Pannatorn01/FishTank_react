@@ -2,6 +2,8 @@ import type { Frame, Instance, Sprite } from './types';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
+const KEY_SAVED_COLORS = 'fishtank.savedColors.v1';
+const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
 
 export const DEFAULT_GRID_SIZE = 16;
 export const GRID_SIZES = [8, 16, 24, 32];
@@ -36,6 +38,34 @@ export function loadInstances(): Instance[] {
 
 export function saveInstances(instances: Instance[]): void {
   localStorage.setItem(KEY_INSTANCES, JSON.stringify(instances));
+}
+
+export function loadSavedColors(): string[] {
+  try {
+    const raw = localStorage.getItem(KEY_SAVED_COLORS);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    console.warn('loadSavedColors failed', e);
+    return [];
+  }
+}
+
+export function saveSavedColors(colors: string[]): void {
+  localStorage.setItem(KEY_SAVED_COLORS, JSON.stringify(colors));
+}
+
+export function loadPaletteColors(): string[] | null {
+  try {
+    const raw = localStorage.getItem(KEY_PALETTE_COLORS);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    console.warn('loadPaletteColors failed', e);
+    return null;
+  }
+}
+
+export function savePaletteColors(colors: string[]): void {
+  localStorage.setItem(KEY_PALETTE_COLORS, JSON.stringify(colors));
 }
 
 export function emptyFrame(size: number): Frame {

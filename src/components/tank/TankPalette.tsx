@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useLanguage } from '@/lib/i18n';
 import { paintFrameCells } from '@/lib/pixelMath';
 import type { Sprite } from '@/lib/types';
 import type { TankEngine } from '@/hooks/useTank';
@@ -18,10 +19,11 @@ function PaletteThumb({ sprite }: { sprite: Sprite }) {
 }
 
 export function TankPalette({ engine }: { engine: TankEngine }) {
+  const { t } = useLanguage();
   return (
     <div className="tank-palette">
       <p className="palette-hint">
-        ลากปลา/ของตกแต่งลงตู้ปลา <i className="fa-solid fa-arrow-down" />
+        {t('tank.dragHint')} <i className="fa-solid fa-arrow-down" />
       </p>
       <div className="tank-palette-list">
         {engine.sprites.map((sprite) => (
@@ -40,9 +42,9 @@ export function TankPalette({ engine }: { engine: TankEngine }) {
       <button
         type="button"
         className="tank-clear-btn"
-        onClick={() => engine.clearTank(() => confirm('ล้างของทั้งหมดในตู้ปลา?'))}
+        onClick={() => engine.clearTank(() => confirm(t('tank.clearConfirm')))}
       >
-        <i className="fa-solid fa-broom" /> ล้างตู้ปลาทั้งหมด
+        <i className="fa-solid fa-broom" /> {t('tank.clearAll')}
       </button>
     </div>
   );

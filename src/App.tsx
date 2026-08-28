@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/8bit/button';
 import { PixelEditorPanel } from '@/components/editor/PixelEditorPanel';
 import { TankPanel } from '@/components/tank/TankPanel';
+import { useLanguage } from '@/lib/i18n';
 
 type Tab = 'editor' | 'tank';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('editor');
+  const { lang, setLang, t } = useLanguage();
 
   return (
     <div id="app">
@@ -16,10 +18,18 @@ export default function App() {
         </h1>
         <nav className="tabs">
           <Button type="button" variant={tab === 'editor' ? 'default' : 'secondary'} onClick={() => setTab('editor')}>
-            <i className="fa-solid fa-palette" /> วาดปลา/ของตกแต่ง
+            <i className="fa-solid fa-palette" /> {t('tab.editor')}
           </Button>
           <Button type="button" variant={tab === 'tank' ? 'default' : 'secondary'} onClick={() => setTab('tank')}>
-            <i className="fa-solid fa-water" /> ตู้ปลา
+            <i className="fa-solid fa-water" /> {t('tab.tank')}
+          </Button>
+        </nav>
+        <nav className="lang-switch">
+          <Button type="button" size="sm" variant={lang === 'th' ? 'default' : 'secondary'} onClick={() => setLang('th')}>
+            ไทย
+          </Button>
+          <Button type="button" size="sm" variant={lang === 'en' ? 'default' : 'secondary'} onClick={() => setLang('en')}>
+            EN
           </Button>
         </nav>
       </header>

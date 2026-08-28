@@ -10,23 +10,32 @@ import {
   rotateFrame,
   shiftBox,
 } from '@/lib/pixelMath';
+import { t } from '@/lib/i18n';
 import * as storage from '@/lib/storage';
 import type { Cell, Frame, SelectionBox, Sprite, SymmetryMode, ToolName } from '@/lib/types';
 
-export const COLORS = [
-  '#1a1a1a', '#ffffff', '#e74c3c', '#ff7043', '#f5c518', '#8bc34a',
-  '#2e7d32', '#26c6da', '#1e88e5', '#5e35b1', '#d81b60', '#8d6e63',
-  '#ffccbc', '#b3e5fc', '#c8e6c9', '#9e9e9e',
+export const DEFAULT_PALETTE_COLORS = [
+  '#1a1a1a', '#ffffff', '#e74c3c', '#ff7043', '#f5c518', '#8bc34a', '#1e88e5', '#5e35b1',
 ];
 
 const FRAME_LIMIT = 3;
-const BASE_CELL_PX = 20;
+const BASE_CELL_PX = 16;
 export const ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];
-const PREVIEW_CELL_PX_BASE = 96;
+const PREVIEW_CELL_PX_BASE = 64;
 const UNDO_LIMIT = 50;
 const TOOL_KEYS: Record<string, ToolName> = {
   b: 'pen', e: 'eraser', g: 'fill', i: 'eyedropper', l: 'line', r: 'rect', c: 'ellipse',
   s: 'select', m: 'move',
+};
+
+type HandleName = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e';
+const HANDLE_HIT_TOLERANCE = 7;
+const HANDLE_SIZE = 6;
+const HANDLE_CURSORS: Record<HandleName, string> = {
+  nw: 'nwse-resize', se: 'nwse-resize',
+  ne: 'nesw-resize', sw: 'nesw-resize',
+  n: 'ns-resize', s: 'ns-resize',
+  w: 'ew-resize', e: 'ew-resize',
 };
 
 function blankSprite(): Sprite {
@@ -58,7 +67,9 @@ class PixelEditorEngine {
   current: Sprite = blankSprite();
   frameIndex = 0;
   tool: ToolName = 'pen';
-  color = COLORS[3];
+  color = DEFAULT_PALETTE_COLORS[3];
+  paletteColors: string[] = [];
+  savedColors: string[] = [];
   painting = false;
   lastPaintCell: Cell | null = null;
   shapeStart: Cell | null = null;
@@ -67,6 +78,10 @@ class PixelEditorEngine {
   selection: SelectionBox | null = null;
   selectStart: Cell | null = null;
   selectionDraft: SelectionBox | null = null;
+  resizeHandle: HandleName | null = null;
+  resizeOrigin: SelectionBox | null = null;
+  resizeSource: (string | null)[][] | null = null;
+  resizePreview: MoveBufferCell[] | null = null;
   moveBuffer: { cells: MoveBufferCell[] } | null = null;
   moveStartCell: Cell | null = null;
   moveDelta = { dx: 0, dy: 0 };
@@ -96,6 +111,8 @@ class PixelEditorEngine {
     } else {
       this.sprites = loaded;
     }
+    this.paletteColors = storage.loadPaletteColors() ?? [...DEFAULT_PALETTE_COLORS];
+    this.savedColors = storage.loadSavedColors();
 
     this.previewTimer = setInterval(() => this.tickPreview(), 400);
 
@@ -192,12 +209,34 @@ class PixelEditorEngine {
 
   setTool(tool: ToolName): void {
     this.tool = tool;
+    if (this.canvas && tool !== 'select') this.canvas.style.cursor = '';
     this.reactNotify();
   }
 
   setColor(color: string): void {
     this.color = color;
     if (this.tool === 'eyedropper') this.tool = 'pen';
+    this.reactNotify();
+  }
+
+  removePaletteColor(color: string): void {
+    if (!this.paletteColors.includes(color)) return;
+    this.paletteColors = this.paletteColors.filter((c) => c !== color);
+    storage.savePaletteColors(this.paletteColors);
+    this.reactNotify();
+  }
+
+  addSavedColor(color: string): void {
+    if (this.savedColors.includes(color)) return;
+    this.savedColors = [...this.savedColors, color];
+    storage.saveSavedColors(this.savedColors);
+    this.reactNotify();
+  }
+
+  removeSavedColor(color: string): void {
+    if (!this.savedColors.includes(color)) return;
+    this.savedColors = this.savedColors.filter((c) => c !== color);
+    storage.saveSavedColors(this.savedColors);
     this.reactNotify();
   }
 
@@ -238,11 +277,18 @@ class PixelEditorEngine {
     this.refresh();
   }
 
+  private defaultZoomIndexForSize(size: number): number {
+    if (size >= 32) return ZOOM_LEVELS.indexOf(0.5);
+    if (size >= 24) return ZOOM_LEVELS.indexOf(0.75);
+    return 2;
+  }
+
   setGridSize(newSize: number): void {
     if (newSize === this.current.size) return;
     this.pushUndo();
     this.current.frames = this.current.frames.map((f) => storage.resampleFrame(f, this.current.size, newSize));
     this.current.size = newSize;
+    this.zoomIndex = this.defaultZoomIndexForSize(newSize);
     this.frameIndex = Math.min(this.frameIndex, this.current.frames.length - 1);
     this.selection = null;
     this.recomputeCanvasSize();
@@ -389,11 +435,12 @@ class PixelEditorEngine {
   }
 
   private resetGestureState(): void {
-    // A pending move already cleared its source cells from the frame data at
-    // gesture start, so an interrupted move must be committed back (at its last
-    // known position), never just discarded - dropping it would silently delete
-    // the pixels the user picked up.
+    // A pending move/resize already cleared its source cells from the frame data
+    // at gesture start, so an interrupted gesture must be committed back (at its
+    // last known position), never just discarded - dropping it would silently
+    // delete the pixels the user picked up.
     if (this.moveBuffer) this.commitMove();
+    if (this.resizeHandle) this.commitResize();
     this.painting = false;
     this.lastPaintCell = null;
     this.shapeStart = null;
@@ -403,9 +450,170 @@ class PixelEditorEngine {
     this.moveBuffer = null;
     this.moveStartCell = null;
     this.moveDelta = { dx: 0, dy: 0 };
+    this.resizeHandle = null;
+    this.resizeOrigin = null;
+    this.resizeSource = null;
+    this.resizePreview = null;
+  }
+
+  private pxFromEvent(e: { clientX: number; clientY: number }): { px: number; py: number } | null {
+    if (!this.canvas) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    return { px: e.clientX - rect.left, py: e.clientY - rect.top };
+  }
+
+  private hitTestHandle(e: { clientX: number; clientY: number }): HandleName | null {
+    if (!this.selection) return null;
+    const pt = this.pxFromEvent(e);
+    if (!pt) return null;
+    const cellPx = this.effectiveCellPx();
+    const box = this.selection;
+    const x0 = box.x0 * cellPx;
+    const y0 = box.y0 * cellPx;
+    const x1 = (box.x1 + 1) * cellPx;
+    const y1 = (box.y1 + 1) * cellPx;
+    const tol = HANDLE_HIT_TOLERANCE;
+    const { px, py } = pt;
+    const nearLeft = Math.abs(px - x0) <= tol;
+    const nearRight = Math.abs(px - x1) <= tol;
+    const nearTop = Math.abs(py - y0) <= tol;
+    const nearBottom = Math.abs(py - y1) <= tol;
+    const withinX = px >= x0 - tol && px <= x1 + tol;
+    const withinY = py >= y0 - tol && py <= y1 + tol;
+    if (nearLeft && nearTop) return 'nw';
+    if (nearRight && nearTop) return 'ne';
+    if (nearLeft && nearBottom) return 'sw';
+    if (nearRight && nearBottom) return 'se';
+    if (nearTop && withinX) return 'n';
+    if (nearBottom && withinX) return 's';
+    if (nearLeft && withinY) return 'w';
+    if (nearRight && withinY) return 'e';
+    return null;
+  }
+
+  private cellFromEventClamped(e: { clientX: number; clientY: number }): Cell {
+    const rect = this.canvas!.getBoundingClientRect();
+    const cellPx = this.effectiveCellPx();
+    const size = this.current.size;
+    const x = Math.min(size - 1, Math.max(0, Math.floor((e.clientX - rect.left) / cellPx)));
+    const y = Math.min(size - 1, Math.max(0, Math.floor((e.clientY - rect.top) / cellPx)));
+    return { x, y };
+  }
+
+  private isInsideSelection(cell: Cell): boolean {
+    if (!this.selection) return false;
+    const box = this.selection;
+    return cell.x >= box.x0 && cell.x <= box.x1 && cell.y >= box.y0 && cell.y <= box.y1;
+  }
+
+  private startMoveGesture(cell: Cell): void {
+    this.pushUndo();
+    this.painting = true;
+    const size = this.current.size;
+    const frame = this.current.frames[this.frameIndex];
+    const box = this.selection || { x0: 0, y0: 0, x1: size - 1, y1: size - 1 };
+    const cells: MoveBufferCell[] = [];
+    for (let y = box.y0; y <= box.y1; y++) {
+      for (let x = box.x0; x <= box.x1; x++) {
+        const c = frame[y * size + x];
+        if (c) cells.push({ x, y, color: c });
+        frame[y * size + x] = null;
+      }
+    }
+    this.moveBuffer = { cells };
+    this.moveStartCell = cell;
+    this.moveDelta = { dx: 0, dy: 0 };
+    this.refresh();
+  }
+
+  private captureSelectionPixels(box: SelectionBox): (string | null)[][] {
+    const frame = this.current.frames[this.frameIndex];
+    const size = this.current.size;
+    const rows: (string | null)[][] = [];
+    for (let y = box.y0; y <= box.y1; y++) {
+      const row: (string | null)[] = [];
+      for (let x = box.x0; x <= box.x1; x++) {
+        row.push(frame[y * size + x]);
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  private clearFrameRegion(box: SelectionBox): void {
+    const frame = this.current.frames[this.frameIndex];
+    const size = this.current.size;
+    for (let y = box.y0; y <= box.y1; y++) {
+      for (let x = box.x0; x <= box.x1; x++) frame[y * size + x] = null;
+    }
+  }
+
+  private buildResizePreview(source: (string | null)[][], origBox: SelectionBox, newBox: SelectionBox): MoveBufferCell[] {
+    const origW = origBox.x1 - origBox.x0 + 1;
+    const origH = origBox.y1 - origBox.y0 + 1;
+    const newW = newBox.x1 - newBox.x0 + 1;
+    const newH = newBox.y1 - newBox.y0 + 1;
+    const out: MoveBufferCell[] = [];
+    for (let y = 0; y < newH; y++) {
+      const srcY = Math.min(origH - 1, Math.floor((y / newH) * origH));
+      for (let x = 0; x < newW; x++) {
+        const srcX = Math.min(origW - 1, Math.floor((x / newW) * origW));
+        const color = source[srcY][srcX];
+        if (color) out.push({ x: newBox.x0 + x, y: newBox.y0 + y, color });
+      }
+    }
+    return out;
+  }
+
+  private commitResize(): void {
+    if (this.resizePreview) {
+      const frame = this.current.frames[this.frameIndex];
+      const size = this.current.size;
+      this.resizePreview.forEach((c) => {
+        if (c.x >= 0 && c.y >= 0 && c.x < size && c.y < size) frame[c.y * size + c.x] = c.color;
+      });
+    }
+    this.resizeHandle = null;
+    this.resizeOrigin = null;
+    this.resizeSource = null;
+    this.resizePreview = null;
+  }
+
+  private computeResizedBox(origin: SelectionBox, handle: HandleName, c: Cell): SelectionBox {
+    let x0 = origin.x0;
+    let x1 = origin.x1;
+    let y0 = origin.y0;
+    let y1 = origin.y1;
+    if (handle.includes('w')) x0 = c.x;
+    if (handle.includes('e')) x1 = c.x;
+    if (handle.includes('n')) y0 = c.y;
+    if (handle.includes('s')) y1 = c.y;
+    return {
+      x0: Math.min(x0, x1),
+      x1: Math.max(x0, x1),
+      y0: Math.min(y0, y1),
+      y1: Math.max(y0, y1),
+    };
   }
 
   onPointerDown(e: React.PointerEvent<HTMLCanvasElement>): void {
+    if (this.tool === 'select' && this.selection) {
+      const handle = this.hitTestHandle(e);
+      if (handle) {
+        if (this.painting) this.resetGestureState();
+        this.canvas?.setPointerCapture(e.pointerId);
+        this.pushUndo();
+        this.painting = true;
+        this.resizeHandle = handle;
+        this.resizeOrigin = { ...this.selection };
+        this.resizeSource = this.captureSelectionPixels(this.selection);
+        this.clearFrameRegion(this.selection);
+        this.resizePreview = this.buildResizePreview(this.resizeSource, this.resizeOrigin, this.selection);
+        this.refresh();
+        return;
+      }
+    }
+
     const cell = this.cellFromEvent(e);
     if (!cell) return;
     if (this.painting) this.resetGestureState();
@@ -417,6 +625,10 @@ class PixelEditorEngine {
     }
 
     if (this.tool === 'select') {
+      if (this.isInsideSelection(cell)) {
+        this.startMoveGesture(cell);
+        return;
+      }
       this.painting = true;
       this.selectStart = cell;
       this.selectionDraft = { x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y };
@@ -425,23 +637,7 @@ class PixelEditorEngine {
     }
 
     if (this.tool === 'move') {
-      this.pushUndo();
-      this.painting = true;
-      const size = this.current.size;
-      const frame = this.current.frames[this.frameIndex];
-      const box = this.selection || { x0: 0, y0: 0, x1: size - 1, y1: size - 1 };
-      const cells: MoveBufferCell[] = [];
-      for (let y = box.y0; y <= box.y1; y++) {
-        for (let x = box.x0; x <= box.x1; x++) {
-          const c = frame[y * size + x];
-          if (c) cells.push({ x, y, color: c });
-          frame[y * size + x] = null;
-        }
-      }
-      this.moveBuffer = { cells };
-      this.moveStartCell = cell;
-      this.moveDelta = { dx: 0, dy: 0 };
-      this.refresh();
+      this.startMoveGesture(cell);
       return;
     }
 
@@ -459,6 +655,7 @@ class PixelEditorEngine {
       this.mirrorCells(cell.x, cell.y).forEach((m) => {
         this.floodFill(frame, size, m.x, m.y, frame[m.y * size + m.x]);
       });
+      this.addSavedColor(this.color);
       this.refresh();
     } else {
       this.lastPaintCell = null;
@@ -467,19 +664,40 @@ class PixelEditorEngine {
   }
 
   onPointerMove(e: React.PointerEvent<HTMLCanvasElement>): void {
-    if (!this.painting) return;
-    const cell = this.cellFromEvent(e);
+    if (!this.painting) {
+      if (this.tool === 'select' && this.selection && this.canvas) {
+        const handle = this.hitTestHandle(e);
+        if (handle) {
+          this.canvas.style.cursor = HANDLE_CURSORS[handle];
+        } else {
+          const hoverCell = this.cellFromEvent(e);
+          this.canvas.style.cursor = hoverCell && this.isInsideSelection(hoverCell) ? 'move' : '';
+        }
+      }
+      return;
+    }
 
-    if (this.tool === 'select') {
-      if (!cell || !this.selectStart) return;
-      this.selectionDraft = normalizeBox(this.selectStart, cell);
+    if (this.resizeHandle && this.resizeOrigin && this.resizeSource) {
+      const c = this.cellFromEventClamped(e);
+      const box = this.computeResizedBox(this.resizeOrigin, this.resizeHandle, c);
+      this.selection = box;
+      this.resizePreview = this.buildResizePreview(this.resizeSource, this.resizeOrigin, box);
       this.drawGrid();
       return;
     }
 
+    const cell = this.cellFromEvent(e);
+
     if (this.moveBuffer) {
       if (!cell || !this.moveStartCell) return;
       this.moveDelta = { dx: cell.x - this.moveStartCell.x, dy: cell.y - this.moveStartCell.y };
+      this.drawGrid();
+      return;
+    }
+
+    if (this.tool === 'select') {
+      if (!cell || !this.selectStart) return;
+      this.selectionDraft = normalizeBox(this.selectStart, cell);
       this.drawGrid();
       return;
     }
@@ -497,11 +715,8 @@ class PixelEditorEngine {
     if (!this.painting) return;
     this.painting = false;
 
-    if (this.tool === 'select') {
-      const d = this.selectionDraft;
-      this.selection = d && (d.x0 !== d.x1 || d.y0 !== d.y1) ? d : null;
-      this.selectStart = null;
-      this.selectionDraft = null;
+    if (this.resizeHandle) {
+      this.commitResize();
       this.refresh();
       return;
     }
@@ -511,12 +726,22 @@ class PixelEditorEngine {
       return;
     }
 
+    if (this.tool === 'select') {
+      const d = this.selectionDraft;
+      this.selection = d && (d.x0 !== d.x1 || d.y0 !== d.y1) ? d : null;
+      this.selectStart = null;
+      this.selectionDraft = null;
+      this.refresh();
+      return;
+    }
+
     if (this.shapeStart && this.shapePreviewCells) {
       const frame = this.current.frames[this.frameIndex];
       const size = this.current.size;
       this.shapePreviewCells.forEach((c) => {
         if (c.x >= 0 && c.y >= 0 && c.x < size && c.y < size) frame[c.y * size + c.x] = this.color;
       });
+      this.addSavedColor(this.color);
       this.shapeStart = null;
       this.shapePreviewCells = null;
     }
@@ -610,6 +835,7 @@ class PixelEditorEngine {
       applyAt(x, y);
     }
     this.lastPaintCell = { x, y };
+    if (color) this.addSavedColor(color);
     this.refresh();
   }
 
@@ -665,6 +891,14 @@ class PixelEditorEngine {
       });
     }
 
+    if (this.resizePreview) {
+      this.resizePreview.forEach((c) => {
+        if (c.x < 0 || c.y < 0 || c.x >= size || c.y >= size) return;
+        ctx.fillStyle = c.color;
+        ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
+      });
+    }
+
     if (overlayCells) {
       ctx.fillStyle = this.color;
       overlayCells.forEach((c) => {
@@ -704,6 +938,10 @@ class PixelEditorEngine {
       ctx.strokeRect(shown.x0 * cellPx, shown.y0 * cellPx, (shown.x1 - shown.x0 + 1) * cellPx, (shown.y1 - shown.y0 + 1) * cellPx);
       ctx.setLineDash([]);
       ctx.restore();
+
+      if (this.tool === 'select' && this.selection && !this.selectionDraft) {
+        this.drawSelectionHandles(this.selection, cellPx);
+      }
     }
 
     if (this.showGrid) {
@@ -720,6 +958,32 @@ class PixelEditorEngine {
         ctx.stroke();
       }
     }
+  }
+
+  private drawSelectionHandles(box: SelectionBox, cellPx: number): void {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const x0 = box.x0 * cellPx;
+    const y0 = box.y0 * cellPx;
+    const x1 = (box.x1 + 1) * cellPx;
+    const y1 = (box.y1 + 1) * cellPx;
+    const mx = (x0 + x1) / 2;
+    const my = (y0 + y1) / 2;
+    const points: [number, number][] = [
+      [x0, y0], [mx, y0], [x1, y0],
+      [x0, my], [x1, my],
+      [x0, y1], [mx, y1], [x1, y1],
+    ];
+    const s = HANDLE_SIZE;
+    ctx.save();
+    ctx.fillStyle = '#ffcc00';
+    ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 1;
+    points.forEach(([px, py]) => {
+      ctx.fillRect(px - s / 2, py - s / 2, s, s);
+      ctx.strokeRect(px - s / 2, py - s / 2, s, s);
+    });
+    ctx.restore();
   }
 
   private tickPreview(): void {
@@ -831,7 +1095,7 @@ class PixelEditorEngine {
   }
 
   saveCurrentSprite(name: string, type: Sprite['type'], onError: (msg: string) => void): void {
-    const finalName = name.trim() || (type === 'fish' ? 'ปลาไม่มีชื่อ' : 'ของตกแต่งไม่มีชื่อ');
+    const finalName = name.trim() || (type === 'fish' ? t('sprite.defaultFishName') : t('sprite.defaultObjectName'));
     this.current.name = finalName;
     this.current.type = type;
 
@@ -849,7 +1113,7 @@ class PixelEditorEngine {
     } catch (err) {
       console.error('saveSprites failed', err);
       this.sprites = previousSprites;
-      onError('บันทึกไม่สำเร็จ (พื้นที่จัดเก็บในเบราว์เซอร์อาจเต็ม) กรุณาลบของเก่าออกแล้วลองใหม่');
+      onError(t('error.saveFailed'));
       return;
     }
     this.dirty = false;
@@ -882,7 +1146,7 @@ class PixelEditorEngine {
     } catch (err) {
       console.error('saveSprites failed', err);
       this.sprites = previousSprites;
-      onError('ลบไม่สำเร็จ กรุณาลองใหม่');
+      onError(t('error.deleteFailed'));
       return;
     }
     if (this.current.id === id) {

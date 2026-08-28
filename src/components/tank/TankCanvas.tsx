@@ -1,6 +1,8 @@
 import type { TankEngine } from '@/hooks/useTank';
+import { useLanguage } from '@/lib/i18n';
 
 export function TankCanvas({ engine }: { engine: TankEngine }) {
+  const { t } = useLanguage();
   return (
     <div className="tank-wrap" ref={(el) => engine.attachWrap(el)}>
       <canvas
@@ -23,7 +25,7 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
         <i className="fa-solid fa-trash" />
       </button>
       <button type="button" className="delete-selected-btn" hidden={!engine.selectedId} onClick={() => engine.removeSelected()}>
-        <i className="fa-solid fa-trash" /> ลบตัวที่เลือก
+        <i className="fa-solid fa-trash" /> {t('tank.deleteSelected')}
       </button>
     </div>
   );

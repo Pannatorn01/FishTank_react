@@ -1,24 +1,24 @@
-import { COLORS } from '@/hooks/usePixelEditor';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
+import { useLanguage } from '@/lib/i18n';
+import { ColorPicker } from './ColorPicker';
+import { ColorSwatch } from './ColorSwatch';
 
 export function ColorPalette({ engine }: { engine: PixelEditorEngine }) {
+  const { t } = useLanguage();
   return (
     <div className="palette-panel">
+      <ColorPicker engine={engine} />
       <div className="palette">
-        {COLORS.map((c) => (
-          <button
-            key={c}
-            type="button"
-            className={`swatch${engine.color === c ? ' active' : ''}`}
-            style={{ background: c }}
-            onClick={() => engine.setColor(c)}
-          />
+        {engine.paletteColors.map((c) => (
+          <ColorSwatch key={`p-${c}`} engine={engine} color={c} onRemove={(color) => engine.removePaletteColor(color)} />
         ))}
+        {engine.savedColors.map((c) => (
+          <ColorSwatch key={`s-${c}`} engine={engine} color={c} onRemove={(color) => engine.removeSavedColor(color)} />
+        ))}
+        <button type="button" className="swatch-add" title={t('palette.addColor')} onClick={() => engine.addSavedColor(engine.color)}>
+          <i className="fa-solid fa-plus" />
+        </button>
       </div>
-      <label className="custom-color-label">
-        สีกำหนดเอง
-        <input type="color" value={engine.color} onChange={(e) => engine.setColor(e.target.value)} />
-      </label>
     </div>
   );
 }

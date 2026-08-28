@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useLanguage } from '@/lib/i18n';
 import { paintFrameCells } from '@/lib/pixelMath';
 import type { Sprite } from '@/lib/types';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
@@ -12,9 +13,9 @@ function LibraryThumb({ sprite }: { sprite: Sprite }) {
     if (!ctx) return;
     const size = sprite.size || 16;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    paintFrameCells(ctx, sprite.frames[0], size, 64 / size);
+    paintFrameCells(ctx, sprite.frames[0], size, 48 / size);
   }, [sprite]);
-  return <canvas ref={ref} width={64} height={64} className="pixelated" />;
+  return <canvas ref={ref} width={48} height={48} className="pixelated" />;
 }
 
 export function SpriteLibrary({
@@ -26,9 +27,10 @@ export function SpriteLibrary({
   onConfirmDiscard: () => boolean;
   onError: (msg: string) => void;
 }) {
+  const { t } = useLanguage();
   return (
     <div className="library">
-      <h3>คลังของฉัน</h3>
+      <h3>{t('library.title')}</h3>
       <div className="library-grid">
         {engine.sprites.map((sprite) => (
           <div key={sprite.id} className="library-card" onClick={() => engine.loadSpriteForEdit(sprite, onConfirmDiscard)}>
@@ -41,11 +43,7 @@ export function SpriteLibrary({
               className="library-del"
               onClick={(e) => {
                 e.stopPropagation();
-                engine.deleteSprite(
-                  sprite.id!,
-                  () => confirm('ลบชิ้นนี้ออกจากคลัง? (ของในตู้ปลาที่ใช้ชิ้นนี้จะถูกลบไปด้วย)'),
-                  onError
-                );
+                engine.deleteSprite(sprite.id!, () => confirm(t('library.deleteConfirm')), onError);
               }}
             >
               <i className="fa-solid fa-xmark" />

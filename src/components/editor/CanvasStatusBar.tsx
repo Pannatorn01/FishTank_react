@@ -4,23 +4,33 @@ import { Label } from '@/components/ui/8bit/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/8bit/select';
 import { ZOOM_LEVELS } from '@/hooks/usePixelEditor';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
+import { useLanguage } from '@/lib/i18n';
 import { GRID_SIZES } from '@/lib/storage';
 import type { SymmetryMode } from '@/lib/types';
 
-const SYMMETRY_LABELS: Record<SymmetryMode, string> = {
-  none: 'ไม่มีสมมาตร',
-  vertical: 'สมมาตรแนวตั้ง',
-  horizontal: 'สมมาตรแนวนอน',
-  both: 'สมมาตรทั้งคู่',
+const SYMMETRY_KEYS: Record<SymmetryMode, string> = {
+  none: 'symmetry.none',
+  vertical: 'symmetry.vertical',
+  horizontal: 'symmetry.horizontal',
+  both: 'symmetry.both',
 };
 
 export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
+  const { t } = useLanguage();
   const showShapeFilled = engine.tool === 'rect' || engine.tool === 'ellipse';
+  const selection = engine.selection;
 
   return (
     <div className="canvas-status-bar">
       <div className="zoom-controls">
-        <Button type="button" size="icon" variant="secondary" title="ซูมออก" disabled={engine.zoomIndex === 0} onClick={() => engine.zoomOut()}>
+        <Button
+          type="button"
+          size="icon"
+          variant="secondary"
+          title={t('status.zoomOut')}
+          disabled={engine.zoomIndex === 0}
+          onClick={() => engine.zoomOut()}
+        >
           <i className="fa-solid fa-magnifying-glass-minus" />
         </Button>
         <span id="zoom-label">{engine.zoomLabel()}</span>
@@ -28,7 +38,7 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
           type="button"
           size="icon"
           variant="secondary"
-          title="ซูมเข้า"
+          title={t('status.zoomIn')}
           disabled={engine.zoomIndex === ZOOM_LEVELS.length - 1}
           onClick={() => engine.zoomIn()}
         >
@@ -51,28 +61,35 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
 
       <label className="mini-toggle">
         <Checkbox checked={engine.showGrid} onCheckedChange={(v) => engine.setShowGrid(!!v)} />
-        <Label>เส้นกริด</Label>
+        <Label>{t('status.showGrid')}</Label>
       </label>
 
       {showShapeFilled && (
         <label className="mini-toggle">
           <Checkbox checked={engine.shapeFilled} onCheckedChange={(v) => engine.setShapeFilled(!!v)} />
-          <Label>เติมสีเต็ม</Label>
+          <Label>{t('status.fillShape')}</Label>
         </label>
       )}
 
       <Select value={engine.symmetry} onValueChange={(v) => engine.setSymmetry(v as SymmetryMode)}>
-        <SelectTrigger className="w-56 text-xs" title="วาดแบบสมมาตร (V)">
+        <SelectTrigger className="w-56 text-xs" title={t('status.symmetryTitle')}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {(Object.keys(SYMMETRY_LABELS) as SymmetryMode[]).map((mode) => (
+          {(Object.keys(SYMMETRY_KEYS) as SymmetryMode[]).map((mode) => (
             <SelectItem key={mode} value={mode}>
-              {SYMMETRY_LABELS[mode]}
+              {t(SYMMETRY_KEYS[mode])}
             </SelectItem>
           ))}
         </SelectContent>
       </Select>
+
+      {selection && (
+        <span className="selection-info" title={t('status.selectionHint')}>
+          <i className="fa-solid fa-vector-square" />{' '}
+          {t('status.selectionSize', { w: selection.x1 - selection.x0 + 1, h: selection.y1 - selection.y0 + 1 })}
+        </span>
+      )}
     </div>
   );
 }
