@@ -1,6 +1,6 @@
-import { Button } from '@/components/ui/8bit/button';
-import { Checkbox } from '@/components/ui/8bit/checkbox';
-import { Label } from '@/components/ui/8bit/label';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 

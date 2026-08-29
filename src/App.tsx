@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button } from '@/components/ui/8bit/button';
+import { Button } from '@/components/ui/button';
 import { PixelEditorPanel } from '@/components/editor/PixelEditorPanel';
 import { TankPanel } from '@/components/tank/TankPanel';
 import { useLanguage } from '@/lib/i18n';

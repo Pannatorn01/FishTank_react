@@ -68,7 +68,7 @@ const th: Dict = {
   'sprite.defaultFishName': 'ปลาไม่มีชื่อ',
   'sprite.defaultObjectName': 'ของตกแต่งไม่มีชื่อ',
 
-  'preview.onionSkin': 'แสดงเฟรมจาง (Onion Skin)',
+  'preview.onionSkin': 'Onion Skin',
 
   'tank.dragHint': 'ลากปลา/ของตกแต่งลงตู้ปลา',
   'tank.clearConfirm': 'ล้างของทั้งหมดในตู้ปลา?',

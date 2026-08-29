@@ -34,6 +34,7 @@ export function PixelEditorPanel({ active }: { active: boolean }) {
           <PixelCanvas engine={engine} />
           <CanvasStatusBar engine={engine} />
           <FrameStrip engine={engine} />
+          <SpriteLibrary engine={engine} onConfirmDiscard={confirmDiscard} onError={onError} />
         </div>
 
         <div className="side-panel">
@@ -42,8 +43,6 @@ export function PixelEditorPanel({ active }: { active: boolean }) {
           <SpriteMetaForm engine={engine} onConfirmDiscard={confirmDiscard} onError={onError} />
         </div>
       </div>
-
-      <SpriteLibrary engine={engine} onConfirmDiscard={confirmDiscard} onError={onError} />
     </div>
   );
 }

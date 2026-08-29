@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Button } from '@/components/ui/8bit/button';
-import { Input } from '@/components/ui/8bit/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/8bit/select';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import type { SpriteType } from '@/lib/types';

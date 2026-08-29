@@ -1,4 +1,4 @@
-import { Button } from '@/components/ui/8bit/button';
+import { Button } from '@/components/ui/button';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import type { ToolName } from '@/lib/types';
@@ -35,10 +35,10 @@ export function ToolRail({ engine }: { engine: PixelEditorEngine }) {
       </div>
       <div className="tool-actions">
         <Button type="button" size="icon" variant="secondary" title={t('action.undo')} disabled={!engine.canUndo()} onClick={() => engine.undo()}>
-          <i className="fa-solid fa-arrow-rotate-left" />
+          <i className="fa-solid fa-arrow-rotate-left w-100" />
         </Button>
         <Button type="button" size="icon" variant="secondary" title={t('action.redo')} disabled={!engine.canRedo()} onClick={() => engine.redo()}>
-          <i className="fa-solid fa-arrow-rotate-right" />
+          <i className="fa-solid fa-arrow-rotate-right w-100" />
         </Button>
       </div>
     </>

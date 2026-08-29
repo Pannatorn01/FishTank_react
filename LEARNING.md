@@ -109,7 +109,7 @@ FishTank-react/
 │
 └── src/
     ├── main.tsx                   จุดเริ่มต้นจริง: เอา <App /> ไปแปะที่ <div id="root">
-    ├── App.tsx                    component บนสุด: สลับแท็บ "วาดปลา" / "ตู้ปลา"
+    ├── App.tsx                    component บนสุด: สลับแ ท็บ "วาดปลา" / "ตู้ปลา"
     ├── index.css                  Tailwind + ตัวแปรสี (theme) + CSS ของแอปเอง (layout, canvas)
     │
     ├── lib/                       โค้ดล้วนๆ ไม่เกี่ยวกับ UI (ทดสอบง่าย, เอาไปใช้ที่ไหนก็ได้)

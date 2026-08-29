@@ -20,8 +20,5 @@
     "hooks": "@/hooks"
   },
   "menuColor": "default",
-  "menuAccent": "subtle",
-  "registries": {
-    "@8bitcn": "https://8bitcn.com/r/{name}.json"
-  }
+  "menuAccent": "subtle"
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Button } from '@/components/ui/8bit/button';
+import { Button } from '@/components/ui/button';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import { paintFrameCells } from '@/lib/pixelMath';

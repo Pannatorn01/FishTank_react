@@ -18,7 +18,7 @@ export const DEFAULT_PALETTE_COLORS = [
   '#1a1a1a', '#ffffff', '#e74c3c', '#ff7043', '#f5c518', '#8bc34a', '#1e88e5', '#5e35b1',
 ];
 
-const FRAME_LIMIT = 3;
+const FRAME_LIMIT = 5;
 const BASE_CELL_PX = 16;
 export const ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];
 const PREVIEW_CELL_PX_BASE = 64;

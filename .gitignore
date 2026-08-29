@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Pixellet font: personal-use license only, no commercial/web certificate yet.
+# Keep local for dev, do not commit/distribute until licensed.
+src/assets/fonts/pixellet.ttf
+font-licenses/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

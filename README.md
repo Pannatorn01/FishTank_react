@@ -1,8 +1,8 @@
 # Pixel Fish Tank (React)
 
 A pixel-art fish/decoration editor and animated aquarium simulator, built with
-React, TypeScript, Vite, Tailwind CSS, and [8bitcn/ui](https://8bitcn.com) for
-the retro component styling.
+React, TypeScript, Vite, and Tailwind CSS, with a minimal hand-rolled 8-bit
+component style (thick square borders, pixel font, press-down buttons).
 
 This is a React port of the original vanilla JS/CSS version (see the sibling
 `FishTank` project). It carries over the full feature set:

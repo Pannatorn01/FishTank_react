@@ -6,7 +6,7 @@ import { ColorSwatch } from './ColorSwatch';
 export function ColorPalette({ engine }: { engine: PixelEditorEngine }) {
   const { t } = useLanguage();
   return (
-    <div className="palette-panel">
+    <div className="palette-panel flex-1">
       <ColorPicker engine={engine} />
       <div className="palette">
         {engine.paletteColors.map((c) => (
