@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 
-const SV_SIZE = 76;
+const SV_SIZE = 100;
 const HUE_HEIGHT = 10;
 
 interface Hsv {

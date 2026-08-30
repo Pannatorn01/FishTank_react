@@ -162,6 +162,22 @@ class TankEngine {
     this.selectInstance(null);
   }
 
+  bringToFront(id: string): void {
+    const idx = this.instances.findIndex((inst) => inst.id === id);
+    if (idx === -1 || idx === this.instances.length - 1) return;
+    const [inst] = this.instances.splice(idx, 1);
+    this.instances.push(inst);
+    this.persist();
+  }
+
+  sendToBack(id: string): void {
+    const idx = this.instances.findIndex((inst) => inst.id === id);
+    if (idx <= 0) return;
+    const [inst] = this.instances.splice(idx, 1);
+    this.instances.unshift(inst);
+    this.persist();
+  }
+
   private hitTest(x: number, y: number): Instance | null {
     for (let i = this.instances.length - 1; i >= 0; i--) {
       const inst = this.instances[i];

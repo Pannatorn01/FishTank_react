@@ -74,6 +74,8 @@ const th: Dict = {
   'tank.clearConfirm': 'ล้างของทั้งหมดในตู้ปลา?',
   'tank.clearAll': 'ล้างตู้ปลาทั้งหมด',
   'tank.deleteSelected': 'ลบตัวที่เลือก',
+  'tank.bringToFront': 'เอามาไว้หน้าสุด',
+  'tank.sendToBack': 'ส่งไปไว้หลังสุด',
 };
 
 const en: Dict = {
@@ -98,7 +100,7 @@ const en: Dict = {
   'transform.flipV': 'Flip vertical',
   'transform.rotateCCW': 'Rotate counter-clockwise',
   'transform.rotateCW': 'Rotate clockwise',
-  'transform.allFrames': 'Apply to all frames',
+  'transform.allFrames': 'all frames',
 
   'status.zoomOut': 'Zoom out',
   'status.zoomIn': 'Zoom in',
@@ -144,6 +146,8 @@ const en: Dict = {
   'tank.clearConfirm': 'Clear everything in the tank?',
   'tank.clearAll': 'Clear tank',
   'tank.deleteSelected': 'Delete selected',
+  'tank.bringToFront': 'Bring to front',
+  'tank.sendToBack': 'Send to back',
 };
 
 const dict: Record<Lang, Dict> = { th, en };

@@ -160,7 +160,8 @@ body, #root { height: 100%; margin: 0; }
 .tabs { display: flex; gap: 6px; }
 .lang-switch { display: flex; gap: 4px; margin-left: auto; }
 
-main { flex: 1; overflow: auto; padding: 8px; }
+main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
+.tab-panel { height: 100%; }
 .tab-panel[hidden] { display: none; }
 
 .pixelated { image-rendering: pixelated; }
@@ -285,7 +286,7 @@ main { flex: 1; overflow: auto; padding: 8px; }
 .swatch { width: 100%; aspect-ratio: 1; border: 1.5px solid var(--border); padding: 0; cursor: pointer; outline: none; box-sizing: border-box; }
 .swatch.active { border-color: #ffcc00; }
 
-.color-picker { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 76px; margin: 0 auto; }
+.color-picker { display: flex; flex-direction: column; align-items: center; gap: 5px; width: 120px; margin: 0 auto; }
 .sv-square, .hue-bar { position: relative; }
 .sv-square canvas, .hue-bar canvas { display: block; touch-action: none; cursor: crosshair; }
 .sv-thumb {
@@ -327,32 +328,39 @@ main { flex: 1; overflow: auto; padding: 8px; }
   text-align: center;
 }
 
-.color-swatch-wrap { position: relative; aspect-ratio: 1; }
+.color-swatch-wrap { 
+  position: relative; 
+  /* aspect-ratio: 1;  */
+}
 .color-swatch-wrap .swatch { width: 100%; height: 100%; }
 .color-swatch-del {
   position: absolute;
-  top: -4px; right: -4px;
+  top: -3px; right: -3px;
   width: 11px; height: 11px;
   border: none;
   border-radius: 50%;
   background: rgba(0,0,0,0.75);
   color: #fff;
-  font-size: 0.48rem;
+  font-size: 0.42rem;
   line-height: 1;
   display: none;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   padding: 0;
+  z-index: 2;
 }
 .color-swatch-wrap:hover .color-swatch-del { display: flex; }
 .swatch-add {
-  aspect-ratio: 1;
+  width: 100%;
+  /* aspect-ratio: 1; */
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1.5px dashed var(--border);
-  background: transparent;
+  line-height: 1;
+  border: 1.5px dashed rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.06);
   color: var(--muted-foreground);
   font-size: 0.6rem;
   padding: 0;
@@ -365,6 +373,8 @@ main { flex: 1; overflow: auto; padding: 8px; }
 .sprite-meta-buttons, .export-buttons { display: flex; gap: 6px; }
 .sprite-meta-buttons > *, .export-buttons > * { flex: 1; min-width: 0; }
 .sprite-meta-buttons button, .export-buttons button {
+  flex-direction: column;
+  gap: 2px;
   font-size: 0.64rem;
   white-space: normal;
   height: auto;
@@ -412,8 +422,10 @@ main { flex: 1; overflow: auto; padding: 8px; }
 .tank-wrap {
   position: relative;
   flex: 1;
+  min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--border);
+  border: 4px solid var(--foreground);
+  box-shadow: inset 0 0 0 2px #000, inset 0 0 0 3px rgba(255, 255, 255, 0.25);
   min-height: 320px;
 }
 .tank-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
@@ -431,10 +443,25 @@ main { flex: 1; overflow: auto; padding: 8px; }
 }
 .trash-zone.armed { background: #e53935; transform: scale(1.15); }
 
-.delete-selected-btn {
+.selection-toolbar {
   position: absolute;
   left: 50%; bottom: 10px;
   transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.selection-toolbar-btn {
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  border: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.delete-selected-btn {
   background: #e53935;
   color: #fff;
   border: none;

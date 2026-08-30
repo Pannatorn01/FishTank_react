@@ -24,9 +24,27 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
       >
         <i className="fa-solid fa-trash" />
       </button>
-      <button type="button" className="delete-selected-btn" hidden={!engine.selectedId} onClick={() => engine.removeSelected()}>
-        <i className="fa-solid fa-trash" /> {t('tank.deleteSelected')}
-      </button>
+      <div className="selection-toolbar" hidden={!engine.selectedId}>
+        <button
+          type="button"
+          className="selection-toolbar-btn"
+          title={t('tank.sendToBack')}
+          onClick={() => engine.selectedId && engine.sendToBack(engine.selectedId)}
+        >
+          <i className="fa-solid fa-angles-down" />
+        </button>
+        <button
+          type="button"
+          className="selection-toolbar-btn"
+          title={t('tank.bringToFront')}
+          onClick={() => engine.selectedId && engine.bringToFront(engine.selectedId)}
+        >
+          <i className="fa-solid fa-angles-up" />
+        </button>
+        <button type="button" className="delete-selected-btn" onClick={() => engine.removeSelected()}>
+          <i className="fa-solid fa-trash" /> {t('tank.deleteSelected')}
+        </button>
+      </div>
     </div>
   );
 }
