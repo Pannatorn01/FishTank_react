@@ -85,6 +85,7 @@ class PixelEditorEngine {
   moveBuffer: { cells: MoveBufferCell[] } | null = null;
   moveStartCell: Cell | null = null;
   moveDelta = { dx: 0, dy: 0 };
+  clipboard: { w: number; h: number; rows: (string | null)[][] } | null = null;
   symmetry: SymmetryMode = 'none';
   zoomIndex = 2;
   showGrid = true;
@@ -402,6 +403,16 @@ class PixelEditorEngine {
       this.redo();
       return;
     }
+    if ((e.ctrlKey || e.metaKey) && key === 'c') {
+      e.preventDefault();
+      this.copySelection();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && key === 'v') {
+      e.preventDefault();
+      this.pasteClipboard();
+      return;
+    }
     if (key === 'escape') {
       this.deselect();
       return;
@@ -549,6 +560,35 @@ class PixelEditorEngine {
       rows.push(row);
     }
     return rows;
+  }
+
+  copySelection(): void {
+    if (this.tool !== 'select' || !this.selection) return;
+    const box = this.selection;
+    this.clipboard = {
+      w: box.x1 - box.x0 + 1,
+      h: box.y1 - box.y0 + 1,
+      rows: this.captureSelectionPixels(box),
+    };
+  }
+
+  pasteClipboard(): void {
+    if (!this.clipboard) return;
+    this.pushUndo();
+    const size = this.current.size;
+    const w = Math.min(this.clipboard.w, size);
+    const h = Math.min(this.clipboard.h, size);
+    const x0 = Math.max(0, Math.floor((size - w) / 2));
+    const y0 = Math.max(0, Math.floor((size - h) / 2));
+    const frame = this.current.frames[this.frameIndex];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        frame[(y0 + y) * size + (x0 + x)] = this.clipboard.rows[y][x];
+      }
+    }
+    this.tool = 'select';
+    this.selection = { x0, y0, x1: x0 + w - 1, y1: y0 + h - 1 };
+    this.refresh();
   }
 
   private clearFrameRegion(box: SelectionBox): void {
