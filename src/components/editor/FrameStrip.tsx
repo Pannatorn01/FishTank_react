@@ -2,19 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
-import { paintFrameCells } from '@/lib/pixelMath';
-import type { Frame } from '@/lib/types';
+import { paintLayers } from '@/lib/pixelMath';
+import type { Layer } from '@/lib/types';
 
 const THUMB_PX = 52;
 
 function FrameThumb({
-  frame,
+  layers,
   width,
   height,
   active,
   onClick,
 }: {
-  frame: Frame;
+  layers: Layer[];
   width: number;
   height: number;
   active: boolean;
@@ -30,7 +30,7 @@ function FrameThumb({
     const cellPx = THUMB_PX / Math.max(width, height);
     ctx.save();
     ctx.translate((THUMB_PX - width * cellPx) / 2, (THUMB_PX - height * cellPx) / 2);
-    paintFrameCells(ctx, frame, width, height, cellPx);
+    paintLayers(ctx, layers, width, height, cellPx);
     ctx.restore();
   });
   return (
@@ -54,7 +54,7 @@ export function FrameStrip({ engine }: { engine: PixelEditorEngine }) {
   return (
     <div className="frame-row">
       <div className="frame-strip">
-        {engine.current.frames.map((frame, i) => (
+        {engine.current.frames.map((layers, i) => (
           <div
             key={i}
             className={[
@@ -79,7 +79,7 @@ export function FrameStrip({ engine }: { engine: PixelEditorEngine }) {
             }}
           >
             <FrameThumb
-              frame={frame}
+              layers={layers}
               width={engine.current.width}
               height={engine.current.height}
               active={i === engine.frameIndex}

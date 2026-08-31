@@ -57,6 +57,13 @@ const th: Dict = {
   'frame.delete': 'ลบ',
   'frame.clear': 'ล้าง',
 
+  'layer.title': 'เลเยอร์',
+  'layer.add': 'เพิ่มเลเยอร์',
+  'layer.visible': 'แสดง/ซ่อนเลเยอร์',
+  'layer.opacity': 'ความทึบของเลเยอร์',
+  'layer.mergeDown': 'รวมกับเลเยอร์ด้านล่าง',
+  'layer.delete': 'ลบเลเยอร์',
+
   'form.namePlaceholder': 'ตั้งชื่อ เช่น ปลานีออน',
   'form.typeFish': '🐟 ปลา (ว่ายอัตโนมัติ)',
   'form.typeObject': '🌿 ของตกแต่ง (อยู่นิ่ง)',
@@ -135,6 +142,13 @@ const en: Dict = {
   'frame.duplicate': 'Duplicate',
   'frame.delete': 'Delete',
   'frame.clear': 'Clear',
+
+  'layer.title': 'Layers',
+  'layer.add': 'Add Layer',
+  'layer.visible': 'Show/hide layer',
+  'layer.opacity': 'Layer opacity',
+  'layer.mergeDown': 'Merge down',
+  'layer.delete': 'Delete layer',
 
   'form.namePlaceholder': 'Name it, e.g. Neon Tetra',
   'form.typeFish': '🐟 Fish (swims automatically)',

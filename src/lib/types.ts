@@ -2,13 +2,21 @@ export type CellColor = string | null;
 export type Frame = CellColor[];
 export type SpriteType = 'fish' | 'object';
 
+export interface Layer {
+  id: string;
+  name: string;
+  visible: boolean;
+  opacity: number;
+  cells: Frame;
+}
+
 export interface Sprite {
   id: string | null;
   name: string;
   type: SpriteType;
   width: number;
   height: number;
-  frames: Frame[];
+  frames: Layer[][];
 }
 
 export type ToolName =

@@ -1,4 +1,4 @@
-import type { Frame, Instance, Sprite } from './types';
+import type { Frame, Instance, Layer, Sprite } from './types';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
@@ -9,18 +9,30 @@ export const DEFAULT_GRID_SIZE = 16;
 export const GRID_SIZES = [8, 16, 24, 32];
 export const MIN_GRID_SIZE = 4;
 export const MAX_GRID_SIZE = 64;
+export const LAYER_LIMIT = 6;
 
 export function uid(prefix?: string): string {
   return (prefix || 'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
 
-/** Migrates sprites saved before non-square grids: backfills width/height from the old single `size` field. */
+export function makeLayer(cells: Frame, name = 'Layer 1'): Layer {
+  return { id: uid('layer'), name, visible: true, opacity: 1, cells };
+}
+
+function isLegacyFrame(frame: unknown): frame is Frame {
+  return Array.isArray(frame) && frame.every((c) => c === null || typeof c === 'string');
+}
+
+/**
+ * Migrates sprites saved before non-square grids and before layers: backfills width/height from
+ * the old single `size` field, and wraps a pre-layers frame (a flat color array) in a single layer.
+ */
 export function normalizeSprite(sprite: Sprite): Sprite {
-  const legacy = sprite as Sprite & { size?: number };
+  const legacy = sprite as unknown as { size?: number; frames: unknown[] };
   const width = sprite.width || legacy.size || DEFAULT_GRID_SIZE;
   const height = sprite.height || legacy.size || DEFAULT_GRID_SIZE;
-  if (width === sprite.width && height === sprite.height) return sprite;
-  return { ...sprite, width, height };
+  const frames = legacy.frames.map((frame) => (isLegacyFrame(frame) ? [makeLayer(frame)] : (frame as Layer[])));
+  return { ...sprite, width, height, frames };
 }
 
 export function loadSprites(): Sprite[] | null {
@@ -181,7 +193,10 @@ export function buildDefaultSprites(): Sprite[] {
       type: 'fish',
       width: DEFAULT_GRID_SIZE,
       height: DEFAULT_GRID_SIZE,
-      frames: [buildFishFrame(DEFAULT_GRID_SIZE, -2), buildFishFrame(DEFAULT_GRID_SIZE, 2)],
+      frames: [
+        [makeLayer(buildFishFrame(DEFAULT_GRID_SIZE, -2))],
+        [makeLayer(buildFishFrame(DEFAULT_GRID_SIZE, 2))],
+      ],
     },
     {
       id: uid('sprite'),
@@ -189,7 +204,10 @@ export function buildDefaultSprites(): Sprite[] {
       type: 'object',
       width: DEFAULT_GRID_SIZE,
       height: DEFAULT_GRID_SIZE,
-      frames: [buildPlantFrame(DEFAULT_GRID_SIZE, 0), buildPlantFrame(DEFAULT_GRID_SIZE, Math.PI / 2)],
+      frames: [
+        [makeLayer(buildPlantFrame(DEFAULT_GRID_SIZE, 0))],
+        [makeLayer(buildPlantFrame(DEFAULT_GRID_SIZE, Math.PI / 2))],
+      ],
     },
   ];
 }

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useLanguage } from '@/lib/i18n';
-import { paintFrameCells } from '@/lib/pixelMath';
+import { paintLayers } from '@/lib/pixelMath';
 import type { Sprite } from '@/lib/types';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 
@@ -19,7 +19,7 @@ function LibraryThumb({ sprite }: { sprite: Sprite }) {
     const cellPx = THUMB_PX / Math.max(width, height);
     ctx.save();
     ctx.translate((THUMB_PX - width * cellPx) / 2, (THUMB_PX - height * cellPx) / 2);
-    paintFrameCells(ctx, sprite.frames[0], width, height, cellPx);
+    paintLayers(ctx, sprite.frames[0], width, height, cellPx);
     ctx.restore();
   }, [sprite]);
   return <canvas ref={ref} width={THUMB_PX} height={THUMB_PX} className="pixelated" />;

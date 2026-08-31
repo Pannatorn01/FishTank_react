@@ -1,4 +1,4 @@
-import type { Cell, Frame, SelectionBox } from './types';
+import type { Cell, Frame, Layer, SelectionBox } from './types';
 
 export function paintFrameCells(
   ctx: CanvasRenderingContext2D,
@@ -15,6 +15,23 @@ export function paintFrameCells(
       ctx.fillRect(x * cellPx, y * cellPx, cellPx, cellPx);
     }
   }
+}
+
+/** Composites visible layers bottom-to-top, honoring each layer's opacity (scaled by `alphaMultiplier`, e.g. for onion skin). */
+export function paintLayers(
+  ctx: CanvasRenderingContext2D,
+  layers: Layer[],
+  width: number,
+  height: number,
+  cellPx: number,
+  alphaMultiplier = 1
+): void {
+  layers.forEach((layer) => {
+    if (!layer.visible || layer.opacity <= 0) return;
+    ctx.globalAlpha = layer.opacity * alphaMultiplier;
+    paintFrameCells(ctx, layer.cells, width, height, cellPx);
+  });
+  ctx.globalAlpha = 1;
 }
 
 export function bresenhamLine(x0: number, y0: number, x1: number, y1: number): Cell[] {

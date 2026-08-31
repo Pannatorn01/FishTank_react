@@ -4,6 +4,7 @@ import { useLanguage } from '@/lib/i18n';
 import { CanvasStatusBar } from './CanvasStatusBar';
 import { ColorPalette } from './ColorPalette';
 import { FrameStrip } from './FrameStrip';
+import { LayerPanel } from './LayerPanel';
 import { PixelCanvas } from './PixelCanvas';
 import { PreviewPanel } from './PreviewPanel';
 import { SpriteLibrary } from './SpriteLibrary';
@@ -27,6 +28,7 @@ export function PixelEditorPanel({ active }: { active: boolean }) {
       <div className="editor-shell">
         <div className="left-rail">
           <ToolRail engine={engine} />
+          <LayerPanel engine={engine} />
           <ColorPalette engine={engine} />
         </div>
 

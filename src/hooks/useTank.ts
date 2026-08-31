@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { paintFrameCells } from '@/lib/pixelMath';
+import { paintLayers } from '@/lib/pixelMath';
 import * as storage from '@/lib/storage';
 import type { Instance, Sprite } from '@/lib/types';
 
@@ -284,7 +284,7 @@ class TankEngine {
     ghost.className = 'palette-ghost';
     const gctx = ghost.getContext('2d')!;
     const { width, height } = this.spriteDims(sprite);
-    paintFrameCells(gctx, sprite.frames[0], width, height, DISPLAY_SCALE);
+    paintLayers(gctx, sprite.frames[0], width, height, DISPLAY_SCALE);
     document.body.appendChild(ghost);
     this.paletteGhost = ghost;
     this.paletteGhostPx = { pw, ph };
@@ -401,14 +401,14 @@ class TankEngine {
       if (!sprite || !this.ctx) return;
       const { width, height } = this.spriteDims(sprite);
       const { pw, ph } = this.spritePx(sprite);
-      const frame = sprite.frames[inst.frameIndex % sprite.frames.length];
+      const layers = sprite.frames[inst.frameIndex % sprite.frames.length];
       const renderY = inst.y + (inst.kind === 'fish' && !inst.isDragging ? Math.sin(inst.bobPhase) * 3 : 0);
 
       this.ctx.save();
       this.ctx.translate(inst.x + pw / 2, renderY + ph / 2);
       if (inst.kind === 'fish' && inst.dir < 0) this.ctx.scale(-1, 1);
       this.ctx.translate(-pw / 2, -ph / 2);
-      paintFrameCells(this.ctx, frame, width, height, DISPLAY_SCALE);
+      paintLayers(this.ctx, layers, width, height, DISPLAY_SCALE);
       this.ctx.restore();
 
       if (inst.id === this.selectedId) {
