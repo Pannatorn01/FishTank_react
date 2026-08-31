@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
-import { usePixelEditor } from '@/hooks/usePixelEditor';
+import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
+import type { SpriteType } from '@/lib/types';
 import { CanvasStatusBar } from './CanvasStatusBar';
 import { ColorPalette } from './ColorPalette';
 import { FrameStrip } from './FrameStrip';
@@ -8,12 +9,24 @@ import { LayerPanel } from './LayerPanel';
 import { PixelCanvas } from './PixelCanvas';
 import { PreviewPanel } from './PreviewPanel';
 import { SpriteLibrary } from './SpriteLibrary';
-import { SpriteMetaForm } from './SpriteMetaForm';
 import { ToolRail } from './ToolRail';
 import { TransformPanel } from './TransformPanel';
 
-export function PixelEditorPanel({ active }: { active: boolean }) {
-  const engine = usePixelEditor();
+export function PixelEditorPanel({
+  engine,
+  name,
+  setName,
+  type,
+  setType,
+  active,
+}: {
+  engine: PixelEditorEngine;
+  name: string;
+  setName: (name: string) => void;
+  type: SpriteType;
+  setType: (type: SpriteType) => void;
+  active: boolean;
+}) {
   const { t } = useLanguage();
 
   useEffect(() => {
@@ -28,21 +41,20 @@ export function PixelEditorPanel({ active }: { active: boolean }) {
       <div className="editor-shell">
         <div className="left-rail">
           <ToolRail engine={engine} />
-          <LayerPanel engine={engine} />
           <ColorPalette engine={engine} />
         </div>
 
         <div className="canvas-column">
           <PixelCanvas engine={engine} />
-          <CanvasStatusBar engine={engine} />
+          <CanvasStatusBar engine={engine} name={name} setName={setName} type={type} setType={setType} />
           <FrameStrip engine={engine} />
           <SpriteLibrary engine={engine} onConfirmDiscard={confirmDiscard} onError={onError} />
         </div>
 
         <div className="side-panel">
           <PreviewPanel engine={engine} />
+          <LayerPanel engine={engine} />
           <TransformPanel engine={engine} />
-          <SpriteMetaForm engine={engine} onConfirmDiscard={confirmDiscard} onError={onError} />
         </div>
       </div>
     </div>

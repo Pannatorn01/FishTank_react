@@ -18,7 +18,7 @@ import { ZOOM_LEVELS } from '@/hooks/usePixelEditor';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import { GRID_SIZES, MAX_GRID_SIZE, MIN_GRID_SIZE } from '@/lib/storage';
-import type { SymmetryMode } from '@/lib/types';
+import type { SpriteType, SymmetryMode } from '@/lib/types';
 
 const CUSTOM_SIZE_VALUE = 'custom';
 
@@ -33,7 +33,19 @@ function clampGridSize(n: number): number {
   return Math.min(MAX_GRID_SIZE, Math.max(MIN_GRID_SIZE, Math.round(n)));
 }
 
-export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
+export function CanvasStatusBar({
+  engine,
+  name,
+  setName,
+  type,
+  setType,
+}: {
+  engine: PixelEditorEngine;
+  name: string;
+  setName: (name: string) => void;
+  type: SpriteType;
+  setType: (type: SpriteType) => void;
+}) {
   const { t } = useLanguage();
   const showShapeFilled = engine.tool === 'rect' || engine.tool === 'ellipse';
   const selection = engine.selection;
@@ -181,6 +193,22 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
               {t(SYMMETRY_KEYS[mode])}
             </SelectItem>
           ))}
+        </SelectContent>
+      </Select>
+
+      <Input
+        className="status-name-input"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder={t('form.namePlaceholder')}
+      />
+      <Select value={type} onValueChange={(v) => setType(v as SpriteType)}>
+        <SelectTrigger className="w-40 text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="fish">{t('form.typeFish')}</SelectItem>
+          <SelectItem value="object">{t('form.typeObject')}</SelectItem>
         </SelectContent>
       </Select>
 

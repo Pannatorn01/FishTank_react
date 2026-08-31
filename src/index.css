@@ -158,6 +158,7 @@ body, #root { height: 100%; margin: 0; }
 }
 .app-header h1 { font-size: 0.9rem; margin: 0; display: flex; align-items: center; gap: 6px; }
 .tabs { display: flex; gap: 6px; }
+.header-editor-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .lang-switch { display: flex; gap: 4px; margin-left: auto; }
 
 main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
@@ -220,6 +221,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .mini-toggle { display: flex; align-items: center; gap: 5px; }
 .zoom-controls { display: flex; align-items: center; gap: 4px; }
 #zoom-label { min-width: 32px; text-align: center; font-size: 0.72rem; }
+.status-name-input { width: 150px; flex: 0 0 auto; height: 1.75rem; font-size: 0.7rem; }
 .selection-info {
   display: flex;
   align-items: center;
@@ -266,7 +268,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 
 .side-panel { flex: 0 0 190px; min-width: 165px; display: flex; flex-direction: column; gap: 5px; }
 
-.preview-panel, .palette-panel, .transform-panel, .sprite-meta, .library, .layer-panel {
+.preview-panel, .palette-panel, .transform-panel, .library, .layer-panel {
   background: var(--card);
   border: 1px solid var(--border);
   padding: 6px;
@@ -421,21 +423,6 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 
 .panel-title { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.7; }
 .transform-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
-
-.sprite-meta-buttons, .export-buttons { display: flex; gap: 6px; }
-.sprite-meta-buttons > *, .export-buttons > * { flex: 1; min-width: 0; }
-.sprite-meta-buttons button, .export-buttons button {
-  flex-direction: column;
-  gap: 2px;
-  font-size: 0.64rem;
-  white-space: normal;
-  height: auto;
-  min-height: 1.75rem;
-  line-height: 1.25;
-  text-align: center;
-  padding-block: 4px;
-}
-.sprite-meta { gap: 10px; flex: 1; }
 
 .frame-controls button, .canvas-status-bar button { font-size: 0.7rem; }
 .tool-grid button { font-size: 0.75rem; }
