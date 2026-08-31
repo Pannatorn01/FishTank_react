@@ -7,15 +7,28 @@ const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
 
 export const DEFAULT_GRID_SIZE = 16;
 export const GRID_SIZES = [8, 16, 24, 32];
+export const MIN_GRID_SIZE = 4;
+export const MAX_GRID_SIZE = 64;
 
 export function uid(prefix?: string): string {
   return (prefix || 'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
 
+/** Migrates sprites saved before non-square grids: backfills width/height from the old single `size` field. */
+export function normalizeSprite(sprite: Sprite): Sprite {
+  const legacy = sprite as Sprite & { size?: number };
+  const width = sprite.width || legacy.size || DEFAULT_GRID_SIZE;
+  const height = sprite.height || legacy.size || DEFAULT_GRID_SIZE;
+  if (width === sprite.width && height === sprite.height) return sprite;
+  return { ...sprite, width, height };
+}
+
 export function loadSprites(): Sprite[] | null {
   try {
     const raw = localStorage.getItem(KEY_SPRITES);
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const parsed: Sprite[] = JSON.parse(raw);
+    return parsed.map(normalizeSprite);
   } catch (e) {
     console.warn('loadSprites failed', e);
     return null;
@@ -68,26 +81,26 @@ export function savePaletteColors(colors: string[]): void {
   localStorage.setItem(KEY_PALETTE_COLORS, JSON.stringify(colors));
 }
 
-export function emptyFrame(size: number): Frame {
-  return new Array(size * size).fill(null);
+export function emptyFrame(width: number, height: number): Frame {
+  return new Array(width * height).fill(null);
 }
 
-export function resampleFrame(frame: Frame, oldSize: number, newSize: number): Frame {
-  if (oldSize === newSize) return frame.slice();
-  const out = emptyFrame(newSize);
-  for (let y = 0; y < newSize; y++) {
-    const srcY = Math.min(oldSize - 1, Math.floor((y / newSize) * oldSize));
-    for (let x = 0; x < newSize; x++) {
-      const srcX = Math.min(oldSize - 1, Math.floor((x / newSize) * oldSize));
-      out[y * newSize + x] = frame[srcY * oldSize + srcX];
+export function resampleFrame(frame: Frame, oldW: number, oldH: number, newW: number, newH: number): Frame {
+  if (oldW === newW && oldH === newH) return frame.slice();
+  const out = emptyFrame(newW, newH);
+  for (let y = 0; y < newH; y++) {
+    const srcY = Math.min(oldH - 1, Math.floor((y / newH) * oldH));
+    for (let x = 0; x < newW; x++) {
+      const srcX = Math.min(oldW - 1, Math.floor((x / newW) * oldW));
+      out[y * newW + x] = frame[srcY * oldW + srcX];
     }
   }
   return out;
 }
 
-function setPixel(frame: Frame, size: number, x: number, y: number, color: string): void {
-  if (x < 0 || y < 0 || x >= size || y >= size) return;
-  frame[y * size + x] = color;
+function setPixel(frame: Frame, width: number, height: number, x: number, y: number, color: string): void {
+  if (x < 0 || y < 0 || x >= width || y >= height) return;
+  frame[y * width + x] = color;
 }
 
 function inEllipse(x: number, y: number, cx: number, cy: number, rx: number, ry: number): boolean {
@@ -117,7 +130,7 @@ function inTriangle(
 }
 
 function buildFishFrame(size: number, tailPhase: number): Frame {
-  const frame = emptyFrame(size);
+  const frame = emptyFrame(size, size);
   const cx = 10;
   const cy = 8;
   const rx = 4.5;
@@ -126,35 +139,35 @@ function buildFishFrame(size: number, tailPhase: number): Frame {
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       if (inEllipse(x, y, cx, cy, rx + 1, ry + 1) || inTriangle(x, y, 1, tailY, 5, tailY - 3, 5, tailY + 3)) {
-        setPixel(frame, size, x, y, '#c8501c');
+        setPixel(frame, size, size, x, y, '#c8501c');
       }
     }
   }
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       if (inEllipse(x, y, cx, cy, rx, ry) || inTriangle(x, y, 2, tailY, 5, tailY - 2, 5, tailY + 2)) {
-        setPixel(frame, size, x, y, '#ff7043');
+        setPixel(frame, size, size, x, y, '#ff7043');
       }
     }
   }
   for (let x = 0; x < size; x++) {
     for (let y = Math.round(cy); y < size; y++) {
-      if (inEllipse(x, y, cx, cy + 1, rx - 1, ry - 1.5)) setPixel(frame, size, x, y, '#ffccbc');
+      if (inEllipse(x, y, cx, cy + 1, rx - 1, ry - 1.5)) setPixel(frame, size, size, x, y, '#ffccbc');
     }
   }
-  setPixel(frame, size, 12, 6, '#1a1a1a');
+  setPixel(frame, size, size, 12, 6, '#1a1a1a');
   return frame;
 }
 
 function buildPlantFrame(size: number, phase: number): Frame {
-  const frame = emptyFrame(size);
+  const frame = emptyFrame(size, size);
   const stems = [4, 8, 12];
   stems.forEach((baseX, si) => {
     for (let y = size - 1; y >= 3; y--) {
       const wave = Math.sin(y * 0.5 + phase + si * 1.3) * 1.4;
       const x = Math.round(baseX + wave);
-      setPixel(frame, size, x, y, y % 3 === 0 ? '#66bb6a' : '#2e7d32');
-      setPixel(frame, size, x + 1, y, y % 3 === 0 ? '#66bb6a' : '#2e7d32');
+      setPixel(frame, size, size, x, y, y % 3 === 0 ? '#66bb6a' : '#2e7d32');
+      setPixel(frame, size, size, x + 1, y, y % 3 === 0 ? '#66bb6a' : '#2e7d32');
     }
   });
   return frame;
@@ -166,14 +179,16 @@ export function buildDefaultSprites(): Sprite[] {
       id: uid('sprite'),
       name: 'ปลาทอง (ตัวอย่าง)',
       type: 'fish',
-      size: DEFAULT_GRID_SIZE,
+      width: DEFAULT_GRID_SIZE,
+      height: DEFAULT_GRID_SIZE,
       frames: [buildFishFrame(DEFAULT_GRID_SIZE, -2), buildFishFrame(DEFAULT_GRID_SIZE, 2)],
     },
     {
       id: uid('sprite'),
       name: 'สาหร่าย (ตัวอย่าง)',
       type: 'object',
-      size: DEFAULT_GRID_SIZE,
+      width: DEFAULT_GRID_SIZE,
+      height: DEFAULT_GRID_SIZE,
       frames: [buildPlantFrame(DEFAULT_GRID_SIZE, 0), buildPlantFrame(DEFAULT_GRID_SIZE, Math.PI / 2)],
     },
   ];

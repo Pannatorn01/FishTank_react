@@ -4,6 +4,8 @@ import { paintFrameCells } from '@/lib/pixelMath';
 import type { Sprite } from '@/lib/types';
 import type { TankEngine } from '@/hooks/useTank';
 
+const THUMB_PX = 56;
+
 function PaletteThumb({ sprite }: { sprite: Sprite }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -11,11 +13,16 @@ function PaletteThumb({ sprite }: { sprite: Sprite }) {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    const size = sprite.size || 16;
+    const width = sprite.width || 16;
+    const height = sprite.height || 16;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    paintFrameCells(ctx, sprite.frames[0], size, 56 / size);
+    const cellPx = THUMB_PX / Math.max(width, height);
+    ctx.save();
+    ctx.translate((THUMB_PX - width * cellPx) / 2, (THUMB_PX - height * cellPx) / 2);
+    paintFrameCells(ctx, sprite.frames[0], width, height, cellPx);
+    ctx.restore();
   }, [sprite]);
-  return <canvas ref={ref} width={56} height={56} className="pixelated" />;
+  return <canvas ref={ref} width={THUMB_PX} height={THUMB_PX} className="pixelated" />;
 }
 
 export function TankPalette({ engine }: { engine: TankEngine }) {

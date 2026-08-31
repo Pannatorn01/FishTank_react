@@ -40,7 +40,7 @@ const HANDLE_CURSORS: Record<HandleName, string> = {
 
 function blankSprite(): Sprite {
   const size = storage.DEFAULT_GRID_SIZE;
-  return { id: null, name: '', type: 'fish', size, frames: [storage.emptyFrame(size)] };
+  return { id: null, name: '', type: 'fish', width: size, height: size, frames: [storage.emptyFrame(size, size)] };
 }
 
 function cloneSprite(sprite: Sprite): Sprite {
@@ -53,7 +53,8 @@ interface MoveBufferCell extends Cell {
 
 interface Snapshot {
   frames: Frame[];
-  size: number;
+  width: number;
+  height: number;
   frameIndex: number;
 }
 
@@ -187,10 +188,10 @@ class PixelEditorEngine {
 
   recomputeCanvasSize(): void {
     if (!this.canvas) return;
-    const size = this.current.size;
+    const { width, height } = this.current;
     const cellPx = this.effectiveCellPx();
-    this.canvas.width = size * cellPx;
-    this.canvas.height = size * cellPx;
+    this.canvas.width = width * cellPx;
+    this.canvas.height = height * cellPx;
     this.canvas.style.backgroundSize = `${cellPx * 2}px ${cellPx * 2}px`;
   }
 
@@ -278,18 +279,21 @@ class PixelEditorEngine {
     this.refresh();
   }
 
-  private defaultZoomIndexForSize(size: number): number {
-    if (size >= 32) return ZOOM_LEVELS.indexOf(0.5);
-    if (size >= 24) return ZOOM_LEVELS.indexOf(0.75);
+  private defaultZoomIndexForSize(maxDim: number): number {
+    if (maxDim >= 32) return ZOOM_LEVELS.indexOf(0.5);
+    if (maxDim >= 24) return ZOOM_LEVELS.indexOf(0.75);
     return 2;
   }
 
-  setGridSize(newSize: number): void {
-    if (newSize === this.current.size) return;
+  setGridSize(newWidth: number, newHeight: number): void {
+    if (newWidth === this.current.width && newHeight === this.current.height) return;
     this.pushUndo();
-    this.current.frames = this.current.frames.map((f) => storage.resampleFrame(f, this.current.size, newSize));
-    this.current.size = newSize;
-    this.zoomIndex = this.defaultZoomIndexForSize(newSize);
+    this.current.frames = this.current.frames.map((f) =>
+      storage.resampleFrame(f, this.current.width, this.current.height, newWidth, newHeight)
+    );
+    this.current.width = newWidth;
+    this.current.height = newHeight;
+    this.zoomIndex = this.defaultZoomIndexForSize(Math.max(newWidth, newHeight));
     this.frameIndex = Math.min(this.frameIndex, this.current.frames.length - 1);
     this.selection = null;
     this.recomputeCanvasSize();
@@ -312,7 +316,7 @@ class PixelEditorEngine {
   addFrame(): void {
     if (this.current.frames.length >= FRAME_LIMIT) return;
     this.pushUndo();
-    this.current.frames.push(storage.emptyFrame(this.current.size));
+    this.current.frames.push(storage.emptyFrame(this.current.width, this.current.height));
     this.frameIndex = this.current.frames.length - 1;
     this.refresh();
   }
@@ -346,7 +350,7 @@ class PixelEditorEngine {
 
   clearFrame(): void {
     this.pushUndo();
-    this.current.frames[this.frameIndex] = storage.emptyFrame(this.current.size);
+    this.current.frames[this.frameIndex] = storage.emptyFrame(this.current.width, this.current.height);
     this.refresh();
   }
 
@@ -356,32 +360,48 @@ class PixelEditorEngine {
 
   // --- transform ---
 
-  transformFrames(fn: (f: Frame, size: number) => Frame): void {
+  /**
+   * fn may return new dimensions (e.g. a 90° rotation swaps width/height). All frames share one
+   * sprite-wide size, so a dimension-changing transform (`resizesFrame`) always applies to every
+   * frame regardless of the "apply to all frames" toggle - otherwise frames would end up with
+   * mismatched dimensions.
+   */
+  transformFrames(
+    fn: (f: Frame, width: number, height: number) => { frame: Frame; width: number; height: number },
+    resizesFrame = false
+  ): void {
     this.pushUndo();
-    const size = this.current.size;
-    if (this.transformAllFrames) {
-      this.current.frames = this.current.frames.map((f) => fn(f, size));
+    const { width, height } = this.current;
+    if (this.transformAllFrames || resizesFrame) {
+      const results = this.current.frames.map((f) => fn(f, width, height));
+      this.current.frames = results.map((r) => r.frame);
+      this.current.width = results[0].width;
+      this.current.height = results[0].height;
     } else {
-      this.current.frames[this.frameIndex] = fn(this.current.frames[this.frameIndex], size);
+      const result = fn(this.current.frames[this.frameIndex], width, height);
+      this.current.frames[this.frameIndex] = result.frame;
+      this.current.width = result.width;
+      this.current.height = result.height;
     }
     this.selection = null;
+    this.recomputeCanvasSize();
     this.refresh();
   }
 
   flipH(): void {
-    this.transformFrames((f, size) => flipFrameH(f, size));
+    this.transformFrames((f, width, height) => ({ frame: flipFrameH(f, width, height), width, height }));
   }
 
   flipV(): void {
-    this.transformFrames((f, size) => flipFrameV(f, size));
+    this.transformFrames((f, width, height) => ({ frame: flipFrameV(f, width, height), width, height }));
   }
 
   rotateCW(): void {
-    this.transformFrames((f, size) => rotateFrame(f, size, true));
+    this.transformFrames((f, width, height) => rotateFrame(f, width, height, true), true);
   }
 
   rotateCCW(): void {
-    this.transformFrames((f, size) => rotateFrame(f, size, false));
+    this.transformFrames((f, width, height) => rotateFrame(f, width, height, false), true);
   }
 
   // --- keyboard ---
@@ -434,20 +454,20 @@ class PixelEditorEngine {
     const cellPx = this.effectiveCellPx();
     const x = Math.floor((e.clientX - rect.left) / cellPx);
     const y = Math.floor((e.clientY - rect.top) / cellPx);
-    const size = this.current.size;
-    if (x < 0 || y < 0 || x >= size || y >= size) return null;
+    const { width, height } = this.current;
+    if (x < 0 || y < 0 || x >= width || y >= height) return null;
     return { x, y };
   }
 
   private commitMove(): void {
     if (!this.moveBuffer) return;
     const { dx, dy } = this.moveDelta;
-    const size = this.current.size;
+    const { width, height } = this.current;
     const frame = this.current.frames[this.frameIndex];
     this.moveBuffer.cells.forEach((c) => {
       const nx = c.x + dx;
       const ny = c.y + dy;
-      if (nx >= 0 && ny >= 0 && nx < size && ny < size) frame[ny * size + nx] = c.color;
+      if (nx >= 0 && ny >= 0 && nx < width && ny < height) frame[ny * width + nx] = c.color;
     });
     if (this.selection) this.selection = shiftBox(this.selection, this.moveDelta);
     this.moveBuffer = null;
@@ -516,9 +536,9 @@ class PixelEditorEngine {
   private cellFromEventClamped(e: { clientX: number; clientY: number }): Cell {
     const rect = this.canvas!.getBoundingClientRect();
     const cellPx = this.effectiveCellPx();
-    const size = this.current.size;
-    const x = Math.min(size - 1, Math.max(0, Math.floor((e.clientX - rect.left) / cellPx)));
-    const y = Math.min(size - 1, Math.max(0, Math.floor((e.clientY - rect.top) / cellPx)));
+    const { width, height } = this.current;
+    const x = Math.min(width - 1, Math.max(0, Math.floor((e.clientX - rect.left) / cellPx)));
+    const y = Math.min(height - 1, Math.max(0, Math.floor((e.clientY - rect.top) / cellPx)));
     return { x, y };
   }
 
@@ -531,15 +551,15 @@ class PixelEditorEngine {
   private startMoveGesture(cell: Cell): void {
     this.pushUndo();
     this.painting = true;
-    const size = this.current.size;
+    const { width, height } = this.current;
     const frame = this.current.frames[this.frameIndex];
-    const box = this.selection || { x0: 0, y0: 0, x1: size - 1, y1: size - 1 };
+    const box = this.selection || { x0: 0, y0: 0, x1: width - 1, y1: height - 1 };
     const cells: MoveBufferCell[] = [];
     for (let y = box.y0; y <= box.y1; y++) {
       for (let x = box.x0; x <= box.x1; x++) {
-        const c = frame[y * size + x];
+        const c = frame[y * width + x];
         if (c) cells.push({ x, y, color: c });
-        frame[y * size + x] = null;
+        frame[y * width + x] = null;
       }
     }
     this.moveBuffer = { cells };
@@ -550,12 +570,12 @@ class PixelEditorEngine {
 
   private captureSelectionPixels(box: SelectionBox): (string | null)[][] {
     const frame = this.current.frames[this.frameIndex];
-    const size = this.current.size;
+    const width = this.current.width;
     const rows: (string | null)[][] = [];
     for (let y = box.y0; y <= box.y1; y++) {
       const row: (string | null)[] = [];
       for (let x = box.x0; x <= box.x1; x++) {
-        row.push(frame[y * size + x]);
+        row.push(frame[y * width + x]);
       }
       rows.push(row);
     }
@@ -575,15 +595,15 @@ class PixelEditorEngine {
   pasteClipboard(): void {
     if (!this.clipboard) return;
     this.pushUndo();
-    const size = this.current.size;
-    const w = Math.min(this.clipboard.w, size);
-    const h = Math.min(this.clipboard.h, size);
-    const x0 = Math.max(0, Math.floor((size - w) / 2));
-    const y0 = Math.max(0, Math.floor((size - h) / 2));
+    const { width, height } = this.current;
+    const w = Math.min(this.clipboard.w, width);
+    const h = Math.min(this.clipboard.h, height);
+    const x0 = Math.max(0, Math.floor((width - w) / 2));
+    const y0 = Math.max(0, Math.floor((height - h) / 2));
     const frame = this.current.frames[this.frameIndex];
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        frame[(y0 + y) * size + (x0 + x)] = this.clipboard.rows[y][x];
+        frame[(y0 + y) * width + (x0 + x)] = this.clipboard.rows[y][x];
       }
     }
     this.tool = 'select';
@@ -593,9 +613,9 @@ class PixelEditorEngine {
 
   private clearFrameRegion(box: SelectionBox): void {
     const frame = this.current.frames[this.frameIndex];
-    const size = this.current.size;
+    const width = this.current.width;
     for (let y = box.y0; y <= box.y1; y++) {
-      for (let x = box.x0; x <= box.x1; x++) frame[y * size + x] = null;
+      for (let x = box.x0; x <= box.x1; x++) frame[y * width + x] = null;
     }
   }
 
@@ -619,9 +639,9 @@ class PixelEditorEngine {
   private commitResize(): void {
     if (this.resizePreview) {
       const frame = this.current.frames[this.frameIndex];
-      const size = this.current.size;
+      const { width, height } = this.current;
       this.resizePreview.forEach((c) => {
-        if (c.x >= 0 && c.y >= 0 && c.x < size && c.y < size) frame[c.y * size + c.x] = c.color;
+        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = c.color;
       });
     }
     this.resizeHandle = null;
@@ -702,9 +722,9 @@ class PixelEditorEngine {
       this.reactNotify();
     } else if (this.tool === 'fill') {
       const frame = this.current.frames[this.frameIndex];
-      const size = this.current.size;
+      const { width, height } = this.current;
       this.mirrorCells(cell.x, cell.y).forEach((m) => {
-        this.floodFill(frame, size, m.x, m.y, frame[m.y * size + m.x]);
+        this.floodFill(frame, width, height, m.x, m.y, frame[m.y * width + m.x]);
       });
       this.addSavedColor(this.color);
       this.refresh();
@@ -788,9 +808,9 @@ class PixelEditorEngine {
 
     if (this.shapeStart && this.shapePreviewCells) {
       const frame = this.current.frames[this.frameIndex];
-      const size = this.current.size;
+      const { width, height } = this.current;
       this.shapePreviewCells.forEach((c) => {
-        if (c.x >= 0 && c.y >= 0 && c.x < size && c.y < size) frame[c.y * size + c.x] = this.color;
+        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = this.color;
       });
       this.addSavedColor(this.color);
       this.shapeStart = null;
@@ -841,10 +861,10 @@ class PixelEditorEngine {
   }
 
   private mirrorCells(x: number, y: number): Cell[] {
-    const size = this.current.size;
+    const { width, height } = this.current;
     const pts: Cell[] = [{ x, y }];
-    const mirrorX = size - 1 - x;
-    const mirrorY = size - 1 - y;
+    const mirrorX = width - 1 - x;
+    const mirrorY = height - 1 - y;
     if (this.symmetry === 'vertical' || this.symmetry === 'both') pts.push({ x: mirrorX, y });
     if (this.symmetry === 'horizontal' || this.symmetry === 'both') pts.push({ x, y: mirrorY });
     if (this.symmetry === 'both') pts.push({ x: mirrorX, y: mirrorY });
@@ -868,21 +888,21 @@ class PixelEditorEngine {
   }
 
   private paintCell(x: number, y: number, isMove?: boolean): void {
-    const size = this.current.size;
+    const { width, height } = this.current;
     const frame = this.current.frames[this.frameIndex];
     const color = this.tool === 'eraser' ? null : this.color;
 
     const applyAt = (px: number, py: number) => {
       this.mirrorCells(px, py).forEach((m) => {
-        if (m.x >= 0 && m.y >= 0 && m.x < size && m.y < size) frame[m.y * size + m.x] = color;
+        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height) frame[m.y * width + m.x] = color;
       });
     };
 
     if (isMove && this.lastPaintCell) {
       bresenhamLine(this.lastPaintCell.x, this.lastPaintCell.y, x, y).forEach((p) => {
-        if (p.x >= 0 && p.y >= 0 && p.x < size && p.y < size) applyAt(p.x, p.y);
+        if (p.x >= 0 && p.y >= 0 && p.x < width && p.y < height) applyAt(p.x, p.y);
       });
-    } else if (x >= 0 && y >= 0 && x < size && y < size) {
+    } else if (x >= 0 && y >= 0 && x < width && y < height) {
       applyAt(x, y);
     }
     this.lastPaintCell = { x, y };
@@ -891,21 +911,21 @@ class PixelEditorEngine {
   }
 
   private pickColor(x: number, y: number): void {
-    const size = this.current.size;
-    const sampled = this.current.frames[this.frameIndex][y * size + x];
+    const width = this.current.width;
+    const sampled = this.current.frames[this.frameIndex][y * width + x];
     if (!sampled) return;
     this.color = sampled;
     this.tool = 'pen';
     this.reactNotify();
   }
 
-  private floodFill(frame: Frame, size: number, x: number, y: number, target: string | null): void {
+  private floodFill(frame: Frame, width: number, height: number, x: number, y: number, target: string | null): void {
     if (target === this.color) return;
     const stack: [number, number][] = [[x, y]];
     while (stack.length) {
       const [cx, cy] = stack.pop()!;
-      if (cx < 0 || cy < 0 || cx >= size || cy >= size) continue;
-      const idx = cy * size + cx;
+      if (cx < 0 || cy < 0 || cx >= width || cy >= height) continue;
+      const idx = cy * width + cx;
       if (frame[idx] !== target) continue;
       frame[idx] = this.color;
       stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
@@ -916,7 +936,7 @@ class PixelEditorEngine {
 
   drawGrid(overlayCells?: Cell[]): void {
     if (!this.canvas || !this.ctx) return;
-    const size = this.current.size;
+    const { width, height } = this.current;
     const cellPx = this.effectiveCellPx();
     const canvas = this.canvas;
     const ctx = this.ctx;
@@ -925,18 +945,18 @@ class PixelEditorEngine {
     if (this.onionSkin && this.current.frames.length > 1) {
       const prevIdx = (this.frameIndex - 1 + this.current.frames.length) % this.current.frames.length;
       ctx.globalAlpha = 0.3;
-      paintFrameCells(ctx, this.current.frames[prevIdx], size, cellPx);
+      paintFrameCells(ctx, this.current.frames[prevIdx], width, height, cellPx);
       ctx.globalAlpha = 1;
     }
 
-    paintFrameCells(ctx, this.current.frames[this.frameIndex], size, cellPx);
+    paintFrameCells(ctx, this.current.frames[this.frameIndex], width, height, cellPx);
 
     if (this.moveBuffer) {
       const { dx, dy } = this.moveDelta;
       this.moveBuffer.cells.forEach((c) => {
         const nx = c.x + dx;
         const ny = c.y + dy;
-        if (nx < 0 || ny < 0 || nx >= size || ny >= size) return;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) return;
         ctx.fillStyle = c.color;
         ctx.fillRect(nx * cellPx, ny * cellPx, cellPx, cellPx);
       });
@@ -944,7 +964,7 @@ class PixelEditorEngine {
 
     if (this.resizePreview) {
       this.resizePreview.forEach((c) => {
-        if (c.x < 0 || c.y < 0 || c.x >= size || c.y >= size) return;
+        if (c.x < 0 || c.y < 0 || c.x >= width || c.y >= height) return;
         ctx.fillStyle = c.color;
         ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
       });
@@ -953,7 +973,7 @@ class PixelEditorEngine {
     if (overlayCells) {
       ctx.fillStyle = this.color;
       overlayCells.forEach((c) => {
-        if (c.x < 0 || c.y < 0 || c.x >= size || c.y >= size) return;
+        if (c.x < 0 || c.y < 0 || c.x >= width || c.y >= height) return;
         ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
       });
     }
@@ -965,14 +985,14 @@ class PixelEditorEngine {
       ctx.lineWidth = 1;
       if (this.symmetry === 'vertical' || this.symmetry === 'both') {
         ctx.beginPath();
-        ctx.moveTo((size * cellPx) / 2, 0);
-        ctx.lineTo((size * cellPx) / 2, size * cellPx);
+        ctx.moveTo((width * cellPx) / 2, 0);
+        ctx.lineTo((width * cellPx) / 2, height * cellPx);
         ctx.stroke();
       }
       if (this.symmetry === 'horizontal' || this.symmetry === 'both') {
         ctx.beginPath();
-        ctx.moveTo(0, (size * cellPx) / 2);
-        ctx.lineTo(size * cellPx, (size * cellPx) / 2);
+        ctx.moveTo(0, (height * cellPx) / 2);
+        ctx.lineTo(width * cellPx, (height * cellPx) / 2);
         ctx.stroke();
       }
       ctx.setLineDash([]);
@@ -998,14 +1018,16 @@ class PixelEditorEngine {
     if (this.showGrid) {
       ctx.strokeStyle = 'rgba(255,255,255,0.1)';
       ctx.lineWidth = 1;
-      for (let i = 0; i <= size; i++) {
+      for (let i = 0; i <= width; i++) {
         ctx.beginPath();
         ctx.moveTo(i * cellPx + 0.5, 0);
-        ctx.lineTo(i * cellPx + 0.5, size * cellPx);
+        ctx.lineTo(i * cellPx + 0.5, height * cellPx);
         ctx.stroke();
+      }
+      for (let i = 0; i <= height; i++) {
         ctx.beginPath();
         ctx.moveTo(0, i * cellPx + 0.5);
-        ctx.lineTo(size * cellPx, i * cellPx + 0.5);
+        ctx.lineTo(width * cellPx, i * cellPx + 0.5);
         ctx.stroke();
       }
     }
@@ -1041,9 +1063,14 @@ class PixelEditorEngine {
     if (!this.previewCanvas || !this.previewCtx) return;
     const frames = this.current.frames;
     this.previewFrame = (this.previewFrame + 1) % frames.length;
-    const cellPx = PREVIEW_CELL_PX_BASE / this.current.size;
-    this.previewCtx.clearRect(0, 0, this.previewCanvas.width, this.previewCanvas.height);
-    paintFrameCells(this.previewCtx, frames[this.previewFrame], this.current.size, cellPx);
+    const { width, height } = this.current;
+    const cellPx = PREVIEW_CELL_PX_BASE / Math.max(width, height);
+    const ctx = this.previewCtx;
+    ctx.clearRect(0, 0, this.previewCanvas.width, this.previewCanvas.height);
+    ctx.save();
+    ctx.translate((this.previewCanvas.width - width * cellPx) / 2, (this.previewCanvas.height - height * cellPx) / 2);
+    paintFrameCells(ctx, frames[this.previewFrame], width, height, cellPx);
+    ctx.restore();
   }
 
   // --- undo/redo ---
@@ -1051,14 +1078,16 @@ class PixelEditorEngine {
   private snapshot(): Snapshot {
     return {
       frames: JSON.parse(JSON.stringify(this.current.frames)),
-      size: this.current.size,
+      width: this.current.width,
+      height: this.current.height,
       frameIndex: this.frameIndex,
     };
   }
 
   private restoreSnapshot(s: Snapshot): void {
     this.current.frames = s.frames;
-    this.current.size = s.size;
+    this.current.width = s.width;
+    this.current.height = s.height;
     this.frameIndex = Math.min(s.frameIndex, s.frames.length - 1);
     this.selection = null;
     this.moveBuffer = null;
@@ -1100,29 +1129,29 @@ class PixelEditorEngine {
   }
 
   exportFramePng(): void {
-    const size = this.current.size;
-    const scale = Math.max(4, Math.round(256 / size));
+    const { width, height } = this.current;
+    const scale = Math.max(4, Math.round(256 / Math.max(width, height)));
     const off = document.createElement('canvas');
-    off.width = size * scale;
-    off.height = size * scale;
+    off.width = width * scale;
+    off.height = height * scale;
     const ctx = off.getContext('2d')!;
-    paintFrameCells(ctx, this.current.frames[this.frameIndex], size, scale);
+    paintFrameCells(ctx, this.current.frames[this.frameIndex], width, height, scale);
     const name = (this.current.name || 'sprite').trim() || 'sprite';
     off.toBlob((blob) => this.downloadBlob(blob, `${name}_frame${this.frameIndex + 1}.png`));
   }
 
   exportSpriteSheetPng(): void {
-    const size = this.current.size;
-    const scale = Math.max(4, Math.round(256 / size));
+    const { width, height } = this.current;
+    const scale = Math.max(4, Math.round(256 / Math.max(width, height)));
     const frames = this.current.frames;
     const off = document.createElement('canvas');
-    off.width = size * scale * frames.length;
-    off.height = size * scale;
+    off.width = width * scale * frames.length;
+    off.height = height * scale;
     const octx = off.getContext('2d')!;
     frames.forEach((f, i) => {
       octx.save();
-      octx.translate(i * size * scale, 0);
-      paintFrameCells(octx, f, size, scale);
+      octx.translate(i * width * scale, 0);
+      paintFrameCells(octx, f, width, height, scale);
       octx.restore();
     });
     const name = (this.current.name || 'sprite').trim() || 'sprite';
@@ -1174,8 +1203,7 @@ class PixelEditorEngine {
 
   loadSpriteForEdit(sprite: Sprite, confirmDiscard: () => boolean): void {
     if (this.dirty && !confirmDiscard()) return;
-    this.current = cloneSprite(sprite);
-    if (!this.current.size) this.current.size = storage.DEFAULT_GRID_SIZE;
+    this.current = storage.normalizeSprite(cloneSprite(sprite));
     this.frameIndex = 0;
     this.previewFrame = 0;
     this.selection = null;

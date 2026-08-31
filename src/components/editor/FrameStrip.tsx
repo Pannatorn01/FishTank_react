@@ -7,7 +7,19 @@ import type { Frame } from '@/lib/types';
 
 const THUMB_PX = 52;
 
-function FrameThumb({ frame, size, active, onClick }: { frame: Frame; size: number; active: boolean; onClick: () => void }) {
+function FrameThumb({
+  frame,
+  width,
+  height,
+  active,
+  onClick,
+}: {
+  frame: Frame;
+  width: number;
+  height: number;
+  active: boolean;
+  onClick: () => void;
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
     const canvas = ref.current;
@@ -15,7 +27,11 @@ function FrameThumb({ frame, size, active, onClick }: { frame: Frame; size: numb
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    paintFrameCells(ctx, frame, size, THUMB_PX / size);
+    const cellPx = THUMB_PX / Math.max(width, height);
+    ctx.save();
+    ctx.translate((THUMB_PX - width * cellPx) / 2, (THUMB_PX - height * cellPx) / 2);
+    paintFrameCells(ctx, frame, width, height, cellPx);
+    ctx.restore();
   });
   return (
     <button type="button" className={`frame-thumb-wrap${active ? ' active' : ''}`} onClick={onClick} tabIndex={-1}>
@@ -62,7 +78,13 @@ export function FrameStrip({ engine }: { engine: PixelEditorEngine }) {
               endDrag();
             }}
           >
-            <FrameThumb frame={frame} size={engine.current.size} active={i === engine.frameIndex} onClick={() => engine.selectFrame(i)} />
+            <FrameThumb
+              frame={frame}
+              width={engine.current.width}
+              height={engine.current.height}
+              active={i === engine.frameIndex}
+              onClick={() => engine.selectFrame(i)}
+            />
             <span className="frame-num">{i + 1}</span>
           </div>
         ))}

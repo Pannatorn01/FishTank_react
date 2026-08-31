@@ -6,7 +6,8 @@ export interface Sprite {
   id: string | null;
   name: string;
   type: SpriteType;
-  size: number;
+  width: number;
+  height: number;
   frames: Frame[];
 }
 

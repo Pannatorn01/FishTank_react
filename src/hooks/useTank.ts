@@ -34,7 +34,7 @@ class TankEngine {
   trashArmed = false;
 
   private paletteGhost: HTMLCanvasElement | null = null;
-  private paletteGhostPx = 64;
+  private paletteGhostPx = { pw: 64, ph: 64 };
   private paletteDragSpriteId: string | null = null;
   private lastTime = 0;
   private rafId: number | null = null;
@@ -75,23 +75,27 @@ class TankEngine {
     this.trash = el;
   }
 
-  spriteSize(sprite?: Sprite): number {
-    return (sprite && sprite.size) || storage.DEFAULT_GRID_SIZE;
+  spriteDims(sprite?: Sprite): { width: number; height: number } {
+    return {
+      width: (sprite && sprite.width) || storage.DEFAULT_GRID_SIZE,
+      height: (sprite && sprite.height) || storage.DEFAULT_GRID_SIZE,
+    };
   }
 
-  spritePx(sprite?: Sprite): number {
-    return this.spriteSize(sprite) * DISPLAY_SCALE;
+  spritePx(sprite?: Sprite): { pw: number; ph: number } {
+    const { width, height } = this.spriteDims(sprite);
+    return { pw: width * DISPLAY_SCALE, ph: height * DISPLAY_SCALE };
   }
 
   spriteFor(inst: Instance): Sprite | undefined {
     return this.sprites.find((s) => s.id === inst.spriteId);
   }
 
-  private randomTargetY(px: number): number {
+  private randomTargetY(ph: number): number {
     if (!this.canvas) return 0;
     const h = this.canvas.height;
     const sandH = Math.max(18, h * 0.08);
-    const maxY = Math.max(0, h - sandH - px);
+    const maxY = Math.max(0, h - sandH - ph);
     return Math.random() * maxY;
   }
 
@@ -102,9 +106,9 @@ class TankEngine {
     this.canvas.width = Math.max(200, Math.floor(rect.width));
     this.canvas.height = Math.max(200, Math.floor(rect.height));
     this.instances.forEach((inst) => {
-      const px = this.spritePx(this.spriteFor(inst));
-      inst.x = Math.min(inst.x, this.canvas!.width - px);
-      inst.y = Math.min(inst.y, this.canvas!.height - px);
+      const { pw, ph } = this.spritePx(this.spriteFor(inst));
+      inst.x = Math.min(inst.x, this.canvas!.width - pw);
+      inst.y = Math.min(inst.y, this.canvas!.height - ph);
     });
   }
 
@@ -138,17 +142,17 @@ class TankEngine {
   addInstance(spriteId: string, x: number, y: number): void {
     const sprite = this.sprites.find((s) => s.id === spriteId);
     if (!sprite || !this.canvas) return;
-    const px = this.spritePx(sprite);
+    const { pw, ph } = this.spritePx(sprite);
     const inst: Instance = {
       id: storage.uid('inst'),
       spriteId,
       kind: sprite.type,
-      x: Math.min(Math.max(0, x - px / 2), this.canvas.width - px),
-      y: Math.min(Math.max(0, y - px / 2), this.canvas.height - px),
+      x: Math.min(Math.max(0, x - pw / 2), this.canvas.width - pw),
+      y: Math.min(Math.max(0, y - ph / 2), this.canvas.height - ph),
       dir: Math.random() < 0.5 ? -1 : 1,
       vx: sprite.type === 'fish' ? 18 + Math.random() * 22 : 0,
       vy: sprite.type === 'fish' ? 6 + Math.random() * 12 : 0,
-      targetY: sprite.type === 'fish' ? this.randomTargetY(px) : 0,
+      targetY: sprite.type === 'fish' ? this.randomTargetY(ph) : 0,
       frameIndex: 0,
       frameTimer: 0,
       bobPhase: Math.random() * Math.PI * 2,
@@ -194,8 +198,8 @@ class TankEngine {
       const inst = this.instances[i];
       const sprite = this.spriteFor(inst);
       if (!sprite) continue;
-      const px = this.spritePx(sprite);
-      if (x >= inst.x && x <= inst.x + px && y >= inst.y && y <= inst.y + px) return inst;
+      const { pw, ph } = this.spritePx(sprite);
+      if (x >= inst.x && x <= inst.x + pw && y >= inst.y && y <= inst.y + ph) return inst;
     }
     return null;
   }
@@ -229,9 +233,9 @@ class TankEngine {
     const y = e.clientY - rect.top;
     if (Math.hypot(x - this.dragStart.x, y - this.dragStart.y) > TAP_MOVE_THRESHOLD) this.dragMoved = true;
     const inst = this.draggingInstance;
-    const px = this.spritePx(this.spriteFor(inst));
-    inst.x = Math.min(Math.max(0, x - this.dragOffset.x), this.canvas.width - px);
-    inst.y = Math.min(Math.max(0, y - this.dragOffset.y), this.canvas.height - px);
+    const { pw, ph } = this.spritePx(this.spriteFor(inst));
+    inst.x = Math.min(Math.max(0, x - this.dragOffset.x), this.canvas.width - pw);
+    inst.y = Math.min(Math.max(0, y - this.dragOffset.y), this.canvas.height - ph);
 
     const trashRect = this.trash.getBoundingClientRect();
     const over =
@@ -273,16 +277,17 @@ class TankEngine {
     const sprite = this.sprites.find((s) => s.id === spriteId);
     if (!sprite) return;
 
-    const px = this.spritePx(sprite);
+    const { pw, ph } = this.spritePx(sprite);
     const ghost = document.createElement('canvas');
-    ghost.width = px;
-    ghost.height = px;
+    ghost.width = pw;
+    ghost.height = ph;
     ghost.className = 'palette-ghost';
     const gctx = ghost.getContext('2d')!;
-    paintFrameCells(gctx, sprite.frames[0], this.spriteSize(sprite), DISPLAY_SCALE);
+    const { width, height } = this.spriteDims(sprite);
+    paintFrameCells(gctx, sprite.frames[0], width, height, DISPLAY_SCALE);
     document.body.appendChild(ghost);
     this.paletteGhost = ghost;
-    this.paletteGhostPx = px;
+    this.paletteGhostPx = { pw, ph };
     this.paletteDragSpriteId = spriteId;
     this.movePaletteGhost(e.clientX, e.clientY);
 
@@ -298,9 +303,9 @@ class TankEngine {
 
   private movePaletteGhost(clientX: number, clientY: number): void {
     if (!this.paletteGhost) return;
-    const px = this.paletteGhostPx || 64;
-    this.paletteGhost.style.left = `${clientX - px / 2}px`;
-    this.paletteGhost.style.top = `${clientY - px / 2}px`;
+    const { pw, ph } = this.paletteGhostPx;
+    this.paletteGhost.style.left = `${clientX - pw / 2}px`;
+    this.paletteGhost.style.top = `${clientY - ph / 2}px`;
   }
 
   private finishPaletteDrag(clientX: number, clientY: number): void {
@@ -337,25 +342,25 @@ class TankEngine {
       if (inst.isDragging) return;
       inst.bobPhase += dt * 2;
       if (inst.kind === 'fish') {
-        const px = this.spritePx(sprite);
+        const { pw, ph } = this.spritePx(sprite);
         if (inst.vy === undefined) inst.vy = 6 + Math.random() * 12;
-        if (inst.targetY === undefined) inst.targetY = this.randomTargetY(px);
+        if (inst.targetY === undefined) inst.targetY = this.randomTargetY(ph);
 
         inst.x += inst.vx * inst.dir * dt;
         if (inst.x <= 0) {
           inst.x = 0;
           inst.dir = 1;
-          inst.targetY = this.randomTargetY(px);
+          inst.targetY = this.randomTargetY(ph);
         }
-        if (inst.x >= w - px) {
-          inst.x = w - px;
+        if (inst.x >= w - pw) {
+          inst.x = w - pw;
           inst.dir = -1;
-          inst.targetY = this.randomTargetY(px);
+          inst.targetY = this.randomTargetY(ph);
         }
 
         const dy = inst.targetY - inst.y;
         if (Math.abs(dy) < 2) {
-          inst.targetY = this.randomTargetY(px);
+          inst.targetY = this.randomTargetY(ph);
         } else {
           inst.y += Math.sign(dy) * Math.min(Math.abs(dy), inst.vy * dt);
         }
@@ -394,22 +399,22 @@ class TankEngine {
     this.instances.forEach((inst) => {
       const sprite = this.spriteFor(inst);
       if (!sprite || !this.ctx) return;
-      const size = this.spriteSize(sprite);
-      const px = this.spritePx(sprite);
+      const { width, height } = this.spriteDims(sprite);
+      const { pw, ph } = this.spritePx(sprite);
       const frame = sprite.frames[inst.frameIndex % sprite.frames.length];
       const renderY = inst.y + (inst.kind === 'fish' && !inst.isDragging ? Math.sin(inst.bobPhase) * 3 : 0);
 
       this.ctx.save();
-      this.ctx.translate(inst.x + px / 2, renderY + px / 2);
+      this.ctx.translate(inst.x + pw / 2, renderY + ph / 2);
       if (inst.kind === 'fish' && inst.dir < 0) this.ctx.scale(-1, 1);
-      this.ctx.translate(-px / 2, -px / 2);
-      paintFrameCells(this.ctx, frame, size, DISPLAY_SCALE);
+      this.ctx.translate(-pw / 2, -ph / 2);
+      paintFrameCells(this.ctx, frame, width, height, DISPLAY_SCALE);
       this.ctx.restore();
 
       if (inst.id === this.selectedId) {
         this.ctx.strokeStyle = '#ffeb3b';
         this.ctx.lineWidth = 2;
-        this.ctx.strokeRect(inst.x - 2, renderY - 2, px + 4, px + 4);
+        this.ctx.strokeRect(inst.x - 2, renderY - 2, pw + 4, ph + 4);
       }
     });
   }

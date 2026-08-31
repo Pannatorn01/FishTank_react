@@ -3,12 +3,13 @@ import type { Cell, Frame, SelectionBox } from './types';
 export function paintFrameCells(
   ctx: CanvasRenderingContext2D,
   frame: Frame,
-  size: number,
+  width: number,
+  height: number,
   cellPx: number
 ): void {
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const color = frame[y * size + x];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const color = frame[y * width + x];
       if (!color) continue;
       ctx.fillStyle = color;
       ctx.fillRect(x * cellPx, y * cellPx, cellPx, cellPx);
@@ -66,32 +67,40 @@ export function shiftBox(box: SelectionBox, delta: { dx: number; dy: number }): 
   };
 }
 
-export function flipFrameH(frame: Frame, size: number): Frame {
-  const out: Frame = new Array(size * size).fill(null);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) out[y * size + (size - 1 - x)] = frame[y * size + x];
+export function flipFrameH(frame: Frame, width: number, height: number): Frame {
+  const out: Frame = new Array(width * height).fill(null);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) out[y * width + (width - 1 - x)] = frame[y * width + x];
   }
   return out;
 }
 
-export function flipFrameV(frame: Frame, size: number): Frame {
-  const out: Frame = new Array(size * size).fill(null);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) out[(size - 1 - y) * size + x] = frame[y * size + x];
+export function flipFrameV(frame: Frame, width: number, height: number): Frame {
+  const out: Frame = new Array(width * height).fill(null);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) out[(height - 1 - y) * width + x] = frame[y * width + x];
   }
   return out;
 }
 
-export function rotateFrame(frame: Frame, size: number, clockwise: boolean): Frame {
-  const out: Frame = new Array(size * size).fill(null);
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const color = frame[y * size + x];
+/** Rotating swaps the axes: a width×height frame becomes height×width. */
+export function rotateFrame(
+  frame: Frame,
+  width: number,
+  height: number,
+  clockwise: boolean
+): { frame: Frame; width: number; height: number } {
+  const outW = height;
+  const outH = width;
+  const out: Frame = new Array(outW * outH).fill(null);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const color = frame[y * width + x];
       if (!color) continue;
-      const nx = clockwise ? size - 1 - y : y;
-      const ny = clockwise ? x : size - 1 - x;
-      out[ny * size + nx] = color;
+      const nx = clockwise ? height - 1 - y : y;
+      const ny = clockwise ? x : width - 1 - x;
+      out[ny * outW + nx] = color;
     }
   }
-  return out;
+  return { frame: out, width: outW, height: outH };
 }
