@@ -282,7 +282,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   border: 1px solid var(--border);
 }
 
-.palette { display: grid; grid-template-columns: repeat(auto-fill, 18px); gap: 3px; align-content: start; flex: 1; min-height: 0; overflow-y: auto; }
+.palette { display: grid; grid-template-columns: repeat(auto-fill, 18px); grid-auto-rows: 18px; gap: 3px; align-content: start; flex: 1; min-height: 0; overflow-y: auto; }
 .swatch { width: 100%; aspect-ratio: 1; border: 1.5px solid var(--border); padding: 0; cursor: pointer; outline: none; box-sizing: border-box; }
 .swatch.active { border-color: #ffcc00; }
 
@@ -328,9 +328,9 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   text-align: center;
 }
 
-.color-swatch-wrap { 
-  position: relative; 
-  /* aspect-ratio: 1;  */
+.color-swatch-wrap {
+  position: relative;
+  display: flex;
 }
 .color-swatch-wrap .swatch { width: 100%; height: 100%; }
 .color-swatch-del {
@@ -353,7 +353,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .color-swatch-wrap:hover .color-swatch-del { display: flex; }
 .swatch-add {
   width: 100%;
-  /* aspect-ratio: 1; */
+  aspect-ratio: 1;
   box-sizing: border-box;
   display: flex;
   align-items: center;
