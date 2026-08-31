@@ -1,9 +1,11 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import { paintFrameCells } from '@/lib/pixelMath';
 import type { Frame } from '@/lib/types';
+
+const THUMB_PX = 52;
 
 function FrameThumb({ frame, size, active, onClick }: { frame: Frame; size: number; active: boolean; onClick: () => void }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -13,11 +15,11 @@ function FrameThumb({ frame, size, active, onClick }: { frame: Frame; size: numb
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    paintFrameCells(ctx, frame, size, 32 / size);
-  }, [frame, size]);
+    paintFrameCells(ctx, frame, size, THUMB_PX / size);
+  });
   return (
-    <button type="button" className={`frame-thumb-wrap${active ? ' active' : ''}`} onClick={onClick}>
-      <canvas ref={ref} width={32} height={32} className="frame-thumb pixelated" />
+    <button type="button" className={`frame-thumb-wrap${active ? ' active' : ''}`} onClick={onClick} tabIndex={-1}>
+      <canvas ref={ref} width={THUMB_PX} height={THUMB_PX} className="frame-thumb pixelated" />
     </button>
   );
 }
@@ -25,11 +27,41 @@ function FrameThumb({ frame, size, active, onClick }: { frame: Frame; size: numb
 export function FrameStrip({ engine }: { engine: PixelEditorEngine }) {
   const { t } = useLanguage();
   const limitReached = engine.frameLimitReached();
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [overIndex, setOverIndex] = useState<number | null>(null);
+
+  const endDrag = () => {
+    setDragIndex(null);
+    setOverIndex(null);
+  };
+
   return (
     <div className="frame-row">
       <div className="frame-strip">
         {engine.current.frames.map((frame, i) => (
-          <div key={i} className="frame-badge-wrap">
+          <div
+            key={i}
+            className={[
+              'frame-badge-wrap',
+              dragIndex === i && 'dragging',
+              overIndex === i && dragIndex !== null && dragIndex !== i && 'drag-over',
+            ].filter(Boolean).join(' ')}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.effectAllowed = 'move';
+              setDragIndex(i);
+            }}
+            onDragEnd={endDrag}
+            onDragOver={(e) => {
+              e.preventDefault();
+              if (overIndex !== i) setOverIndex(i);
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              if (dragIndex !== null && dragIndex !== i) engine.moveFrame(dragIndex, i);
+              endDrag();
+            }}
+          >
             <FrameThumb frame={frame} size={engine.current.size} active={i === engine.frameIndex} onClick={() => engine.selectFrame(i)} />
             <span className="frame-num">{i + 1}</span>
           </div>

@@ -332,6 +332,17 @@ class PixelEditorEngine {
     this.refresh();
   }
 
+  moveFrame(from: number, to: number): void {
+    if (from === to || from < 0 || to < 0 || from >= this.current.frames.length || to >= this.current.frames.length) return;
+    this.pushUndo();
+    const [moved] = this.current.frames.splice(from, 1);
+    this.current.frames.splice(to, 0, moved);
+    if (this.frameIndex === from) this.frameIndex = to;
+    else if (from < this.frameIndex && to >= this.frameIndex) this.frameIndex -= 1;
+    else if (from > this.frameIndex && to <= this.frameIndex) this.frameIndex += 1;
+    this.refresh();
+  }
+
   clearFrame(): void {
     this.pushUndo();
     this.current.frames[this.frameIndex] = storage.emptyFrame(this.current.size);
