@@ -63,6 +63,7 @@ const th: Dict = {
   'layer.opacity': 'ความทึบของเลเยอร์',
   'layer.mergeDown': 'รวมกับเลเยอร์ด้านล่าง',
   'layer.delete': 'ลบเลเยอร์',
+  'layer.drag': 'ลากเพื่อสลับลำดับ',
 
   'form.namePlaceholder': 'ตั้งชื่อ เช่น ปลานีออน',
   'form.typeFish': '🐟 ปลา (ว่ายอัตโนมัติ)',
@@ -149,6 +150,7 @@ const en: Dict = {
   'layer.opacity': 'Layer opacity',
   'layer.mergeDown': 'Merge down',
   'layer.delete': 'Delete layer',
+  'layer.drag': 'Drag to reorder',
 
   'form.namePlaceholder': 'Name it, e.g. Neon Tetra',
   'form.typeFish': '🐟 Fish (swims automatically)',
