@@ -43,6 +43,8 @@ export interface Instance {
   y: number;
   dir: 1 | -1;
   vx: number;
+  vy: number;
+  targetY: number;
   frameIndex: number;
   frameTimer: number;
   bobPhase: number;

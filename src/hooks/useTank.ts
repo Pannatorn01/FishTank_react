@@ -87,9 +87,18 @@ class TankEngine {
     return this.sprites.find((s) => s.id === inst.spriteId);
   }
 
+  private randomTargetY(px: number): number {
+    if (!this.canvas) return 0;
+    const h = this.canvas.height;
+    const sandH = Math.max(18, h * 0.08);
+    const maxY = Math.max(0, h - sandH - px);
+    return Math.random() * maxY;
+  }
+
   resizeCanvas(): void {
     if (!this.canvas || !this.wrap) return;
     const rect = this.wrap.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
     this.canvas.width = Math.max(200, Math.floor(rect.width));
     this.canvas.height = Math.max(200, Math.floor(rect.height));
     this.instances.forEach((inst) => {
@@ -138,6 +147,8 @@ class TankEngine {
       y: Math.min(Math.max(0, y - px / 2), this.canvas.height - px),
       dir: Math.random() < 0.5 ? -1 : 1,
       vx: sprite.type === 'fish' ? 18 + Math.random() * 22 : 0,
+      vy: sprite.type === 'fish' ? 6 + Math.random() * 12 : 0,
+      targetY: sprite.type === 'fish' ? this.randomTargetY(px) : 0,
       frameIndex: 0,
       frameTimer: 0,
       bobPhase: Math.random() * Math.PI * 2,
@@ -327,14 +338,26 @@ class TankEngine {
       inst.bobPhase += dt * 2;
       if (inst.kind === 'fish') {
         const px = this.spritePx(sprite);
+        if (inst.vy === undefined) inst.vy = 6 + Math.random() * 12;
+        if (inst.targetY === undefined) inst.targetY = this.randomTargetY(px);
+
         inst.x += inst.vx * inst.dir * dt;
         if (inst.x <= 0) {
           inst.x = 0;
           inst.dir = 1;
+          inst.targetY = this.randomTargetY(px);
         }
         if (inst.x >= w - px) {
           inst.x = w - px;
           inst.dir = -1;
+          inst.targetY = this.randomTargetY(px);
+        }
+
+        const dy = inst.targetY - inst.y;
+        if (Math.abs(dy) < 2) {
+          inst.targetY = this.randomTargetY(px);
+        } else {
+          inst.y += Math.sign(dy) * Math.min(Math.abs(dy), inst.vy * dt);
         }
       }
     });
