@@ -696,6 +696,7 @@ class PixelEditorEngine {
     };
   }
 
+  /** Pastes into a new layer (when under the layer limit) rather than the active one, so a paste never overwrites existing work. */
   pasteClipboard(): void {
     if (!this.clipboard) return;
     this.pushUndo();
@@ -704,6 +705,12 @@ class PixelEditorEngine {
     const h = Math.min(this.clipboard.h, height);
     const x0 = Math.max(0, Math.floor((width - w) / 2));
     const y0 = Math.max(0, Math.floor((height - h) / 2));
+
+    const layers = this.layers();
+    if (layers.length < LAYER_LIMIT) {
+      layers.push(storage.makeLayer(storage.emptyFrame(width, height), `Layer ${layers.length + 1}`));
+      this.activeLayerIndex = layers.length - 1;
+    }
     const frame = this.activeCells();
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {

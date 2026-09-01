@@ -53,8 +53,8 @@ export function PixelEditorPanel({
 
         <div className="side-panel">
           <PreviewPanel engine={engine} />
-          <LayerPanel engine={engine} />
           <TransformPanel engine={engine} />
+          <LayerPanel engine={engine} />        
         </div>
       </div>
     </div>

@@ -42,7 +42,7 @@ export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
   const rows = layers.map((layer, index) => ({ layer, index })).reverse();
 
   return (
-    <div className="layer-panel">
+    <div className="layer-panel flex-1">
       <div className="panel-title">{t('layer.title')}</div>
       <div className="layer-list">
         {rows.map(({ layer, index }) => (
