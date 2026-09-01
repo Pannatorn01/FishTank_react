@@ -192,7 +192,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   background: #b0b0b0;
   padding: 8px;
   overflow: auto;
-  height: min(340px, 46vh);
+  height: min(520px, 68vh);
   display: grid;
   place-items: center;
 }
