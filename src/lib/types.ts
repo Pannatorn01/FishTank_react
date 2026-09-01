@@ -27,12 +27,17 @@ export type ToolName =
   | 'fill'
   | 'eyedropper'
   | 'line'
+  | 'curve'
   | 'rect'
   | 'ellipse'
+  | 'spray'
+  | 'gradient'
   | 'select'
   | 'move';
 
 export type SymmetryMode = 'none' | 'vertical' | 'horizontal' | 'both';
+
+export type CanvasBackground = 'checker-dark' | 'checker-light' | 'white' | 'black' | 'gray';
 
 export interface Cell {
   x: number;

@@ -14,13 +14,14 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ZOOM_LEVELS } from '@/hooks/usePixelEditor';
+import { MAX_BRUSH_SIZE, ZOOM_LEVELS } from '@/hooks/usePixelEditor';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import { GRID_SIZES, MAX_GRID_SIZE, MIN_GRID_SIZE } from '@/lib/storage';
-import type { SpriteType, SymmetryMode } from '@/lib/types';
+import type { CanvasBackground, SymmetryMode } from '@/lib/types';
 
 const CUSTOM_SIZE_VALUE = 'custom';
+const BRUSH_SIZES = Array.from({ length: MAX_BRUSH_SIZE }, (_, i) => i + 1);
 
 const SYMMETRY_KEYS: Record<SymmetryMode, string> = {
   none: 'symmetry.none',
@@ -29,27 +30,22 @@ const SYMMETRY_KEYS: Record<SymmetryMode, string> = {
   both: 'symmetry.both',
 };
 
+const CANVAS_BG_KEYS: Record<CanvasBackground, string> = {
+  'checker-dark': 'status.bgCheckerDark',
+  'checker-light': 'status.bgCheckerLight',
+  white: 'status.bgWhite',
+  black: 'status.bgBlack',
+  gray: 'status.bgGray',
+};
+
 function clampGridSize(n: number): number {
   return Math.min(MAX_GRID_SIZE, Math.max(MIN_GRID_SIZE, Math.round(n)));
 }
 
-export function CanvasStatusBar({
-  engine,
-  name,
-  setName,
-  type,
-  setType,
-  onError,
-}: {
-  engine: PixelEditorEngine;
-  name: string;
-  setName: (name: string) => void;
-  type: SpriteType;
-  setType: (type: SpriteType) => void;
-  onError: (msg: string) => void;
-}) {
+export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
   const { t } = useLanguage();
   const showShapeFilled = engine.tool === 'rect' || engine.tool === 'ellipse';
+  const showBrushOptions = engine.tool === 'pen' || engine.tool === 'eraser' || engine.tool === 'spray';
   const selection = engine.selection;
   const { width, height } = engine.current;
   const [customOpen, setCustomOpen] = useState(false);
@@ -178,12 +174,52 @@ export function CanvasStatusBar({
         <Label>{t('status.showGrid')}</Label>
       </label>
 
+      <Select value={engine.canvasBackground} onValueChange={(v) => engine.setCanvasBackground(v as CanvasBackground)}>
+        <SelectTrigger className="w-36 text-xs" title={t('status.canvasBgTitle')}>
+          <SelectValue>
+            <span className="bg-swatch" data-bg={engine.canvasBackground} aria-hidden="true" />
+            {t(CANVAS_BG_KEYS[engine.canvasBackground])}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {(Object.keys(CANVAS_BG_KEYS) as CanvasBackground[]).map((bg) => (
+            <SelectItem key={bg} value={bg}>
+              <span className="bg-swatch" data-bg={bg} aria-hidden="true" />
+              {t(CANVAS_BG_KEYS[bg])}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {(showShapeFilled || showBrushOptions) && <span className="toolbar-divider" aria-hidden="true" />}
+
       {showShapeFilled && (
         <label className="mini-toggle">
           <Checkbox checked={engine.shapeFilled} onCheckedChange={(v) => engine.setShapeFilled(!!v)} />
           <Label>{t('status.fillShape')}</Label>
         </label>
       )}
+
+      {showBrushOptions && (
+        <div className="mini-toggle" title={t('status.brushSizeTitle')}>
+          <Label>{t('status.brushSize')}</Label>
+          <div className="brush-size-group">
+            {BRUSH_SIZES.map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={`brush-size-btn${engine.brushSize === n ? ' active' : ''}`}
+                title={t('status.brushSizeValue', { n })}
+                onClick={() => engine.setBrushSize(n)}
+              >
+                <span className="brush-size-dot" style={{ width: n * 3 + 2, height: n * 3 + 2 }} />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <span className="toolbar-divider" aria-hidden="true" />
 
       <Select value={engine.symmetry} onValueChange={(v) => engine.setSymmetry(v as SymmetryMode)}>
         <SelectTrigger className="w-48 text-xs" title={t('status.symmetryTitle')}>
@@ -198,33 +234,6 @@ export function CanvasStatusBar({
         </SelectContent>
       </Select>
 
-      <div className="flex gap-2 ml-auto">
-      <Input
-        className="status-name-input"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder={t('form.namePlaceholder')}
-      />
-      <Select value={type} onValueChange={(v) => setType(v as SpriteType)}>
-        <SelectTrigger className="w-40 text-xs">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="fish">{t('form.typeFish')}</SelectItem>
-          <SelectItem value="object">{t('form.typeObject')}</SelectItem>
-        </SelectContent>
-      </Select>
-
-      <Button
-        type="button"
-        size="sm"
-        title={t('form.save')}
-        onClick={() => engine.saveCurrentSprite(name, type, onError)}
-      >
-        <i className="fa-solid fa-floppy-disk" />
-        {t('form.save')}
-      </Button>
-      </div>
       {selection && (
         <span className="selection-info" title={t('status.selectionHint')}>
           <i className="fa-solid fa-vector-square" />{' '}

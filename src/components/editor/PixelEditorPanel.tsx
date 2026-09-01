@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import type { SpriteType } from '@/lib/types';
+import { CanvasMetaBar } from './CanvasMetaBar';
 import { CanvasStatusBar } from './CanvasStatusBar';
 import { ColorPalette } from './ColorPalette';
 import { FrameStrip } from './FrameStrip';
@@ -45,8 +46,9 @@ export function PixelEditorPanel({
         </div>
 
         <div className="canvas-column">
+          <CanvasMetaBar engine={engine} name={name} setName={setName} type={type} setType={setType} onError={onError} />
           <PixelCanvas engine={engine} />
-          <CanvasStatusBar engine={engine} name={name} setName={setName} type={type} setType={setType} onError={onError} />
+          <CanvasStatusBar engine={engine} />
           <FrameStrip engine={engine} />
           <SpriteLibrary engine={engine} onConfirmDiscard={confirmDiscard} onError={onError} />
         </div>

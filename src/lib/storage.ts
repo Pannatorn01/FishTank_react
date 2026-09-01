@@ -1,9 +1,11 @@
-import type { Frame, Instance, Layer, Sprite } from './types';
+import type { CanvasBackground, Frame, Instance, Layer, Sprite } from './types';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
 const KEY_SAVED_COLORS = 'fishtank.savedColors.v1';
 const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
+const KEY_CANVAS_BG = 'fishtank.canvasBackground.v1';
+const CANVAS_BACKGROUNDS: CanvasBackground[] = ['checker-dark', 'checker-light', 'white', 'black', 'gray'];
 
 export const DEFAULT_GRID_SIZE = 16;
 export const GRID_SIZES = [8, 16, 24, 32];
@@ -94,6 +96,20 @@ export function loadPaletteColors(): string[] | null {
 
 export function savePaletteColors(colors: string[]): void {
   localStorage.setItem(KEY_PALETTE_COLORS, JSON.stringify(colors));
+}
+
+export function loadCanvasBackground(): CanvasBackground | null {
+  try {
+    const raw = localStorage.getItem(KEY_CANVAS_BG);
+    return raw && CANVAS_BACKGROUNDS.includes(raw as CanvasBackground) ? (raw as CanvasBackground) : null;
+  } catch (e) {
+    console.warn('loadCanvasBackground failed', e);
+    return null;
+  }
+}
+
+export function saveCanvasBackground(bg: CanvasBackground): void {
+  localStorage.setItem(KEY_CANVAS_BG, bg);
 }
 
 export function emptyFrame(width: number, height: number): Frame {

@@ -6,9 +6,12 @@ import type { ToolName } from '@/lib/types';
 const TOOLS: { tool: ToolName; icon: string }[] = [
   { tool: 'pen', icon: 'pen' },
   { tool: 'line', icon: 'slash' },
+  { tool: 'curve', icon: 'bezier-curve' },
   { tool: 'fill', icon: 'fill-drip' },
   { tool: 'eyedropper', icon: 'eye-dropper' },
   { tool: 'eraser', icon: 'eraser' },
+  { tool: 'spray', icon: 'spray-can' },
+  { tool: 'gradient', icon: 'circle-half-stroke' },
   { tool: 'rect', icon: 'square' },
   { tool: 'ellipse', icon: 'circle' },
   { tool: 'select', icon: 'vector-square' },

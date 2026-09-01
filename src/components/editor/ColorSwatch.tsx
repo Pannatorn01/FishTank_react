@@ -1,13 +1,14 @@
-import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 
 export function ColorSwatch({
-  engine,
   color,
+  activeColor,
+  onSelect,
   onRemove,
 }: {
-  engine: PixelEditorEngine;
   color: string;
+  activeColor: string;
+  onSelect: (color: string) => void;
   onRemove: (color: string) => void;
 }) {
   const { t } = useLanguage();
@@ -15,10 +16,10 @@ export function ColorSwatch({
     <div className="color-swatch-wrap">
       <button
         type="button"
-        className={`swatch${engine.color === color ? ' active' : ''}`}
+        className={`swatch${activeColor === color ? ' active' : ''}`}
         style={{ background: color }}
         title={color}
-        onClick={() => engine.setColor(color)}
+        onClick={() => onSelect(color)}
       />
       <button
         type="button"

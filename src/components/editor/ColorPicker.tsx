@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 
-const SV_SIZE = 100;
-const HUE_HEIGHT = 10;
+/** Canvas bitmap resolution - the actual on-screen size is controlled by CSS (.sv-square/.hue-bar stretch to the card width), so this just needs to stay high enough to look crisp once stretched. */
+const SV_SIZE = 200;
+const HUE_HEIGHT = 12;
 
 interface Hsv {
   h: number;
@@ -51,25 +51,25 @@ function hexToHsv(hex: string): Hsv {
   return { h, s, v };
 }
 
-export function ColorPicker({ engine }: { engine: PixelEditorEngine }) {
+export function ColorPicker({ value, onChange }: { value: string; onChange: (hex: string) => void }) {
   const svRef = useRef<HTMLCanvasElement>(null);
   const hueRef = useRef<HTMLCanvasElement>(null);
   const svDragging = useRef(false);
   const hueDragging = useRef(false);
-  const [hsv, setHsv] = useState<Hsv>(() => hexToHsv(engine.color));
+  const [hsv, setHsv] = useState<Hsv>(() => hexToHsv(value));
   const hsvRef = useRef(hsv);
-  const [hexInput, setHexInput] = useState(engine.color);
-  const lastEmitted = useRef(engine.color);
+  const [hexInput, setHexInput] = useState(value);
+  const lastEmitted = useRef(value);
 
   useEffect(() => {
     hsvRef.current = hsv;
   }, [hsv]);
 
   useEffect(() => {
-    if (engine.color === lastEmitted.current) return;
-    setHsv(hexToHsv(engine.color));
-    setHexInput(engine.color);
-  }, [engine.color]);
+    if (value === lastEmitted.current) return;
+    setHsv(hexToHsv(value));
+    setHexInput(value);
+  }, [value]);
 
   useEffect(() => {
     const canvas = svRef.current;
@@ -106,20 +106,20 @@ export function ColorPicker({ engine }: { engine: PixelEditorEngine }) {
     const hex = hsvToHex(next.h, next.s, next.v);
     lastEmitted.current = hex;
     setHexInput(hex);
-    engine.setColor(hex);
+    onChange(hex);
   };
 
   const commitHexInput = () => {
     const match = /^#?([0-9a-fA-F]{6})$/.exec(hexInput.trim());
     if (!match) {
-      setHexInput(engine.color);
+      setHexInput(value);
       return;
     }
     const hex = `#${match[1].toLowerCase()}`;
     lastEmitted.current = hex;
     setHsv(hexToHsv(hex));
     setHexInput(hex);
-    engine.setColor(hex);
+    onChange(hex);
   };
 
   const updateFromSv = (clientX: number, clientY: number) => {
@@ -141,7 +141,7 @@ export function ColorPicker({ engine }: { engine: PixelEditorEngine }) {
 
   return (
     <div className="color-picker">
-      <div className="sv-square" style={{ width: SV_SIZE, height: SV_SIZE }}>
+      <div className="sv-square">
         <canvas
           ref={svRef}
           width={SV_SIZE}
@@ -165,7 +165,7 @@ export function ColorPicker({ engine }: { engine: PixelEditorEngine }) {
         <div className="sv-thumb" style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%` }} />
       </div>
 
-      <div className="hue-bar" style={{ width: SV_SIZE, height: HUE_HEIGHT }}>
+      <div className="hue-bar">
         <canvas
           ref={hueRef}
           width={SV_SIZE}
@@ -190,7 +190,7 @@ export function ColorPicker({ engine }: { engine: PixelEditorEngine }) {
       </div>
 
       <div className="color-picker-footer">
-        <span className="color-picker-swatch" style={{ background: engine.color }} />
+        <span className="color-picker-swatch" style={{ background: value }} />
         <input
           className="color-picker-hex-input"
           type="text"

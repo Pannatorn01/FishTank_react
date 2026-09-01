@@ -4,15 +4,17 @@ import {
   bresenhamLine,
   flipFrameH,
   flipFrameV,
+  hexToRgb,
   inEllipseLocal,
   normalizeBox,
   paintLayers,
+  rgbToHex,
   rotateFrame,
   shiftBox,
 } from '@/lib/pixelMath';
 import { t } from '@/lib/i18n';
 import * as storage from '@/lib/storage';
-import type { Cell, Frame, Layer, SelectionBox, Sprite, SymmetryMode, ToolName } from '@/lib/types';
+import type { CanvasBackground, Cell, Frame, Layer, SelectionBox, Sprite, SymmetryMode, ToolName } from '@/lib/types';
 
 export const DEFAULT_PALETTE_COLORS = [
   '#1a1a1a', '#ffffff', '#e74c3c', '#ff7043', '#f5c518', '#8bc34a', '#1e88e5', '#5e35b1',
@@ -24,10 +26,16 @@ const BASE_CELL_PX = 16;
 export const ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];
 const PREVIEW_CELL_PX_BASE = 64;
 const UNDO_LIMIT = 50;
+export const MAX_BRUSH_SIZE = 4;
+const SPRAY_INTERVAL_MS = 55;
 const TOOL_KEYS: Record<string, ToolName> = {
-  b: 'pen', e: 'eraser', g: 'fill', i: 'eyedropper', l: 'line', r: 'rect', c: 'ellipse',
-  s: 'select', m: 'move',
+  b: 'pen', e: 'eraser', g: 'fill', i: 'eyedropper', l: 'line', u: 'curve', r: 'rect', c: 'ellipse',
+  a: 'spray', k: 'gradient', s: 'select', m: 'move',
 };
+/** Tools where a right-click has an alternate meaning (erase, or reversed gradient) instead of opening the browser context menu. */
+const ERASABLE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient']);
+/** Tools where holding Alt temporarily samples a color instead of the tool's normal action. */
+const ALT_PICK_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient']);
 
 type HandleName = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e';
 const HANDLE_HIT_TOLERANCE = 7;
@@ -108,8 +116,27 @@ class PixelEditorEngine {
   moveDelta = { dx: 0, dy: 0 };
   clipboard: { w: number; h: number; rows: (string | null)[][] } | null = null;
   symmetry: SymmetryMode = 'none';
+  brushSize = 1;
+  /** Set for the duration of a right-click gesture: paints/fills/erases with the eraser instead of the active color. */
+  eraseOverride = false;
+  /** Snapshot of the active layer taken at freehand-stroke start, so Pixel Perfect can restore a trimmed corner pixel. */
+  strokeSnapshot: Frame | null = null;
+  strokePoints: Cell[] = [];
+  sprayTimer: ReturnType<typeof setInterval> | null = null;
+  sprayPointerCell: Cell | null = null;
+  /** Curve tool: null = idle, 'drag-end' = dragging the initial line, 'bend' = adjusting the control-point handle. */
+  curvePhase: 'drag-end' | 'bend' | null = null;
+  curveStart: Cell | null = null;
+  curveEnd: Cell | null = null;
+  curveControl: Cell | null = null;
+  curveDraggingControl = false;
+  gradientColor = '#ffffff';
+  gradientStart: Cell | null = null;
+  gradientEnd: Cell | null = null;
+  gradientPreview: MoveBufferCell[] | null = null;
   zoomIndex = 2;
   showGrid = true;
+  canvasBackground: CanvasBackground = 'checker-dark';
   onionSkin = false;
   transformAllFrames = false;
   undoStack: Snapshot[] = [];
@@ -135,6 +162,7 @@ class PixelEditorEngine {
     }
     this.paletteColors = storage.loadPaletteColors() ?? [...DEFAULT_PALETTE_COLORS];
     this.savedColors = storage.loadSavedColors();
+    this.canvasBackground = storage.loadCanvasBackground() ?? 'checker-dark';
 
     this.restartPreviewTimer();
 
@@ -175,12 +203,18 @@ class PixelEditorEngine {
 
   destroy(): void {
     if (this.previewTimer) clearInterval(this.previewTimer);
+    if (this.sprayTimer) clearInterval(this.sprayTimer);
     this.windowListeners.forEach((off) => off());
     this.windowListeners = [];
   }
 
+  /**
+   * A pending curve's bezier preview lives in shapePreviewCells across mouse-up (unlike line/rect/
+   * ellipse, which commit and clear it immediately) so it must keep rendering here too - otherwise
+   * the curve preview vanishes the instant a bend-adjustment drag ends, leaving only the handle.
+   */
   private refresh(): void {
-    this.drawGrid();
+    this.drawGrid(this.shapePreviewCells ?? undefined);
     this.reactNotify();
   }
 
@@ -189,7 +223,7 @@ class PixelEditorEngine {
     this.ctx = el ? el.getContext('2d') : null;
     if (el) {
       this.recomputeCanvasSize();
-      this.drawGrid();
+      this.drawGrid(this.shapePreviewCells ?? undefined);
     }
   }
 
@@ -230,6 +264,9 @@ class PixelEditorEngine {
   // --- tool / color / toggles ---
 
   setTool(tool: ToolName): void {
+    if (tool === this.tool) return;
+    if (this.tool === 'curve' && this.curvePhase) this.commitCurve();
+    if (this.tool === 'spray') this.stopSprayTimer();
     this.tool = tool;
     if (this.canvas && tool !== 'select') this.canvas.style.cursor = '';
     this.reactNotify();
@@ -272,6 +309,12 @@ class PixelEditorEngine {
     this.refresh();
   }
 
+  setCanvasBackground(bg: CanvasBackground): void {
+    this.canvasBackground = bg;
+    storage.saveCanvasBackground(bg);
+    this.reactNotify();
+  }
+
   setOnionSkin(v: boolean): void {
     this.onionSkin = v;
     this.refresh();
@@ -280,6 +323,16 @@ class PixelEditorEngine {
   setSymmetry(mode: SymmetryMode): void {
     this.symmetry = mode;
     this.refresh();
+  }
+
+  setBrushSize(size: number): void {
+    this.brushSize = Math.min(MAX_BRUSH_SIZE, Math.max(1, Math.round(size)));
+    this.reactNotify();
+  }
+
+  setGradientColor(color: string): void {
+    this.gradientColor = color;
+    this.reactNotify();
   }
 
   setTransformAllFrames(v: boolean): void {
@@ -433,6 +486,7 @@ class PixelEditorEngine {
   selectFrame(i: number): void {
     this.frameIndex = i;
     this.activeLayerIndex = Math.min(this.activeLayerIndex, this.current.frames[i].length - 1);
+    if (this.curvePhase) this.clearCurveState();
     this.refresh();
   }
 
@@ -569,11 +623,27 @@ class PixelEditorEngine {
       return;
     }
     if (key === 'escape') {
+      if (this.curvePhase) {
+        this.cancelCurve();
+        return;
+      }
       this.deselect();
+      return;
+    }
+    if (key === 'enter' && this.curvePhase === 'bend') {
+      this.commitCurve();
       return;
     }
     if (key === 'v') {
       this.setSymmetry(this.symmetry === 'vertical' ? 'none' : 'vertical');
+      return;
+    }
+    if (key === '[') {
+      this.setBrushSize(this.brushSize - 1);
+      return;
+    }
+    if (key === ']') {
+      this.setBrushSize(this.brushSize + 1);
       return;
     }
     if (TOOL_KEYS[key]) {
@@ -636,6 +706,20 @@ class PixelEditorEngine {
     this.rotateSource = null;
     this.rotatePreview = null;
     this.rotateAngle = 0;
+    this.eraseOverride = false;
+    this.strokeSnapshot = null;
+    this.strokePoints = [];
+    if (this.curvePhase === 'drag-end' || this.curveDraggingControl) {
+      this.curveStart = null;
+      this.curveEnd = null;
+      this.curveControl = null;
+      this.curvePhase = null;
+      this.curveDraggingControl = false;
+    }
+    this.gradientStart = null;
+    this.gradientEnd = null;
+    this.gradientPreview = null;
+    this.stopSprayTimer();
   }
 
   private pxFromEvent(e: { clientX: number; clientY: number }): { px: number; py: number } | null {
@@ -711,6 +795,18 @@ class PixelEditorEngine {
     const cellPx = this.effectiveCellPx();
     const { hx, hy } = this.rotateHandlePos(this.selection, cellPx);
     return Math.hypot(pt.px - hx, pt.py - hy) <= ROTATE_HIT_RADIUS;
+  }
+
+  /** Whether a click is close enough to the curve's control-point handle to grab it, rather than committing the curve. */
+  private isNearCurveControl(e: { clientX: number; clientY: number }): boolean {
+    if (!this.curveControl) return false;
+    const pt = this.pxFromEvent(e);
+    if (!pt) return false;
+    const cellPx = this.effectiveCellPx();
+    const hx = (this.curveControl.x + 0.5) * cellPx;
+    const hy = (this.curveControl.y + 0.5) * cellPx;
+    const tol = Math.max(cellPx, ROTATE_HIT_RADIUS * 1.5);
+    return Math.hypot(pt.px - hx, pt.py - hy) <= tol;
   }
 
   private cellFromEventClamped(e: { clientX: number; clientY: number }): Cell {
@@ -926,6 +1022,8 @@ class PixelEditorEngine {
   }
 
   onPointerDown(e: React.PointerEvent<HTMLCanvasElement>): void {
+    if (e.button === 2 && !ERASABLE_TOOLS.has(this.tool)) return;
+
     if (this.tool === 'select' && this.selection && this.hitTestRotateHandle(e)) {
       if (this.painting) this.resetGestureState();
       this.canvas?.setPointerCapture(e.pointerId);
@@ -974,6 +1072,11 @@ class PixelEditorEngine {
       return;
     }
 
+    if (e.altKey && ALT_PICK_TOOLS.has(this.tool)) {
+      this.pickColor(cell.x, cell.y, false);
+      return;
+    }
+
     if (this.tool === 'select') {
       if (this.isInsideSelection(cell)) {
         this.startMoveGesture(cell);
@@ -991,24 +1094,64 @@ class PixelEditorEngine {
       return;
     }
 
+    if (this.tool === 'curve') {
+      this.eraseOverride = e.button === 2;
+      if (this.curvePhase === 'bend') {
+        if (!this.isNearCurveControl(e)) {
+          this.commitCurve();
+          return;
+        }
+        this.painting = true;
+        this.curveDraggingControl = true;
+        this.curveControl = cell;
+        this.shapePreviewCells = this.mirroredExpand(this.quadraticBezierCells(this.curveStart!, this.curveControl, this.curveEnd!));
+        this.drawGrid(this.shapePreviewCells);
+        this.reactNotify();
+        return;
+      }
+      this.pushUndo();
+      this.painting = true;
+      this.curveStart = cell;
+      this.curveEnd = cell;
+      this.curveControl = null;
+      this.curvePhase = 'drag-end';
+      this.shapePreviewCells = this.mirroredExpand([cell]);
+      this.drawGrid(this.shapePreviewCells);
+      this.reactNotify();
+      return;
+    }
+
     this.pushUndo();
     this.painting = true;
+    this.eraseOverride = e.button === 2;
 
     if (this.tool === 'line' || this.tool === 'rect' || this.tool === 'ellipse') {
       this.shapeStart = cell;
-      this.shapePreviewCells = this.mirroredExpand(this.computeShapeCells(cell, cell));
+      const end = e.shiftKey ? this.constrainShapeEnd(cell, cell) : cell;
+      this.shapePreviewCells = this.mirroredExpand(this.computeShapeCells(cell, end));
       this.drawGrid(this.shapePreviewCells);
       this.reactNotify();
     } else if (this.tool === 'fill') {
       const frame = this.activeCells();
       const { width, height } = this.current;
+      const fillColor = this.eraseOverride ? null : this.color;
       this.mirrorCells(cell.x, cell.y).forEach((m) => {
-        this.floodFill(frame, width, height, m.x, m.y, frame[m.y * width + m.x]);
+        this.floodFill(frame, width, height, m.x, m.y, frame[m.y * width + m.x], fillColor);
       });
-      this.addSavedColor(this.color);
+      if (fillColor) this.addSavedColor(fillColor);
       this.refresh();
+    } else if (this.tool === 'spray') {
+      this.sprayPointerCell = cell;
+      this.sprayTick();
+      this.startSprayTimer();
+    } else if (this.tool === 'gradient') {
+      this.gradientStart = cell;
+      this.gradientEnd = cell;
+      this.gradientPreview = this.gradientCellsPreview(cell, cell);
+      this.drawGrid();
     } else {
       this.lastPaintCell = null;
+      this.beginStroke();
       this.paintCell(cell.x, cell.y);
     }
   }
@@ -1070,9 +1213,39 @@ class PixelEditorEngine {
       return;
     }
 
+    if (this.tool === 'curve') {
+      if (!cell) return;
+      if (this.curvePhase === 'drag-end') {
+        this.curveEnd = cell;
+        this.shapePreviewCells = this.mirroredExpand(bresenhamLine(this.curveStart!.x, this.curveStart!.y, cell.x, cell.y));
+        this.drawGrid(this.shapePreviewCells);
+      } else if (this.curveDraggingControl) {
+        this.curveControl = cell;
+        this.shapePreviewCells = this.mirroredExpand(this.quadraticBezierCells(this.curveStart!, this.curveControl, this.curveEnd!));
+        this.drawGrid(this.shapePreviewCells);
+      }
+      return;
+    }
+
+    if (this.tool === 'spray') {
+      if (!cell) return;
+      this.sprayPointerCell = cell;
+      this.sprayTick();
+      return;
+    }
+
+    if (this.tool === 'gradient') {
+      if (!cell || !this.gradientStart) return;
+      this.gradientEnd = e.shiftKey ? this.constrainShapeEnd(this.gradientStart, cell) : cell;
+      this.gradientPreview = this.gradientCellsPreview(this.gradientStart, this.gradientEnd);
+      this.drawGrid();
+      return;
+    }
+
     if (!cell) return;
     if (this.shapeStart) {
-      this.shapePreviewCells = this.mirroredExpand(this.computeShapeCells(this.shapeStart, cell));
+      const end = e.shiftKey ? this.constrainShapeEnd(this.shapeStart, cell) : cell;
+      this.shapePreviewCells = this.mirroredExpand(this.computeShapeCells(this.shapeStart, end));
       this.drawGrid(this.shapePreviewCells);
     } else if (this.tool === 'pen' || this.tool === 'eraser') {
       this.paintCell(cell.x, cell.y, true);
@@ -1082,6 +1255,7 @@ class PixelEditorEngine {
   onPointerUp(): void {
     if (!this.painting) return;
     this.painting = false;
+    this.stopSprayTimer();
 
     if (this.rotateOrigin) {
       this.commitRotate();
@@ -1100,6 +1274,26 @@ class PixelEditorEngine {
       return;
     }
 
+    if (this.tool === 'curve') {
+      if (this.curvePhase === 'drag-end') {
+        if (this.curveStart && this.curveEnd && (this.curveStart.x !== this.curveEnd.x || this.curveStart.y !== this.curveEnd.y)) {
+          this.curveControl = {
+            x: Math.round((this.curveStart.x + this.curveEnd.x) / 2),
+            y: Math.round((this.curveStart.y + this.curveEnd.y) / 2),
+          };
+          this.curvePhase = 'bend';
+          this.shapePreviewCells = this.mirroredExpand(this.quadraticBezierCells(this.curveStart, this.curveControl, this.curveEnd));
+          this.drawGrid(this.shapePreviewCells);
+        } else {
+          this.cancelCurve();
+        }
+      } else if (this.curveDraggingControl) {
+        this.curveDraggingControl = false;
+        this.refresh();
+      }
+      return;
+    }
+
     if (this.tool === 'select') {
       const d = this.selectionDraft;
       this.selection = d && (d.x0 !== d.x1 || d.y0 !== d.y1) ? d : null;
@@ -1109,18 +1303,61 @@ class PixelEditorEngine {
       return;
     }
 
+    if (this.tool === 'gradient') {
+      if (this.gradientPreview) {
+        const frame = this.activeCells();
+        const { width, height } = this.current;
+        this.gradientPreview.forEach((c) => {
+          if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = c.color;
+        });
+        this.addSavedColor(this.color);
+        this.addSavedColor(this.gradientColor);
+      }
+      this.gradientStart = null;
+      this.gradientEnd = null;
+      this.gradientPreview = null;
+      this.eraseOverride = false;
+      this.refresh();
+      return;
+    }
+
     if (this.shapeStart && this.shapePreviewCells) {
       const frame = this.activeCells();
       const { width, height } = this.current;
+      const shapeColor = this.eraseOverride ? null : this.color;
       this.shapePreviewCells.forEach((c) => {
-        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = this.color;
+        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = shapeColor;
       });
-      this.addSavedColor(this.color);
+      if (shapeColor) this.addSavedColor(shapeColor);
       this.shapeStart = null;
       this.shapePreviewCells = null;
     }
     this.lastPaintCell = null;
+    this.strokeSnapshot = null;
+    this.strokePoints = [];
+    this.eraseOverride = false;
     this.refresh();
+  }
+
+  /** Shift-constrain: line snaps to 0/45/90° increments, rect/ellipse snaps to a square/circle bounding box. */
+  private constrainShapeEnd(start: Cell, end: Cell): Cell {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    if (dx === 0 && dy === 0) return end;
+    if (this.tool === 'line' || this.tool === 'gradient') {
+      const step = Math.PI / 4;
+      const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+      const dist = Math.round(Math.hypot(dx, dy));
+      return {
+        x: start.x + Math.round(Math.cos(angle) * dist),
+        y: start.y + Math.round(Math.sin(angle) * dist),
+      };
+    }
+    const side = Math.max(Math.abs(dx), Math.abs(dy));
+    return {
+      x: start.x + (dx < 0 ? -side : side),
+      y: start.y + (dy < 0 ? -side : side),
+    };
   }
 
   private computeShapeCells(start: Cell, end: Cell): Cell[] {
@@ -1163,6 +1400,125 @@ class PixelEditorEngine {
     return cells;
   }
 
+  /** Samples a quadratic bezier through p0/p1/p2 and connects the samples with bresenham lines so the curve has no gaps. */
+  private quadraticBezierCells(p0: Cell, p1: Cell, p2: Cell): Cell[] {
+    const approxLen = Math.hypot(p1.x - p0.x, p1.y - p0.y) + Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const steps = Math.max(8, Math.ceil(approxLen * 2));
+    const cells: Cell[] = [];
+    let prev: Cell | null = null;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const mt = 1 - t;
+      const cell = {
+        x: Math.round(mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x),
+        y: Math.round(mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y),
+      };
+      if (prev) bresenhamLine(prev.x, prev.y, cell.x, cell.y).forEach((c) => cells.push(c));
+      else cells.push(cell);
+      prev = cell;
+    }
+    const seen = new Set<string>();
+    return cells.filter((c) => {
+      const key = `${c.x},${c.y}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  /**
+   * Blends startColor -> endColor across the selection (or the whole canvas with none) along the
+   * start/end axis: each cell's position is projected onto that axis and clamped to [0,1]. A
+   * right-click reverses which color sits at which end, reusing eraseOverride as a swap flag.
+   */
+  private gradientCellsPreview(start: Cell, end: Cell): MoveBufferCell[] {
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const lenSq = dx * dx + dy * dy;
+    const box = this.selection ?? { x0: 0, y0: 0, x1: this.current.width - 1, y1: this.current.height - 1 };
+    const startColor = this.eraseOverride ? this.gradientColor : this.color;
+    const endColor = this.eraseOverride ? this.color : this.gradientColor;
+    const [sr, sg, sb] = hexToRgb(startColor);
+    const [er, eg, eb] = hexToRgb(endColor);
+    const out: MoveBufferCell[] = [];
+    for (let y = box.y0; y <= box.y1; y++) {
+      for (let x = box.x0; x <= box.x1; x++) {
+        let t = 0.5;
+        if (lenSq > 0) {
+          t = ((x + 0.5 - start.x) * dx + (y + 0.5 - start.y) * dy) / lenSq;
+          t = Math.min(1, Math.max(0, t));
+        }
+        const color = rgbToHex(sr + (er - sr) * t, sg + (eg - sg) * t, sb + (eb - sb) * t);
+        out.push({ x, y, color });
+      }
+    }
+    return out;
+  }
+
+  /** Silently drops any pending curve without a refresh - for use inside other state-resetting methods that will refresh themselves. */
+  private clearCurveState(): void {
+    this.curveStart = null;
+    this.curveEnd = null;
+    this.curveControl = null;
+    this.curvePhase = null;
+    this.curveDraggingControl = false;
+    this.shapePreviewCells = null;
+  }
+
+  private cancelCurve(): void {
+    this.clearCurveState();
+    this.eraseOverride = false;
+    this.refresh();
+  }
+
+  private commitCurve(): void {
+    if (this.curveStart && this.curveEnd && this.curveControl && this.shapePreviewCells) {
+      const frame = this.activeCells();
+      const { width, height } = this.current;
+      const color = this.eraseOverride ? null : this.color;
+      this.shapePreviewCells.forEach((c) => {
+        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = color;
+      });
+      if (color) this.addSavedColor(color);
+    }
+    this.painting = false;
+    this.cancelCurve();
+  }
+
+  private startSprayTimer(): void {
+    if (this.sprayTimer) clearInterval(this.sprayTimer);
+    this.sprayTimer = setInterval(() => this.sprayTick(), SPRAY_INTERVAL_MS);
+  }
+
+  private stopSprayTimer(): void {
+    if (this.sprayTimer) {
+      clearInterval(this.sprayTimer);
+      this.sprayTimer = null;
+    }
+    this.sprayPointerCell = null;
+  }
+
+  /** Scatters a handful of random dots within the brush-size radius around the last known pointer cell. */
+  private sprayTick(): void {
+    if (!this.sprayPointerCell) return;
+    const { width, height } = this.current;
+    const frame = this.activeCells();
+    const color = this.currentPaintColor();
+    const radius = this.brushSize + 1;
+    const dots = radius;
+    for (let i = 0; i < dots; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * radius;
+      const x = Math.round(this.sprayPointerCell.x + Math.cos(angle) * r);
+      const y = Math.round(this.sprayPointerCell.y + Math.sin(angle) * r);
+      this.mirrorCells(x, y).forEach((m) => {
+        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height) frame[m.y * width + m.x] = color;
+      });
+    }
+    if (color) this.addSavedColor(color);
+    this.refresh();
+  }
+
   private mirrorCells(x: number, y: number): Cell[] {
     const { width, height } = this.current;
     const pts: Cell[] = [{ x, y }];
@@ -1190,31 +1546,95 @@ class PixelEditorEngine {
     return out;
   }
 
-  private paintCell(x: number, y: number, isMove?: boolean): void {
+  private currentPaintColor(): string | null {
+    return this.tool === 'eraser' || this.eraseOverride ? null : this.color;
+  }
+
+  /** Top-left-anchored square of side `brushSize` centered as closely as possible on (x, y). */
+  private brushCellsAt(x: number, y: number): Cell[] {
+    if (this.brushSize <= 1) return [{ x, y }];
+    const off = Math.floor((this.brushSize - 1) / 2);
+    const cells: Cell[] = [];
+    for (let dy = 0; dy < this.brushSize; dy++) {
+      for (let dx = 0; dx < this.brushSize; dx++) {
+        cells.push({ x: x - off + dx, y: y - off + dy });
+      }
+    }
+    return cells;
+  }
+
+  private applyBrushAt(x: number, y: number, color: string | null): void {
     const { width, height } = this.current;
     const frame = this.activeCells();
-    const color = this.tool === 'eraser' ? null : this.color;
-
-    const applyAt = (px: number, py: number) => {
-      this.mirrorCells(px, py).forEach((m) => {
+    this.brushCellsAt(x, y).forEach((cell) => {
+      this.mirrorCells(cell.x, cell.y).forEach((m) => {
         if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height) frame[m.y * width + m.x] = color;
       });
-    };
+    });
+  }
 
-    if (isMove && this.lastPaintCell) {
-      bresenhamLine(this.lastPaintCell.x, this.lastPaintCell.y, x, y).forEach((p) => {
-        if (p.x >= 0 && p.y >= 0 && p.x < width && p.y < height) applyAt(p.x, p.y);
-      });
-    } else if (x >= 0 && y >= 0 && x < width && y < height) {
-      applyAt(x, y);
+  /** Starts a new freehand stroke: snapshots the layer so Pixel Perfect can restore a trimmed corner pixel. */
+  private beginStroke(): void {
+    this.strokeSnapshot = this.activeCells().slice();
+    this.strokePoints = [];
+  }
+
+  private restoreCellFromSnapshot(x: number, y: number): void {
+    const { width, height } = this.current;
+    if (!this.strokeSnapshot || x < 0 || y < 0 || x >= width || y >= height) return;
+    const idx = y * width + x;
+    this.activeCells()[idx] = this.strokeSnapshot[idx];
+  }
+
+  /**
+   * Aseprite-style Pixel Perfect: when a freehand stroke turns a corner (three points where the
+   * first and third are diagonal neighbors and the middle one is the right-angle corner between
+   * them), the corner pixel is redundant for connectivity and just thickens the stroke - so it's
+   * un-painted, keeping a clean 1px staircase instead of a doubled corner.
+   */
+  private applyPixelPerfectCorner(): void {
+    const n = this.strokePoints.length;
+    if (n < 3) return;
+    const a = this.strokePoints[n - 3];
+    const b = this.strokePoints[n - 2];
+    const c = this.strokePoints[n - 1];
+    if (Math.abs(c.x - a.x) !== 1 || Math.abs(c.y - a.y) !== 1) return;
+    const isCorner = (b.x === a.x && b.y === c.y) || (b.x === c.x && b.y === a.y);
+    if (!isCorner) return;
+    this.mirrorCells(b.x, b.y).forEach((m) => this.restoreCellFromSnapshot(m.x, m.y));
+    this.strokePoints.splice(n - 2, 1);
+  }
+
+  private strokeStep(x: number, y: number): void {
+    const color = this.currentPaintColor();
+    this.applyBrushAt(x, y, color);
+    if (this.brushSize === 1) {
+      const last = this.strokePoints[this.strokePoints.length - 1];
+      if (!last || last.x !== x || last.y !== y) {
+        this.strokePoints.push({ x, y });
+        this.applyPixelPerfectCorner();
+      }
     }
     this.lastPaintCell = { x, y };
     if (color) this.addSavedColor(color);
+  }
+
+  private paintCell(x: number, y: number, isMove?: boolean): void {
+    const { width, height } = this.current;
+    const inBounds = (px: number, py: number) => px >= 0 && py >= 0 && px < width && py < height;
+
+    if (isMove && this.lastPaintCell) {
+      bresenhamLine(this.lastPaintCell.x, this.lastPaintCell.y, x, y).forEach((p) => {
+        if (inBounds(p.x, p.y)) this.strokeStep(p.x, p.y);
+      });
+    } else if (inBounds(x, y)) {
+      this.strokeStep(x, y);
+    }
     this.refresh();
   }
 
   /** Samples the topmost visible layer that has paint at this cell, matching what's on screen. */
-  private pickColor(x: number, y: number): void {
+  private pickColor(x: number, y: number, switchToPen = true): void {
     const width = this.current.width;
     const layers = this.layers();
     for (let i = layers.length - 1; i >= 0; i--) {
@@ -1222,22 +1642,22 @@ class PixelEditorEngine {
       const sampled = layers[i].cells[y * width + x];
       if (sampled) {
         this.color = sampled;
-        this.tool = 'pen';
+        if (switchToPen) this.tool = 'pen';
         this.reactNotify();
         return;
       }
     }
   }
 
-  private floodFill(frame: Frame, width: number, height: number, x: number, y: number, target: string | null): void {
-    if (target === this.color) return;
+  private floodFill(frame: Frame, width: number, height: number, x: number, y: number, target: string | null, fillColor: string | null): void {
+    if (target === fillColor) return;
     const stack: [number, number][] = [[x, y]];
     while (stack.length) {
       const [cx, cy] = stack.pop()!;
       if (cx < 0 || cy < 0 || cx >= width || cy >= height) continue;
       const idx = cy * width + cx;
       if (frame[idx] !== target) continue;
-      frame[idx] = this.color;
+      frame[idx] = fillColor;
       stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
     }
   }
@@ -1286,12 +1706,33 @@ class PixelEditorEngine {
       });
     }
 
+    if (this.gradientPreview) {
+      this.gradientPreview.forEach((c) => {
+        if (c.x < 0 || c.y < 0 || c.x >= width || c.y >= height) return;
+        ctx.fillStyle = c.color;
+        ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
+      });
+    }
+
     if (overlayCells) {
-      ctx.fillStyle = this.color;
+      ctx.fillStyle = this.eraseOverride ? 'rgba(255,255,255,0.45)' : this.color;
       overlayCells.forEach((c) => {
         if (c.x < 0 || c.y < 0 || c.x >= width || c.y >= height) return;
         ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
       });
+    }
+
+    if (this.tool === 'curve' && this.curvePhase === 'bend' && this.curveControl) {
+      const hx = (this.curveControl.x + 0.5) * cellPx;
+      const hy = (this.curveControl.y + 0.5) * cellPx;
+      const s = HANDLE_SIZE;
+      ctx.save();
+      ctx.fillStyle = '#ffcc00';
+      ctx.strokeStyle = '#1a1a1a';
+      ctx.lineWidth = 1;
+      ctx.fillRect(hx - s / 2, hy - s / 2, s, s);
+      ctx.strokeRect(hx - s / 2, hy - s / 2, s, s);
+      ctx.restore();
     }
 
     if (this.symmetry !== 'none') {
@@ -1467,12 +1908,14 @@ class PixelEditorEngine {
     this.activeLayerIndex = Math.min(s.activeLayerIndex, this.current.frames[this.frameIndex].length - 1);
     this.selection = null;
     this.moveBuffer = null;
+    if (this.curvePhase) this.clearCurveState();
     this.recomputeCanvasSize();
     this.restartPreviewTimer();
     this.refresh();
   }
 
   pushUndo(): void {
+    if (this.curvePhase) this.clearCurveState();
     this.undoStack.push(this.snapshot());
     if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
     this.redoStack = [];
@@ -1544,6 +1987,7 @@ class PixelEditorEngine {
     this.activeLayerIndex = 0;
     this.selection = null;
     this.moveBuffer = null;
+    this.clearCurveState();
     this.undoStack = [];
     this.redoStack = [];
     this.dirty = false;
@@ -1588,6 +2032,7 @@ class PixelEditorEngine {
     this.previewFrame = 0;
     this.selection = null;
     this.moveBuffer = null;
+    this.clearCurveState();
     this.undoStack = [];
     this.redoStack = [];
     this.dirty = false;
@@ -1614,6 +2059,7 @@ class PixelEditorEngine {
       this.activeLayerIndex = 0;
       this.selection = null;
       this.moveBuffer = null;
+      this.clearCurveState();
       this.loadToken += 1;
       this.recomputeCanvasSize();
       this.restartPreviewTimer();
