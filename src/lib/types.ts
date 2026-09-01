@@ -17,6 +17,8 @@ export interface Sprite {
   width: number;
   height: number;
   frames: Layer[][];
+  /** Milliseconds each frame stays on screen during animation (editor preview and the tank). */
+  frameMs: number;
 }
 
 export type ToolName =

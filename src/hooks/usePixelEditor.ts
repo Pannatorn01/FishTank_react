@@ -38,6 +38,9 @@ const HANDLE_CURSORS: Record<HandleName, string> = {
   n: 'ns-resize', s: 'ns-resize',
   w: 'ew-resize', e: 'ew-resize',
 };
+const ROTATE_HANDLE_OFFSET = 24;
+const ROTATE_HANDLE_RADIUS = 7;
+const ROTATE_HIT_RADIUS = 11;
 
 function blankSprite(): Sprite {
   const size = storage.DEFAULT_GRID_SIZE;
@@ -48,6 +51,7 @@ function blankSprite(): Sprite {
     width: size,
     height: size,
     frames: [[storage.makeLayer(storage.emptyFrame(size, size))]],
+    frameMs: storage.DEFAULT_FRAME_MS,
   };
 }
 
@@ -65,6 +69,7 @@ interface Snapshot {
   height: number;
   frameIndex: number;
   activeLayerIndex: number;
+  frameMs: number;
 }
 
 class PixelEditorEngine {
@@ -93,6 +98,11 @@ class PixelEditorEngine {
   resizeOrigin: SelectionBox | null = null;
   resizeSource: (string | null)[][] | null = null;
   resizePreview: MoveBufferCell[] | null = null;
+  rotateOrigin: SelectionBox | null = null;
+  rotateSource: (string | null)[][] | null = null;
+  rotateStartAngle = 0;
+  rotateAngle = 0;
+  rotatePreview: MoveBufferCell[] | null = null;
   moveBuffer: { cells: MoveBufferCell[] } | null = null;
   moveStartCell: Cell | null = null;
   moveDelta = { dx: 0, dy: 0 };
@@ -126,7 +136,7 @@ class PixelEditorEngine {
     this.paletteColors = storage.loadPaletteColors() ?? [...DEFAULT_PALETTE_COLORS];
     this.savedColors = storage.loadSavedColors();
 
-    this.previewTimer = setInterval(() => this.tickPreview(), 400);
+    this.restartPreviewTimer();
 
     const endGesture = () => this.onPointerUp();
     const forceEndGesture = () => {
@@ -290,8 +300,7 @@ class PixelEditorEngine {
   }
 
   private defaultZoomIndexForSize(maxDim: number): number {
-    if (maxDim >= 32) return ZOOM_LEVELS.indexOf(0.5);
-    if (maxDim >= 24) return ZOOM_LEVELS.indexOf(0.75);
+    if (maxDim >= 32) return ZOOM_LEVELS.indexOf(0.75);
     return 2;
   }
 
@@ -333,6 +342,26 @@ class PixelEditorEngine {
     const layers = this.layers();
     layers.push(storage.makeLayer(storage.emptyFrame(width, height), `Layer ${layers.length + 1}`));
     this.activeLayerIndex = layers.length - 1;
+    this.refresh();
+  }
+
+  duplicateLayer(index: number): void {
+    if (this.layers().length >= LAYER_LIMIT) return;
+    this.pushUndo();
+    const layers = this.layers();
+    const cloned: Layer = JSON.parse(JSON.stringify(layers[index]));
+    cloned.id = storage.uid('layer');
+    cloned.name = `${layers[index].name} copy`;
+    layers.splice(index + 1, 0, cloned);
+    this.activeLayerIndex = index + 1;
+    this.refresh();
+  }
+
+  renameLayer(index: number, name: string): void {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === this.layers()[index].name) return;
+    this.pushUndo();
+    this.layers()[index].name = trimmed;
     this.refresh();
   }
 
@@ -501,11 +530,13 @@ class PixelEditorEngine {
   }
 
   rotateCW(): void {
-    this.transformFrames((f, width, height) => rotateFrame(f, width, height, true), true);
+    const resizesFrame = this.current.width !== this.current.height;
+    this.transformFrames((f, width, height) => rotateFrame(f, width, height, true), resizesFrame);
   }
 
   rotateCCW(): void {
-    this.transformFrames((f, width, height) => rotateFrame(f, width, height, false), true);
+    const resizesFrame = this.current.width !== this.current.height;
+    this.transformFrames((f, width, height) => rotateFrame(f, width, height, false), resizesFrame);
   }
 
   // --- keyboard ---
@@ -587,6 +618,7 @@ class PixelEditorEngine {
     // delete the pixels the user picked up.
     if (this.moveBuffer) this.commitMove();
     if (this.resizeHandle) this.commitResize();
+    if (this.rotateOrigin) this.commitRotate();
     this.painting = false;
     this.lastPaintCell = null;
     this.shapeStart = null;
@@ -600,6 +632,10 @@ class PixelEditorEngine {
     this.resizeOrigin = null;
     this.resizeSource = null;
     this.resizePreview = null;
+    this.rotateOrigin = null;
+    this.rotateSource = null;
+    this.rotatePreview = null;
+    this.rotateAngle = 0;
   }
 
   private pxFromEvent(e: { clientX: number; clientY: number }): { px: number; py: number } | null {
@@ -635,6 +671,46 @@ class PixelEditorEngine {
     if (nearLeft && withinY) return 'w';
     if (nearRight && withinY) return 'e';
     return null;
+  }
+
+  private selectionCenterPx(box: SelectionBox, cellPx: number): { cx: number; cy: number } {
+    const x0 = box.x0 * cellPx;
+    const y0 = box.y0 * cellPx;
+    const x1 = (box.x1 + 1) * cellPx;
+    const y1 = (box.y1 + 1) * cellPx;
+    return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 };
+  }
+
+  /** Distance from the selection center to the rotate handle: half the box height plus a fixed screen-space gap. */
+  private rotateHandleRadius(box: SelectionBox, cellPx: number): number {
+    return ((box.y1 - box.y0 + 1) * cellPx) / 2 + ROTATE_HANDLE_OFFSET;
+  }
+
+  /**
+   * Clamped to stay inside the canvas bitmap: a handle beyond those bounds would be both
+   * invisible (canvas clips its own drawing) and unreachable (pointer events land on the
+   * wrapper div instead, which deselects) - most noticeable with a selection flush against
+   * an edge, e.g. selecting the whole sprite.
+   */
+  private rotateHandlePos(box: SelectionBox, cellPx: number): { hx: number; hy: number } {
+    const { cx, cy } = this.selectionCenterPx(box, cellPx);
+    const r = this.rotateHandleRadius(box, cellPx);
+    const ang = -Math.PI / 2 + this.rotateAngle;
+    const pad = ROTATE_HANDLE_RADIUS + 2;
+    const maxW = this.canvas?.width ?? Infinity;
+    const maxH = this.canvas?.height ?? Infinity;
+    const hx = Math.min(Math.max(cx + r * Math.cos(ang), pad), Math.max(pad, maxW - pad));
+    const hy = Math.min(Math.max(cy + r * Math.sin(ang), pad), Math.max(pad, maxH - pad));
+    return { hx, hy };
+  }
+
+  private hitTestRotateHandle(e: { clientX: number; clientY: number }): boolean {
+    if (!this.selection) return false;
+    const pt = this.pxFromEvent(e);
+    if (!pt) return false;
+    const cellPx = this.effectiveCellPx();
+    const { hx, hy } = this.rotateHandlePos(this.selection, cellPx);
+    return Math.hypot(pt.px - hx, pt.py - hy) <= ROTATE_HIT_RADIUS;
   }
 
   private cellFromEventClamped(e: { clientX: number; clientY: number }): Cell {
@@ -778,7 +854,99 @@ class PixelEditorEngine {
     };
   }
 
+  /**
+   * Inverse-maps each cell of the rotated bounding box back into the captured source region
+   * (nearest-neighbor) so the preview has no holes, unlike forward-mapping source pixels.
+   */
+  private computeRotatePreview(angle: number): { cells: MoveBufferCell[]; box: SelectionBox } {
+    const origin = this.rotateOrigin!;
+    const source = this.rotateSource!;
+    const w = origin.x1 - origin.x0 + 1;
+    const h = origin.y1 - origin.y0 + 1;
+    const cx = origin.x0 + w / 2;
+    const cy = origin.y0 + h / 2;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+
+    const corners: [number, number][] = [
+      [origin.x0, origin.y0], [origin.x1 + 1, origin.y0],
+      [origin.x0, origin.y1 + 1], [origin.x1 + 1, origin.y1 + 1],
+    ];
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    corners.forEach(([px, py]) => {
+      const rx = px - cx;
+      const ry = py - cy;
+      const nx = cx + rx * cos - ry * sin;
+      const ny = cy + rx * sin + ry * cos;
+      minX = Math.min(minX, nx);
+      maxX = Math.max(maxX, nx);
+      minY = Math.min(minY, ny);
+      maxY = Math.max(maxY, ny);
+    });
+
+    const { width: fw, height: fh } = this.current;
+    const bx0 = Math.max(0, Math.floor(minX));
+    const by0 = Math.max(0, Math.floor(minY));
+    const bx1 = Math.min(fw - 1, Math.ceil(maxX) - 1);
+    const by1 = Math.min(fh - 1, Math.ceil(maxY) - 1);
+
+    const cells: MoveBufferCell[] = [];
+    if (bx1 >= bx0 && by1 >= by0) {
+      for (let y = by0; y <= by1; y++) {
+        for (let x = bx0; x <= bx1; x++) {
+          const relX = x + 0.5 - cx;
+          const relY = y + 0.5 - cy;
+          const srcRelX = relX * cos + relY * sin;
+          const srcRelY = -relX * sin + relY * cos;
+          const srcX = Math.floor(srcRelX + cx - origin.x0);
+          const srcY = Math.floor(srcRelY + cy - origin.y0);
+          if (srcX >= 0 && srcY >= 0 && srcX < w && srcY < h) {
+            const color = source[srcY][srcX];
+            if (color) cells.push({ x, y, color });
+          }
+        }
+      }
+    }
+    const box: SelectionBox = bx1 >= bx0 && by1 >= by0 ? { x0: bx0, y0: by0, x1: bx1, y1: by1 } : origin;
+    return { cells, box };
+  }
+
+  private commitRotate(): void {
+    if (this.rotatePreview) {
+      const frame = this.activeCells();
+      const { width, height } = this.current;
+      this.rotatePreview.forEach((c) => {
+        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = c.color;
+      });
+    }
+    this.rotateOrigin = null;
+    this.rotateSource = null;
+    this.rotatePreview = null;
+    this.rotateAngle = 0;
+  }
+
   onPointerDown(e: React.PointerEvent<HTMLCanvasElement>): void {
+    if (this.tool === 'select' && this.selection && this.hitTestRotateHandle(e)) {
+      if (this.painting) this.resetGestureState();
+      this.canvas?.setPointerCapture(e.pointerId);
+      this.pushUndo();
+      this.painting = true;
+      this.rotateOrigin = { ...this.selection };
+      this.rotateSource = this.captureSelectionPixels(this.selection);
+      this.clearFrameRegion(this.selection);
+      const pt = this.pxFromEvent(e)!;
+      const cellPx = this.effectiveCellPx();
+      const { cx, cy } = this.selectionCenterPx(this.rotateOrigin, cellPx);
+      this.rotateStartAngle = Math.atan2(pt.py - cy, pt.px - cx);
+      this.rotateAngle = 0;
+      if (this.canvas) this.canvas.style.cursor = 'grabbing';
+      const { cells, box } = this.computeRotatePreview(0);
+      this.rotatePreview = cells;
+      this.selection = box;
+      this.refresh();
+      return;
+    }
+
     if (this.tool === 'select' && this.selection) {
       const handle = this.hitTestHandle(e);
       if (handle) {
@@ -848,14 +1016,32 @@ class PixelEditorEngine {
   onPointerMove(e: React.PointerEvent<HTMLCanvasElement>): void {
     if (!this.painting) {
       if (this.tool === 'select' && this.selection && this.canvas) {
-        const handle = this.hitTestHandle(e);
-        if (handle) {
-          this.canvas.style.cursor = HANDLE_CURSORS[handle];
+        if (this.hitTestRotateHandle(e)) {
+          this.canvas.style.cursor = 'grab';
         } else {
-          const hoverCell = this.cellFromEvent(e);
-          this.canvas.style.cursor = hoverCell && this.isInsideSelection(hoverCell) ? 'move' : '';
+          const handle = this.hitTestHandle(e);
+          if (handle) {
+            this.canvas.style.cursor = HANDLE_CURSORS[handle];
+          } else {
+            const hoverCell = this.cellFromEvent(e);
+            this.canvas.style.cursor = hoverCell && this.isInsideSelection(hoverCell) ? 'move' : '';
+          }
         }
       }
+      return;
+    }
+
+    if (this.rotateOrigin && this.rotateSource) {
+      const pt = this.pxFromEvent(e);
+      if (!pt) return;
+      const cellPx = this.effectiveCellPx();
+      const { cx, cy } = this.selectionCenterPx(this.rotateOrigin, cellPx);
+      const currentAngle = Math.atan2(pt.py - cy, pt.px - cx);
+      this.rotateAngle = currentAngle - this.rotateStartAngle;
+      const { cells, box } = this.computeRotatePreview(this.rotateAngle);
+      this.rotatePreview = cells;
+      this.selection = box;
+      this.drawGrid();
       return;
     }
 
@@ -896,6 +1082,12 @@ class PixelEditorEngine {
   onPointerUp(): void {
     if (!this.painting) return;
     this.painting = false;
+
+    if (this.rotateOrigin) {
+      this.commitRotate();
+      this.refresh();
+      return;
+    }
 
     if (this.resizeHandle) {
       this.commitResize();
@@ -1086,6 +1278,14 @@ class PixelEditorEngine {
       });
     }
 
+    if (this.rotatePreview) {
+      this.rotatePreview.forEach((c) => {
+        if (c.x < 0 || c.y < 0 || c.x >= width || c.y >= height) return;
+        ctx.fillStyle = c.color;
+        ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
+      });
+    }
+
     if (overlayCells) {
       ctx.fillStyle = this.color;
       overlayCells.forEach((c) => {
@@ -1172,7 +1372,63 @@ class PixelEditorEngine {
       ctx.fillRect(px - s / 2, py - s / 2, s, s);
       ctx.strokeRect(px - s / 2, py - s / 2, s, s);
     });
+
+    // Hidden entirely while actively dragging - the connecting line and handle glyph are just
+    // clutter once the user has already grabbed the handle and is watching the artwork rotate;
+    // they reappear at rest once the drag ends.
+    if (!this.rotateOrigin) {
+      const { hx, hy } = this.rotateHandlePos(box, cellPx);
+      ctx.strokeStyle = '#ffcc00';
+      ctx.beginPath();
+      ctx.moveTo(mx, y0);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+      this.drawRotateIcon(ctx, hx, hy);
+    }
+
     ctx.restore();
+  }
+
+  /** A circular-arrow "rotate" glyph (⟳-style), matching the affordance PowerPoint uses for its rotate handle. */
+  private drawRotateIcon(ctx: CanvasRenderingContext2D, x: number, y: number): void {
+    const r = ROTATE_HANDLE_RADIUS;
+    const start = Math.PI * 0.2;
+    const end = Math.PI * 1.85;
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#ffcc00';
+    ctx.beginPath();
+    ctx.arc(x, y, r, start, end);
+    ctx.stroke();
+
+    const tipAngle = end;
+    const tipX = x + r * Math.cos(tipAngle);
+    const tipY = y + r * Math.sin(tipAngle);
+    const tangent = tipAngle + Math.PI / 2;
+    const headLen = r * 0.85;
+    const spread = Math.PI * 0.7;
+    ctx.fillStyle = '#ffcc00';
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX + headLen * Math.cos(tangent + spread), tipY + headLen * Math.sin(tangent + spread));
+    ctx.lineTo(tipX + headLen * Math.cos(tangent - spread), tipY + headLen * Math.sin(tangent - spread));
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /** Re-armed whenever the current sprite's frameMs changes, or a different sprite becomes current. */
+  private restartPreviewTimer(): void {
+    if (this.previewTimer) clearInterval(this.previewTimer);
+    this.previewTimer = setInterval(() => this.tickPreview(), this.current.frameMs);
+  }
+
+  setFrameSpeed(fps: number): void {
+    const clampedFps = Math.min(storage.MAX_FRAME_FPS, Math.max(storage.MIN_FRAME_FPS, fps));
+    const frameMs = Math.round(1000 / clampedFps);
+    if (frameMs === this.current.frameMs) return;
+    this.pushUndo();
+    this.current.frameMs = frameMs;
+    this.restartPreviewTimer();
+    this.refresh();
   }
 
   private tickPreview(): void {
@@ -1198,6 +1454,7 @@ class PixelEditorEngine {
       height: this.current.height,
       frameIndex: this.frameIndex,
       activeLayerIndex: this.activeLayerIndex,
+      frameMs: this.current.frameMs,
     };
   }
 
@@ -1205,11 +1462,13 @@ class PixelEditorEngine {
     this.current.frames = s.frames;
     this.current.width = s.width;
     this.current.height = s.height;
+    this.current.frameMs = s.frameMs;
     this.frameIndex = Math.min(s.frameIndex, s.frames.length - 1);
     this.activeLayerIndex = Math.min(s.activeLayerIndex, this.current.frames[this.frameIndex].length - 1);
     this.selection = null;
     this.moveBuffer = null;
     this.recomputeCanvasSize();
+    this.restartPreviewTimer();
     this.refresh();
   }
 
@@ -1290,6 +1549,7 @@ class PixelEditorEngine {
     this.dirty = false;
     this.loadToken += 1;
     this.recomputeCanvasSize();
+    this.restartPreviewTimer();
     this.refresh();
   }
 
@@ -1333,6 +1593,7 @@ class PixelEditorEngine {
     this.dirty = false;
     this.loadToken += 1;
     this.recomputeCanvasSize();
+    this.restartPreviewTimer();
     this.refresh();
   }
 
@@ -1355,6 +1616,7 @@ class PixelEditorEngine {
       this.moveBuffer = null;
       this.loadToken += 1;
       this.recomputeCanvasSize();
+      this.restartPreviewTimer();
       this.refresh();
     } else {
       this.reactNotify();

@@ -39,12 +39,14 @@ export function CanvasStatusBar({
   setName,
   type,
   setType,
+  onError,
 }: {
   engine: PixelEditorEngine;
   name: string;
   setName: (name: string) => void;
   type: SpriteType;
   setType: (type: SpriteType) => void;
+  onError: (msg: string) => void;
 }) {
   const { t } = useLanguage();
   const showShapeFilled = engine.tool === 'rect' || engine.tool === 'ellipse';
@@ -184,7 +186,7 @@ export function CanvasStatusBar({
       )}
 
       <Select value={engine.symmetry} onValueChange={(v) => engine.setSymmetry(v as SymmetryMode)}>
-        <SelectTrigger className="w-56 text-xs" title={t('status.symmetryTitle')}>
+        <SelectTrigger className="w-48 text-xs" title={t('status.symmetryTitle')}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -196,6 +198,7 @@ export function CanvasStatusBar({
         </SelectContent>
       </Select>
 
+      <div className="flex gap-2 ml-auto">
       <Input
         className="status-name-input"
         value={name}
@@ -212,6 +215,16 @@ export function CanvasStatusBar({
         </SelectContent>
       </Select>
 
+      <Button
+        type="button"
+        size="sm"
+        title={t('form.save')}
+        onClick={() => engine.saveCurrentSprite(name, type, onError)}
+      >
+        <i className="fa-solid fa-floppy-disk" />
+        {t('form.save')}
+      </Button>
+      </div>
       {selection && (
         <span className="selection-info" title={t('status.selectionHint')}>
           <i className="fa-solid fa-vector-square" />{' '}

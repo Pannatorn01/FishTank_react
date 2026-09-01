@@ -9,7 +9,10 @@ export const DEFAULT_GRID_SIZE = 16;
 export const GRID_SIZES = [8, 16, 24, 32];
 export const MIN_GRID_SIZE = 4;
 export const MAX_GRID_SIZE = 64;
-export const LAYER_LIMIT = 6;
+export const LAYER_LIMIT = 12;
+export const DEFAULT_FRAME_MS = 350;
+export const MIN_FRAME_FPS = 1;
+export const MAX_FRAME_FPS = 20;
 
 export function uid(prefix?: string): string {
   return (prefix || 'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
@@ -32,7 +35,7 @@ export function normalizeSprite(sprite: Sprite): Sprite {
   const width = sprite.width || legacy.size || DEFAULT_GRID_SIZE;
   const height = sprite.height || legacy.size || DEFAULT_GRID_SIZE;
   const frames = legacy.frames.map((frame) => (isLegacyFrame(frame) ? [makeLayer(frame)] : (frame as Layer[])));
-  return { ...sprite, width, height, frames };
+  return { ...sprite, width, height, frames, frameMs: sprite.frameMs || DEFAULT_FRAME_MS };
 }
 
 export function loadSprites(): Sprite[] | null {
@@ -189,7 +192,7 @@ export function buildDefaultSprites(): Sprite[] {
   return [
     {
       id: uid('sprite'),
-      name: 'ปลาทอง (ตัวอย่าง)',
+      name: 'Goldfish (sample)',
       type: 'fish',
       width: DEFAULT_GRID_SIZE,
       height: DEFAULT_GRID_SIZE,
@@ -197,10 +200,11 @@ export function buildDefaultSprites(): Sprite[] {
         [makeLayer(buildFishFrame(DEFAULT_GRID_SIZE, -2))],
         [makeLayer(buildFishFrame(DEFAULT_GRID_SIZE, 2))],
       ],
+      frameMs: DEFAULT_FRAME_MS,
     },
     {
       id: uid('sprite'),
-      name: 'สาหร่าย (ตัวอย่าง)',
+      name: 'Seaweed (sample)',
       type: 'object',
       width: DEFAULT_GRID_SIZE,
       height: DEFAULT_GRID_SIZE,
@@ -208,6 +212,7 @@ export function buildDefaultSprites(): Sprite[] {
         [makeLayer(buildPlantFrame(DEFAULT_GRID_SIZE, 0))],
         [makeLayer(buildPlantFrame(DEFAULT_GRID_SIZE, Math.PI / 2))],
       ],
+      frameMs: DEFAULT_FRAME_MS,
     },
   ];
 }

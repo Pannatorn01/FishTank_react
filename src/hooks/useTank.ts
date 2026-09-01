@@ -5,7 +5,6 @@ import * as storage from '@/lib/storage';
 import type { Instance, Sprite } from '@/lib/types';
 
 const DISPLAY_SCALE = 4;
-const FRAME_INTERVAL = 0.35;
 const TAP_MOVE_THRESHOLD = 6;
 
 interface Bubble {
@@ -335,7 +334,8 @@ class TankEngine {
       const sprite = this.spriteFor(inst);
       if (!sprite) return;
       inst.frameTimer += dt;
-      if (inst.frameTimer >= FRAME_INTERVAL) {
+      const frameInterval = (sprite.frameMs || storage.DEFAULT_FRAME_MS) / 1000;
+      if (inst.frameTimer >= frameInterval) {
         inst.frameTimer = 0;
         inst.frameIndex = (inst.frameIndex + 1) % sprite.frames.length;
       }

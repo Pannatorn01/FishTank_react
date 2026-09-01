@@ -46,7 +46,7 @@ export function PixelEditorPanel({
 
         <div className="canvas-column">
           <PixelCanvas engine={engine} />
-          <CanvasStatusBar engine={engine} name={name} setName={setName} type={type} setType={setType} />
+          <CanvasStatusBar engine={engine} name={name} setName={setName} type={type} setType={setType} onError={onError} />
           <FrameStrip engine={engine} />
           <SpriteLibrary engine={engine} onConfirmDiscard={confirmDiscard} onError={onError} />
         </div>

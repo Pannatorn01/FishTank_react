@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import { Button } from '@/components/ui/button';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import { paintFrameCells } from '@/lib/pixelMath';
@@ -32,6 +31,8 @@ export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
   const [opacityOpenId, setOpacityOpenId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState('');
   const grabbedHandleRef = useRef(false);
 
   const endDrag = () => {
@@ -39,11 +40,27 @@ export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
     setOverIndex(null);
   };
 
+  const commitRename = (index: number) => {
+    engine.renameLayer(index, draftName);
+    setRenamingId(null);
+  };
+
   const rows = layers.map((layer, index) => ({ layer, index })).reverse();
 
   return (
     <div className="layer-panel flex-1">
-      <div className="panel-title">{t('layer.title')}</div>
+      <div className="panel-title">
+        {t('layer.title')}
+        <button
+          type="button"
+          className="panel-title-add"
+          title={t('layer.add')}
+          disabled={limitReached}
+          onClick={() => engine.addLayer()}
+        >
+          <i className="fa-solid fa-plus" />
+        </button>
+      </div>
       <div className="layer-list">
         {rows.map(({ layer, index }) => (
           <div
@@ -83,7 +100,33 @@ export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
                 <i className="fa-solid fa-grip-vertical" />
               </span>
               <LayerThumb layer={layer} width={width} height={height} />
-              <span className="layer-name">{layer.name}</span>
+              {renamingId === layer.id ? (
+                <input
+                  className="layer-name-input"
+                  value={draftName}
+                  autoFocus
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onChange={(e) => setDraftName(e.target.value)}
+                  onBlur={() => commitRename(index)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(index);
+                    else if (e.key === 'Escape') setRenamingId(null);
+                  }}
+                />
+              ) : (
+                <span
+                  className="layer-name"
+                  title={t('layer.rename')}
+                  onDoubleClick={(e) => {
+                    e.stopPropagation();
+                    setDraftName(layer.name);
+                    setRenamingId(layer.id);
+                  }}
+                >
+                  {layer.name}
+                </span>
+              )}
               <button
                 type="button"
                 className="layer-eye"
@@ -122,6 +165,18 @@ export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
               </button>
               <button
                 type="button"
+                className="layer-dup"
+                title={t('layer.duplicate')}
+                disabled={limitReached}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  engine.duplicateLayer(index);
+                }}
+              >
+                <i className="fa-solid fa-clone" />
+              </button>
+              <button
+                type="button"
                 className="layer-del"
                 title={t('layer.delete')}
                 disabled={layers.length <= 1}
@@ -130,7 +185,7 @@ export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
                   engine.deleteLayer(index);
                 }}
               >
-                <i className="fa-solid fa-xmark" />
+                <i className="fa-solid fa-trash" />
               </button>
             </div>
             {opacityOpenId === layer.id && (
@@ -153,9 +208,6 @@ export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
           </div>
         ))}
       </div>
-      <Button type="button" size="sm" variant="secondary" disabled={limitReached} onClick={() => engine.addLayer()}>
-        <i className="fa-solid fa-plus" /> {t('layer.add')}
-      </Button>
     </div>
   );
 }

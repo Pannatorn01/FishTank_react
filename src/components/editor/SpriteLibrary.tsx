@@ -39,6 +39,14 @@ export function SpriteLibrary({
     <div className="library">
       <h3>{t('library.title')}</h3>
       <div className="library-grid">
+        <button
+          type="button"
+          className="library-add"
+          title={t('form.new')}
+          onClick={() => engine.newSprite(onConfirmDiscard)}
+        >
+          <i className="fa-solid fa-plus" />
+        </button>
         {engine.sprites.map((sprite) => (
           <div key={sprite.id} className="library-card" onClick={() => engine.loadSpriteForEdit(sprite, onConfirmDiscard)}>
             <LibraryThumb sprite={sprite} />
