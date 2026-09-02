@@ -1761,10 +1761,8 @@ class PixelEditorEngine {
       const shown = this.moveBuffer && this.selection && !this.selectionDraft ? shiftBox(activeBox, this.moveDelta) : activeBox;
       ctx.save();
       ctx.strokeStyle = '#ffcc00';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 2;
       ctx.strokeRect(shown.x0 * cellPx, shown.y0 * cellPx, (shown.x1 - shown.x0 + 1) * cellPx, (shown.y1 - shown.y0 + 1) * cellPx);
-      ctx.setLineDash([]);
       ctx.restore();
 
       if (this.tool === 'select' && this.selection && !this.selectionDraft) {
