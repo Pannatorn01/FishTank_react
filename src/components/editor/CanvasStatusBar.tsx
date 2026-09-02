@@ -175,7 +175,7 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
       </label>
 
       <Select value={engine.canvasBackground} onValueChange={(v) => engine.setCanvasBackground(v as CanvasBackground)}>
-        <SelectTrigger className="w-36 text-xs" title={t('status.canvasBgTitle')}>
+        <SelectTrigger className="w-44 text-xs" title={t('status.canvasBgTitle')}>
           <SelectValue>
             <span className="bg-swatch" data-bg={engine.canvasBackground} aria-hidden="true" />
             {t(CANVAS_BG_KEYS[engine.canvasBackground])}

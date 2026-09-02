@@ -31,7 +31,7 @@ export function CanvasMetaBar({
         placeholder={t('form.namePlaceholder')}
       />
       <Select value={type} onValueChange={(v) => setType(v as SpriteType)}>
-        <SelectTrigger className="w-40 text-xs">
+        <SelectTrigger className="w-48 text-xs">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

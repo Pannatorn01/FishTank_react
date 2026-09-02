@@ -97,6 +97,17 @@ const en: Dict = {
   'preview.speed': 'Speed',
   'preview.fps': 'fps',
 
+  'theme.switch': 'Switch color theme',
+  'theme.cottonCandy': 'Cotton Candy',
+  'theme.watermelonCandy': 'Watermelon Candy',
+  'theme.caramel': 'Caramel',
+  'theme.lemonCake': 'Lemon Cake',
+  'theme.matcha': 'Matcha',
+  'theme.blueberryMuffin': 'Blueberry Muffin',
+  'theme.ube': 'Ube',
+  'theme.blackSesame': 'Black Sesame',
+  'theme.vanilla': 'Vanilla',
+
   'tank.dragHint': 'Drag fish/decorations into the tank',
   'tank.clearConfirm': 'Clear everything in the tank?',
   'tank.clearAll': 'Clear tank',

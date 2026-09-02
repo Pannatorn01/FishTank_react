@@ -1,4 +1,4 @@
-import type { CanvasBackground, Frame, Instance, Layer, Sprite } from './types';
+import type { CanvasBackground, Frame, Instance, Layer, Sprite, UiTheme } from './types';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
@@ -6,6 +6,18 @@ const KEY_SAVED_COLORS = 'fishtank.savedColors.v1';
 const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
 const KEY_CANVAS_BG = 'fishtank.canvasBackground.v1';
 const CANVAS_BACKGROUNDS: CanvasBackground[] = ['checker-dark', 'checker-light', 'white', 'black', 'gray'];
+const KEY_UI_THEME = 'fishtank.uiTheme.v1';
+export const UI_THEMES: UiTheme[] = [
+  'cottonCandy',
+  'watermelonCandy',
+  'caramel',
+  'lemonCake',
+  'matcha',
+  'blueberryMuffin',
+  'ube',
+  'blackSesame',
+  'vanilla',
+];
 
 export const DEFAULT_GRID_SIZE = 16;
 export const GRID_SIZES = [8, 16, 24, 32];
@@ -110,6 +122,20 @@ export function loadCanvasBackground(): CanvasBackground | null {
 
 export function saveCanvasBackground(bg: CanvasBackground): void {
   localStorage.setItem(KEY_CANVAS_BG, bg);
+}
+
+export function loadUiTheme(): UiTheme | null {
+  try {
+    const raw = localStorage.getItem(KEY_UI_THEME);
+    return raw && UI_THEMES.includes(raw as UiTheme) ? (raw as UiTheme) : null;
+  } catch (e) {
+    console.warn('loadUiTheme failed', e);
+    return null;
+  }
+}
+
+export function saveUiTheme(theme: UiTheme): void {
+  localStorage.setItem(KEY_UI_THEME, theme);
 }
 
 export function emptyFrame(width: number, height: number): Frame {

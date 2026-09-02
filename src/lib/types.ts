@@ -39,6 +39,17 @@ export type SymmetryMode = 'none' | 'vertical' | 'horizontal' | 'both';
 
 export type CanvasBackground = 'checker-dark' | 'checker-light' | 'white' | 'black' | 'gray';
 
+export type UiTheme =
+  | 'cottonCandy'
+  | 'watermelonCandy'
+  | 'caramel'
+  | 'lemonCake'
+  | 'matcha'
+  | 'blueberryMuffin'
+  | 'ube'
+  | 'blackSesame'
+  | 'vanilla';
+
 export interface Cell {
   x: number;
   y: number;
