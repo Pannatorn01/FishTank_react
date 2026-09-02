@@ -602,12 +602,6 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .pixel-canvas-wrap[data-tool="pen"] {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cline x1='18' y1='26' x2='25' y2='19' stroke='white' stroke-width='4'/%3E%3Cline x1='18' y1='26' x2='25' y2='19' stroke='black' stroke-width='2'/%3E%3Ccircle cx='25' cy='19' r='1.6' fill='black'/%3E%3Cline x1='10' y1='2' x2='10' y2='18' stroke='white' stroke-width='4'/%3E%3Cline x1='2' y1='10' x2='18' y2='10' stroke='white' stroke-width='4'/%3E%3Cline x1='10' y1='2' x2='10' y2='18' stroke='black' stroke-width='1.5'/%3E%3Cline x1='2' y1='10' x2='18' y2='10' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E") 10 10, crosshair;
 }
-.pixel-canvas-wrap[data-tool="line"] {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cline x1='17' y1='27' x2='27' y2='17' stroke='white' stroke-width='4'/%3E%3Cline x1='17' y1='27' x2='27' y2='17' stroke='black' stroke-width='2'/%3E%3Ccircle cx='17' cy='27' r='1.8' fill='black'/%3E%3Ccircle cx='27' cy='17' r='1.8' fill='black'/%3E%3Cline x1='10' y1='2' x2='10' y2='18' stroke='white' stroke-width='4'/%3E%3Cline x1='2' y1='10' x2='18' y2='10' stroke='white' stroke-width='4'/%3E%3Cline x1='10' y1='2' x2='10' y2='18' stroke='black' stroke-width='1.5'/%3E%3Cline x1='2' y1='10' x2='18' y2='10' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E") 10 10, crosshair;
-}
-.pixel-canvas-wrap[data-tool="curve"] {
-  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Cpath d='M18,27 Q22,17 27,20' fill='none' stroke='white' stroke-width='4'/%3E%3Cpath d='M18,27 Q22,17 27,20' fill='none' stroke='black' stroke-width='2'/%3E%3Cline x1='10' y1='2' x2='10' y2='18' stroke='white' stroke-width='4'/%3E%3Cline x1='2' y1='10' x2='18' y2='10' stroke='white' stroke-width='4'/%3E%3Cline x1='10' y1='2' x2='10' y2='18' stroke='black' stroke-width='1.5'/%3E%3Cline x1='2' y1='10' x2='18' y2='10' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E") 10 10, crosshair;
-}
 .pixel-canvas-wrap[data-tool="fill"] {
   cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 28 28'%3E%3Crect x='19' y='20' width='6' height='6' fill='black' stroke='white' stroke-width='1.2'/%3E%3Cpolygon points='25,20 28,16 28,19' fill='black' stroke='white' stroke-width='0.8'/%3E%3Cline x1='10' y1='2' x2='10' y2='18' stroke='white' stroke-width='4'/%3E%3Cline x1='2' y1='10' x2='18' y2='10' stroke='white' stroke-width='4'/%3E%3Cline x1='10' y1='2' x2='10' y2='18' stroke='black' stroke-width='1.5'/%3E%3Cline x1='2' y1='10' x2='18' y2='10' stroke='black' stroke-width='1.5'/%3E%3C/svg%3E") 10 10, crosshair;
 }
@@ -839,7 +833,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .layer-merge, .layer-dup, .layer-del { width: 1.1rem; height: 1.1rem; }
 .layer-opacity-slider { width: 100%; height: 0.9rem; cursor: pointer; accent-color: var(--pixel-accent); }
 .preview-canvas {
-  width: 80px; height: 80px;
+  width: 160px; height: 160px;
   background-color: #2b2b2b;
   background-image: repeating-conic-gradient(#3a3a3a 0% 25%, #2b2b2b 0% 50%);
   background-size: 8px 8px;

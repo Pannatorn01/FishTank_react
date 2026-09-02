@@ -10,7 +10,7 @@ export function PreviewPanel({ engine }: { engine: PixelEditorEngine }) {
   const fps = Math.round((1000 / engine.current.frameMs) * 10) / 10;
   return (
     <div className="preview-panel">
-      <canvas ref={(el) => engine.attachPreviewCanvas(el)} width={80} height={80} className="preview-canvas pixelated" />
+      <canvas ref={(el) => engine.attachPreviewCanvas(el)} width={160} height={160} className="preview-canvas pixelated" />
       <label className="mini-toggle">
         <Checkbox checked={engine.onionSkin} onCheckedChange={(v) => engine.setOnionSkin(!!v)} />
         <Label>{t('preview.onionSkin')}</Label>
