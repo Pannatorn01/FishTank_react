@@ -39,6 +39,7 @@ export function PixelCanvas({ engine }: { engine: PixelEditorEngine }) {
     <div
       ref={wrapRef}
       className="pixel-canvas-wrap"
+      data-tool={engine.tool}
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) engine.deselect();
       }}
@@ -46,7 +47,6 @@ export function PixelCanvas({ engine }: { engine: PixelEditorEngine }) {
       <canvas
         ref={attachCanvas}
         className="pixel-canvas pixelated"
-        data-tool={engine.tool}
         data-bg={engine.canvasBackground}
         onContextMenu={(e) => e.preventDefault()}
         onPointerDown={(e) => engine.onPointerDown(e)}
