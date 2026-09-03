@@ -1,6 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
-import { SWIM_SPEEDS, TANK_SIZE_MAX, TANK_SIZE_MIN, TANK_ZOOM_STEPS, type TankEngine } from '@/hooks/useTank';
+import {
+  OVAL_TOP_CUT_MAX,
+  OVAL_TOP_CUT_MIN,
+  ROUNDED_RADIUS_MAX,
+  ROUNDED_RADIUS_MIN,
+  SWIM_SPEEDS,
+  TANK_SIZE_MAX,
+  TANK_SIZE_MIN,
+  TANK_ZOOM_STEPS,
+  type TankEngine,
+} from '@/hooks/useTank';
 import { useLanguage } from '@/lib/i18n';
+import { TANK_SHAPES } from '@/lib/storage';
+import type { TankShape } from '@/lib/types';
 import { RoomLayer } from './RoomLayer';
 
 const SPEED_ICON: Record<(typeof SWIM_SPEEDS)[number], string> = {
@@ -8,6 +20,12 @@ const SPEED_ICON: Record<(typeof SWIM_SPEEDS)[number], string> = {
   medium: 'fa-solid fa-fish',
   fast: 'fa-solid fa-bolt',
   veryFast: 'fa-solid fa-bolt-lightning',
+};
+
+const SHAPE_ICON: Record<TankShape, string> = {
+  rectangle: 'fa-solid fa-square',
+  rounded: 'fa-solid fa-square-full',
+  oval: 'fa-regular fa-circle',
 };
 
 /** Same cooldown/rationale as the sprite editor's PixelCanvas: a trackpad pinch or a fast scroll
@@ -158,6 +176,17 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
     maxHeight: TANK_SIZE_MAX.height * effectiveScale,
   };
 
+  // Matches the water shape to whatever TankEngine.draw() actually clips its canvas drawing to
+  // (see shapePath/clampCenterToShape in useTank.ts) - 'oval' is a plain 50% radius (an ellipse
+  // inscribed in any rectangle), 'rounded' mirrors the same corner-radius formula the engine uses
+  // for its clip path/physics so the visible glass edge and the invisible collision edge agree.
+  const wrapShapeStyle =
+    engine.tankShape === 'oval'
+      ? { borderRadius: '50%' }
+      : engine.tankShape === 'rounded'
+        ? { borderRadius: Math.min(tankWidth, tankHeight) * engine.tankCornerRadiusFrac * effectiveScale }
+        : undefined;
+
   return (
     <div className="tank-canvas-col">
       <div
@@ -169,8 +198,7 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
         onPointerDown={() => engine.selectRoomInstance(null)}
       >
         <div className={`tank-frame${effectiveScale >= fitScale ? ' resizable' : ''}`} style={frameStyle} ref={frameElRef}>
-          <div className="tank-frame-lid" />
-          <div className="tank-wrap" ref={(el) => engine.attachWrap(el)}>
+          <div className="tank-wrap" style={wrapShapeStyle} ref={(el) => engine.attachWrap(el)}>
             <canvas
               ref={(el) => {
                 engine.attachCanvas(el);
@@ -183,7 +211,6 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
               onPointerCancel={() => engine.onCanvasPointerUp()}
             />
           </div>
-          <div className="tank-frame-stand" />
         </div>
         {/* Room decorations render as their own DOM layer, after (i.e. visually above) .tank-frame,
          * so they can overlap the tank chrome - unlike in-tank instances they aren't drawn into the
@@ -359,6 +386,44 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
           <button type="button" className="selection-toolbar-btn" title={t('tank.resetSize')} onClick={() => engine.resetTankSize()}>
             <i className="fa-solid fa-compress" />
           </button>
+        </div>
+
+        <div className="tank-shape-group" title={t('tank.shapeTitle')}>
+          {TANK_SHAPES.map((shape) => (
+            <button
+              key={shape}
+              type="button"
+              className={`selection-toolbar-btn${engine.tankShape === shape ? ' active' : ''}`}
+              title={t(`tank.shape.${shape}`)}
+              onClick={() => engine.setTankShape(shape)}
+            >
+              <i className={SHAPE_ICON[shape]} />
+            </button>
+          ))}
+          {engine.tankShape === 'rounded' && (
+            <input
+              type="range"
+              className="tank-shape-slider"
+              title={t('tank.shapeRoundedAmount')}
+              min={ROUNDED_RADIUS_MIN}
+              max={ROUNDED_RADIUS_MAX}
+              step={0.01}
+              value={engine.tankCornerRadiusFrac}
+              onChange={(e) => engine.setTankCornerRadius(parseFloat(e.target.value))}
+            />
+          )}
+          {engine.tankShape === 'oval' && (
+            <input
+              type="range"
+              className="tank-shape-slider"
+              title={t('tank.shapeOvalTopCut')}
+              min={OVAL_TOP_CUT_MIN}
+              max={OVAL_TOP_CUT_MAX}
+              step={0.01}
+              value={engine.tankOvalTopCutFrac}
+              onChange={(e) => engine.setTankOvalTopCut(parseFloat(e.target.value))}
+            />
+          )}
         </div>
       </div>
     </div>

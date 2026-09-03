@@ -148,6 +148,12 @@ const en: Dict = {
   'tank.refreshConfirm': 'Reload the tank from the last save? Unsaved changes will be lost.',
   'tank.sizeTitle': 'Tank size (width x height) - drag the tank\'s corner or type numbers',
   'tank.resetSize': 'Reset to default tank size',
+  'tank.shapeTitle': 'Tank shape',
+  'tank.shape.rectangle': 'Rectangle',
+  'tank.shape.rounded': 'Rounded corners',
+  'tank.shape.oval': 'Oval',
+  'tank.shapeRoundedAmount': 'Corner roundness',
+  'tank.shapeOvalTopCut': 'Flatten top',
 };
 
 export function t(key: string, vars?: Record<string, string | number>): string {

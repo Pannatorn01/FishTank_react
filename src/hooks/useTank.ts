@@ -2,10 +2,21 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { paintLayers } from '@/lib/pixelMath';
 import * as storage from '@/lib/storage';
-import type { Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup } from '@/lib/types';
+import type { Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape } from '@/lib/types';
 
 const DISPLAY_SCALE = 4;
 const TAP_MOVE_THRESHOLD = 6;
+/** Matches index.css's --tank-outline - the bold pixel-art border TankEngine.draw() strokes around
+ *  the tank's own shape, independent of the active UI theme (same rationale as the CSS var: real
+ *  aquarium glass doesn't recolor to match a cotton-candy desk skin). */
+const TANK_OUTLINE_COLOR = '#1c2436';
+const TANK_OUTLINE_WIDTH = 5;
+/** Slider ranges for the two shape-specific knobs below - see TankEngine.tankCornerRadiusFrac and
+ *  tankOvalTopCutFrac. Capped well short of 0.5 so the shape can't invert/degenerate into nothing. */
+export const ROUNDED_RADIUS_MIN = 0.05;
+export const ROUNDED_RADIUS_MAX = 0.5;
+export const OVAL_TOP_CUT_MIN = 0;
+export const OVAL_TOP_CUT_MAX = 0.45;
 /** Room decorations (kind 'room' sprites, placed in the area around the tank) are kept this many
  *  screen px inset from the viewport's edge on every side - satisfies "not flush against the
  *  canvas edge" regardless of viewport size. Capped as a fraction of the viewport (see
@@ -72,6 +83,20 @@ class TankEngine {
    *  displayScale for that. */
   tankWidth: number | null = null;
   tankHeight: number | null = null;
+
+  /** The tank's swim-area silhouette - see TankShape. Like tankWidth/Height, takes effect
+   *  immediately but only reaches localStorage via the manual Save button. */
+  tankShape: TankShape = 'rectangle';
+
+  /** 'rounded' only - corner radius as a fraction of min(tankWidth, tankHeight), user-adjustable via
+   *  the shape group's slider (see ROUNDED_RADIUS_MIN/MAX). Read by both shapePath (the visual clip/
+   *  outline) and clampCenterToShape (the physics containment), so the two always agree. */
+  tankCornerRadiusFrac = 0.22;
+
+  /** 'oval' only - how much of the ellipse's top is sliced off flat, as a fraction of tank height
+   *  (0 = a full ellipse, larger values flatten more of the top - see OVAL_TOP_CUT_MIN/MAX for the
+   *  slider's range). Same shapePath/clampCenterToShape split as tankCornerRadiusFrac above. */
+  tankOvalTopCutFrac = 0.28;
 
   /** Index into TANK_ZOOM_STEPS - the user's view-zoom preference, expressed relative to "as large
    *  as fits the viewport" (see TankCanvas's auto-fit computation, which multiplies this in). */
@@ -154,6 +179,9 @@ class TankEngine {
     const savedSize = storage.loadTankSize();
     this.tankWidth = savedSize?.width ?? TANK_SIZE_DEFAULT.width;
     this.tankHeight = savedSize?.height ?? TANK_SIZE_DEFAULT.height;
+    this.tankShape = storage.loadTankShape() ?? 'rectangle';
+    this.tankCornerRadiusFrac = storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22;
+    this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
 
     for (let i = 0; i < 14; i++) {
       this.bubbles.push({
@@ -325,6 +353,89 @@ class TankEngine {
     return yMin + Math.random() * Math.max(0, yMax - yMin);
   }
 
+  /** Corner radius used for the 'rounded' tank shape, in canvas px - scaled off the smaller
+   *  dimension so it reads consistently whether the tank is wide or tall. Shared by the draw-time
+   *  clip path and the placement/physics clamp below so the two always agree on where the corner
+   *  cut actually is. */
+  private shapeCornerRadius(w: number, h: number): number {
+    return Math.min(w, h) * this.tankCornerRadiusFrac;
+  }
+
+  /** Pushes a sprite's center point (cx, cy), given its half-width/height (hx, hy), back inside the
+   *  tank's chosen shape for a canvas of size w x h - the containment counterpart to the draw-time
+   *  clip path (see shapePath). 'rectangle' behaves exactly like a plain edge clamp (so switching
+   *  back to it is lossless); 'oval' and 'rounded' shrink that rectangle by the sprite's own
+   *  half-extents and test/clamp against an inset ellipse or rounded-rect so the whole sprite - not
+   *  just its center - stays inside the visible glass. Used for every placement/drag/swim site
+   *  below, so an object dropped in a round tank's corner (or a fish swimming toward it) can't sit
+   *  half outside the visible water. */
+  private clampCenterToShape(cx: number, cy: number, hx: number, hy: number, w: number, h: number): { cx: number; cy: number; moved: boolean } {
+    if (this.tankShape === 'rectangle' || w <= 0 || h <= 0) {
+      const ncx = Math.min(Math.max(cx, hx), Math.max(hx, w - hx));
+      const ncy = Math.min(Math.max(cy, hy), Math.max(hy, h - hy));
+      return { cx: ncx, cy: ncy, moved: ncx !== cx || ncy !== cy };
+    }
+    if (this.tankShape === 'oval') {
+      const ecx = w / 2;
+      const ecy = h / 2;
+      const rx = Math.max(1, w / 2 - hx);
+      const ry = Math.max(1, h / 2 - hy);
+      const dx = cx - ecx;
+      const dy = cy - ecy;
+      const norm = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
+      let ncx = cx;
+      let ncy = cy;
+      let moved = false;
+      if (norm > 1) {
+        const scale = 1 / Math.sqrt(norm);
+        ncx = ecx + dx * scale;
+        ncy = ecy + dy * scale;
+        moved = true;
+      }
+      // Flattened top (tankOvalTopCutFrac): the exact chord width at the cut line is narrower than
+      // the full-ellipse rx used above, but re-deriving it here would only matter right at the two
+      // corners where the flat top meets the curve - close enough for physics, exact for the visual
+      // clip in shapePath.
+      const topCut = Math.max(OVAL_TOP_CUT_MIN, Math.min(OVAL_TOP_CUT_MAX, this.tankOvalTopCutFrac));
+      if (topCut > 0) {
+        const topLimit = h * topCut + hy;
+        if (ncy < topLimit) {
+          ncy = topLimit;
+          moved = true;
+        }
+      }
+      return { cx: ncx, cy: ncy, moved };
+    }
+    // rounded
+    let ncx = Math.min(Math.max(cx, hx), Math.max(hx, w - hx));
+    let ncy = Math.min(Math.max(cy, hy), Math.max(hy, h - hy));
+    const edgeMoved = ncx !== cx || ncy !== cy;
+    const r = Math.max(0, Math.min(this.shapeCornerRadius(w, h), w / 2 - hx, h / 2 - hy));
+    if (r > 0) {
+      const cornerX = ncx < hx + r ? hx + r : ncx > w - hx - r ? w - hx - r : ncx;
+      const cornerY = ncy < hy + r ? hy + r : ncy > h - hy - r ? h - hy - r : ncy;
+      const ddx = ncx - cornerX;
+      const ddy = ncy - cornerY;
+      const dist = Math.hypot(ddx, ddy);
+      if (dist > r) {
+        const scale = r / dist;
+        ncx = cornerX + ddx * scale;
+        ncy = cornerY + ddy * scale;
+        return { cx: ncx, cy: ncy, moved: true };
+      }
+    }
+    return { cx: ncx, cy: ncy, moved: edgeMoved };
+  }
+
+  /** Top-left-anchored convenience wrapper around clampCenterToShape - every existing clamp site
+   *  below worked in top-left x/y, so this keeps them as one-line swaps. */
+  private clampTopLeftToShape(x: number, y: number, pw: number, ph: number, w: number, h: number): { x: number; y: number; moved: boolean } {
+    const hx = pw / 2;
+    const hy = ph / 2;
+    const { cx, cy, moved } = this.clampCenterToShape(x + hx, y + hy, hx, hy, w, h);
+    return { x: cx - hx, y: cy - hy, moved };
+  }
+
   /** Screen (client) point -> canvas-relative *logical* point (i.e. dividing out displayScale, so
    *  it lands in the same coordinate space as instance x/y regardless of current zoom). Every
    *  pointer handler goes through this instead of repeating the rect subtraction so hit-testing/
@@ -386,8 +497,11 @@ class TankEngine {
         });
         this.instances.forEach((inst) => {
           const { pw, ph } = this.spritePx(this.spriteFor(inst));
-          inst.x = Math.min(Math.max(0, inst.x * scaleX), Math.max(0, newWidth - pw));
-          inst.y = Math.min(Math.max(0, inst.y * scaleY), Math.max(0, newHeight - ph));
+          const rawX = Math.min(Math.max(0, inst.x * scaleX), Math.max(0, newWidth - pw));
+          const rawY = Math.min(Math.max(0, inst.y * scaleY), Math.max(0, newHeight - ph));
+          const clamped = this.clampTopLeftToShape(rawX, rawY, pw, ph, newWidth, newHeight);
+          inst.x = clamped.x;
+          inst.y = clamped.y;
           inst.targetY *= scaleY;
           if (inst.zone) inst.zone = scaleZone(inst.zone);
         });
@@ -418,6 +532,35 @@ class TankEngine {
   /** Back to the default medium size. */
   resetTankSize(): void {
     this.setTankSize(TANK_SIZE_DEFAULT.width, TANK_SIZE_DEFAULT.height);
+  }
+
+  /** Changes the tank's swim-area silhouette. Existing fish/decorations aren't force-moved right
+   *  away (the shape clamp in update()/onCanvasPointerMove etc. gently pulls anyone now outside the
+   *  new shape back in on the next frame they'd otherwise stray further out, same as a zone shrink). */
+  setTankShape(shape: TankShape): void {
+    if (this.tankShape === shape) return;
+    this.tankShape = shape;
+    this.dirty = true;
+    this.reactNotify();
+  }
+
+  /** 'rounded' shape's corner radius, as a fraction of min(tankWidth, tankHeight) - see
+   *  ROUNDED_RADIUS_MIN/MAX for the slider's range. */
+  setTankCornerRadius(frac: number): void {
+    const clamped = Math.min(ROUNDED_RADIUS_MAX, Math.max(ROUNDED_RADIUS_MIN, frac));
+    if (this.tankCornerRadiusFrac === clamped) return;
+    this.tankCornerRadiusFrac = clamped;
+    this.dirty = true;
+    this.reactNotify();
+  }
+
+  /** 'oval' shape's top-cut amount, as a fraction of tank height - see OVAL_TOP_CUT_MIN/MAX. */
+  setTankOvalTopCut(frac: number): void {
+    const clamped = Math.min(OVAL_TOP_CUT_MAX, Math.max(OVAL_TOP_CUT_MIN, frac));
+    if (this.tankOvalTopCutFrac === clamped) return;
+    this.tankOvalTopCutFrac = clamped;
+    this.dirty = true;
+    this.reactNotify();
   }
 
   refreshPalette(): void {
@@ -452,6 +595,9 @@ class TankEngine {
       storage.saveGroups(this.groups);
       storage.saveRoomInstances(this.roomInstances);
       storage.saveTankSize({ width: this.tankWidth ?? TANK_SIZE_DEFAULT.width, height: this.tankHeight ?? TANK_SIZE_DEFAULT.height });
+      storage.saveTankShape(this.tankShape);
+      storage.saveTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC, this.tankCornerRadiusFrac);
+      storage.saveTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC, this.tankOvalTopCutFrac);
       this.dirty = false;
     } catch (err) {
       console.warn('tank save failed', err);
@@ -475,6 +621,9 @@ class TankEngine {
     const savedSize = storage.loadTankSize();
     this.tankWidth = savedSize?.width ?? TANK_SIZE_DEFAULT.width;
     this.tankHeight = savedSize?.height ?? TANK_SIZE_DEFAULT.height;
+    this.tankShape = storage.loadTankShape() ?? 'rectangle';
+    this.tankCornerRadiusFrac = storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22;
+    this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
     this.selectedId = null;
     this.marqueeIds = null;
     this.draggingInstance = null;
@@ -504,12 +653,13 @@ class TankEngine {
     const { pw, ph } = this.spritePx(sprite);
     const swimSpeed: SwimSpeed = 'medium';
     const { vx, vy } = sprite.type === 'fish' ? randomSwimVelocity(swimSpeed) : { vx: 0, vy: 0 };
+    const placed = this.clampTopLeftToShape(x - pw / 2, y - ph / 2, pw, ph, this.canvas.width, this.canvas.height);
     const inst: Instance = {
       id: storage.uid('inst'),
       spriteId,
       kind: sprite.type,
-      x: Math.min(Math.max(0, x - pw / 2), this.canvas.width - pw),
-      y: Math.min(Math.max(0, y - ph / 2), this.canvas.height - ph),
+      x: placed.x,
+      y: placed.y,
       dir: Math.random() < 0.5 ? -1 : 1,
       vx,
       vy,
@@ -1055,8 +1205,11 @@ class TankEngine {
     const { pw, ph } = this.spritePx(this.spriteFor(inst));
     const prevX = inst.x;
     const prevY = inst.y;
-    inst.x = Math.min(Math.max(0, x - this.dragOffset.x), this.canvas.width - pw);
-    inst.y = Math.min(Math.max(0, y - this.dragOffset.y), this.canvas.height - ph);
+    const rawX = Math.min(Math.max(0, x - this.dragOffset.x), this.canvas.width - pw);
+    const rawY = Math.min(Math.max(0, y - this.dragOffset.y), this.canvas.height - ph);
+    const clamped = this.clampTopLeftToShape(rawX, rawY, pw, ph, this.canvas.width, this.canvas.height);
+    inst.x = clamped.x;
+    inst.y = clamped.y;
 
     const coMovers = this.coMoversFor(inst);
     if (coMovers.length) {
@@ -1067,8 +1220,11 @@ class TankEngine {
         this.instances.forEach((other) => {
           if (!coMoverSet.has(other.id)) return;
           const { pw: opw, ph: oph } = this.spritePx(this.spriteFor(other));
-          other.x = Math.min(Math.max(0, other.x + dx), this.canvas!.width - opw);
-          other.y = Math.min(Math.max(0, other.y + dy), this.canvas!.height - oph);
+          const ox = Math.min(Math.max(0, other.x + dx), this.canvas!.width - opw);
+          const oy = Math.min(Math.max(0, other.y + dy), this.canvas!.height - oph);
+          const oclamped = this.clampTopLeftToShape(ox, oy, opw, oph, this.canvas!.width, this.canvas!.height);
+          other.x = oclamped.x;
+          other.y = oclamped.y;
         });
       }
     }
@@ -1253,6 +1409,22 @@ class TankEngine {
         } else {
           inst.y += Math.sign(dy) * Math.min(Math.abs(dy), inst.vy * dt);
         }
+
+        // The rectangular `bounds` above (zone, sand strip, canvas edges) don't know about a
+        // non-rectangular tank shape's corner/edge cut - refine against it last so a fish heading
+        // into a rounded/oval corner bounces off the actual visible glass instead of swimming
+        // halfway into it. A no-op for 'rectangle' (clampCenterToShape degrades to the same edge
+        // clamp bounds already enforced), so skipped there to avoid the extra work every frame.
+        if (this.tankShape !== 'rectangle') {
+          const { pw, ph } = this.spritePx(sprite);
+          const refined = this.clampTopLeftToShape(inst.x, inst.y, pw, ph, this.canvas!.width, this.canvas!.height);
+          if (refined.moved) {
+            inst.x = refined.x;
+            inst.y = refined.y;
+            inst.dir = inst.dir === 1 ? -1 : 1;
+            if (!schooling) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
+          }
+        }
       }
     });
   }
@@ -1267,6 +1439,12 @@ class TankEngine {
     grad.addColorStop(1, '#0f6f97');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
+
+    // A bright waterline band right at the top - the glassy "surface glint" seen in reference tank
+    // art, distinguishing the water's top edge from the glass/lid above it.
+    const waterlineH = Math.max(3, h * 0.02);
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fillRect(0, 0, w, waterlineH);
 
     ctx.fillStyle = 'rgba(255,255,255,0.55)';
     this.bubbles.forEach((b) => {
@@ -1320,8 +1498,61 @@ class TankEngine {
     this.ctx.restore();
   }
 
+  /** The tank's swim-area silhouette as a canvas path, for the draw-time clip - see TankShape and
+   *  clampCenterToShape (which must agree with this on where the shape's edge actually is). */
+  private shapePath(w: number, h: number): Path2D {
+    const p = new Path2D();
+    if (this.tankShape === 'oval') {
+      const cx = w / 2;
+      const cy = h / 2;
+      const rx = Math.max(0, w / 2);
+      const ry = Math.max(0, h / 2);
+      const t = Math.max(OVAL_TOP_CUT_MIN, Math.min(OVAL_TOP_CUT_MAX, this.tankOvalTopCutFrac));
+      if (t <= 0.001 || ry <= 0) {
+        p.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      } else {
+        // Slices the top off the ellipse at y = h*t with a flat line, keeping the rest of the
+        // boundary as-is - see clampCenterToShape's oval branch for the (approximate) physics
+        // counterpart. `s` is the cut line's height expressed as sin(theta) on the ellipse
+        // parametrization, i.e. where y = cy + ry*sin(theta); solving for the two x/theta values
+        // where that horizontal line crosses the ellipse gives the flat edge's endpoints.
+        const s = Math.max(-0.999, Math.min(0.999, 2 * t - 1));
+        const thetaRight = Math.asin(s);
+        const thetaLeft = Math.PI - thetaRight;
+        const topCutY = cy + ry * s;
+        const xRight = cx + rx * Math.cos(thetaRight);
+        const xLeft = cx - rx * Math.cos(thetaRight);
+        p.moveTo(xLeft, topCutY);
+        p.lineTo(xRight, topCutY);
+        p.ellipse(cx, cy, rx, ry, 0, thetaRight, thetaLeft, false);
+        p.closePath();
+      }
+    } else if (this.tankShape === 'rounded') {
+      const r = Math.max(0, Math.min(this.shapeCornerRadius(w, h), w / 2, h / 2));
+      p.moveTo(r, 0);
+      p.arcTo(w, 0, w, h, r);
+      p.arcTo(w, h, 0, h, r);
+      p.arcTo(0, h, 0, 0, r);
+      p.arcTo(0, 0, w, 0, r);
+      p.closePath();
+    } else {
+      p.rect(0, 0, w, h);
+    }
+    return p;
+  }
+
   private draw(): void {
     if (!this.ctx || !this.canvas) return;
+    const ctx = this.ctx;
+
+    // clip() can only ever shrink the paintable region for the rest of this call - it can't erase
+    // pixels a previous frame already painted outside a since-shrunk shape (e.g. dragging the
+    // corner-radius/oval-cut sliders, or switching shape), so without this clear those stale pixels
+    // just sit there forever until something else (like a resize) happens to wipe the canvas.
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+    ctx.save();
+    ctx.clip(this.shapePath(this.canvas.width, this.canvas.height));
 
     this.drawBackground();
 
@@ -1348,6 +1579,20 @@ class TankEngine {
 
     if (this.marqueeRect) this.strokeZoneRect(this.marqueeRect, '#ffeb3b', 'rgba(255, 235, 59, 0.15)');
     if (this.zoneDraftRect) this.strokeZoneRect(this.zoneDraftRect, '#4ade80', 'rgba(74, 222, 128, 0.15)');
+
+    ctx.restore();
+
+    // Drawn last, outside the clip above - a stroke centered on the shape path needs half of its
+    // width to fall *outside* the clipped water to read as a bold pixel-art glass outline (rather
+    // than a thin inner line), matching the reference bowl/tank art's chunky border.
+    ctx.save();
+    ctx.lineWidth = TANK_OUTLINE_WIDTH;
+    ctx.strokeStyle = TANK_OUTLINE_COLOR;
+    // The oval's flattened-top corner (see shapePath) meets the ellipse curve at a very sharp angle -
+    // the default miter join would spike that corner's stroke out into a long stray diagonal line.
+    ctx.lineJoin = 'round';
+    ctx.stroke(this.shapePath(this.canvas.width, this.canvas.height));
+    ctx.restore();
   }
 
   private loop(t: number): void {

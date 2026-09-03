@@ -21,8 +21,34 @@ function RoomItem({ engine, inst, viewportSize }: { engine: TankEngine; inst: Ro
     const { pw, ph } = engine.spritePx(sprite);
     canvas.width = pw;
     canvas.height = ph;
-    ctx.clearRect(0, 0, pw, ph);
-    paintLayers(ctx, sprite.frames[0], width, height, DISPLAY_SCALE);
+
+    const draw = (frameIndex: number) => {
+      ctx.clearRect(0, 0, pw, ph);
+      paintLayers(ctx, sprite.frames[frameIndex], width, height, DISPLAY_SCALE);
+    };
+    draw(0);
+    if (sprite.frames.length <= 1) return;
+
+    // Room decorations otherwise never animate - cycling through frames here mirrors the frame
+    // animation every in-tank instance (fish and objects alike) gets from TankEngine.update(),
+    // just driven by its own rAF loop since this canvas lives outside that engine's draw().
+    const frameInterval = sprite.frameMs || 400;
+    let frameIndex = 0;
+    let elapsed = 0;
+    let lastTime = 0;
+    let rafId: number;
+    const tick = (t: number) => {
+      elapsed += lastTime ? t - lastTime : 0;
+      lastTime = t;
+      if (elapsed >= frameInterval) {
+        elapsed = 0;
+        frameIndex = (frameIndex + 1) % sprite.frames.length;
+        draw(frameIndex);
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
   }, [engine, sprite]);
 
   if (!sprite || !inst.visible) return null;

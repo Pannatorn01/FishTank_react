@@ -39,6 +39,14 @@
 
   --bevel-light: var(--pixel-bevel-light);
   --bevel-dark: var(--pixel-dark-1);
+
+  /* The aquarium's own "glass" palette (frame casing + canvas outline in TankEngine.draw) - fixed
+   * regardless of the active UI theme below, since real tank glass doesn't recolor to match a
+   * cotton-candy or matcha desk skin the way the surrounding chrome does. */
+  --tank-glass-dark: #202b42;
+  --tank-glass-mid: #3a4c6e;
+  --tank-glass-light: #9fc6e0;
+  --tank-outline: #1c2436;
 }
 
 /*
@@ -1096,7 +1104,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   border-top-color: var(--bevel-light);
   border-left-color: var(--bevel-light);
   box-shadow: 4px 4px 0 var(--bevel-dark);
-  padding: 12px;
+  padding: 0;
 }
 /* Room decorations (kind 'room' sprites) live outside the tank's own swim space, in the area
  * around it - this layer sits directly in .tank-viewport, after .tank-frame in DOM order, so it
@@ -1122,12 +1130,9 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   min-height: 120px;
   display: flex;
   flex-direction: column;
-  background: var(--pixel-dark-2);
-  border: 3px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
-  box-shadow: 4px 4px 0 var(--bevel-dark);
-  padding: 0 8px 8px;
+  /* No background/border/shadow of its own - purely a sizing/resize container now. The only visible
+   * tank chrome is the canvas's own clip + outline stroke (see TankEngine.draw's shapePath/stroke),
+   * so a non-rectangular shape (rounded/oval) never shows a leftover rectangular box behind it. */
   overflow: hidden;
 }
 /* `resize` (the native drag-corner handle) only turns on at 100% zoom - see TankCanvas - since below
@@ -1135,28 +1140,11 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
  * cursor. The W/H inputs in the action bar always work regardless of zoom, so resizing is never
  * blocked, just the corner grip specifically. */
 .tank-frame.resizable { resize: both; }
-.tank-frame-lid {
-  flex: 0 0 16px;
-  margin: 0 -8px 6px;
-  background: var(--pixel-dark-1);
-  border-bottom: 3px solid var(--bevel-dark);
-  box-shadow: inset 0 2px 0 var(--bevel-light);
-}
-.tank-frame-stand {
-  flex: 0 0 12px;
-  margin: 6px -8px 0;
-  background: var(--pixel-dark-1);
-  border-top: 3px solid var(--bevel-light);
-  box-shadow: inset 0 -2px 0 var(--bevel-dark);
-}
 .tank-wrap {
   position: relative;
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
 }
 .tank-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .tank-canvas.drawing-zone { cursor: crosshair; }
@@ -1201,6 +1189,9 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   border-left-color: var(--bevel-light);
   padding: 0 2px;
 }
+
+.tank-shape-group { display: flex; align-items: center; gap: 4px; }
+.tank-shape-slider { width: 5.5rem; accent-color: var(--pixel-accent); cursor: pointer; }
 
 .selection-toolbar, .swim-toolbar, .marquee-toolbar { display: flex; align-items: center; gap: 6px; }
 .selection-toolbar-btn {

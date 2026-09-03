@@ -2,6 +2,11 @@ export type CellColor = string | null;
 export type Frame = CellColor[];
 export type SpriteType = 'fish' | 'object' | 'room';
 export type SwimSpeed = 'slow' | 'medium' | 'fast' | 'veryFast';
+/** The tank's swim-area silhouette: 'rectangle' is the classic box, 'rounded' cuts its four corners
+ *  on a radius, 'oval' inscribes an ellipse in the tank's bounding box (a round bowl look). Affects
+ *  both what's drawn (TankEngine.draw's clip path) and where fish/decorations are actually allowed
+ *  to sit (TankEngine.clampCenterToShape) - not purely cosmetic. */
+export type TankShape = 'rectangle' | 'rounded' | 'oval';
 
 export interface Layer {
   id: string;

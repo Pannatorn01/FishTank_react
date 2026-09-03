@@ -1,10 +1,12 @@
-import type { CanvasBackground, Frame, Instance, Layer, RoomInstance, Sprite, TankGroup, UiTheme } from './types';
+import type { CanvasBackground, Frame, Instance, Layer, RoomInstance, Sprite, TankGroup, TankShape, UiTheme } from './types';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
 const KEY_GROUPS = 'fishtank.groups.v1';
 const KEY_ROOM_INSTANCES = 'fishtank.roomInstances.v1';
 const KEY_TANK_SIZE = 'fishtank.tankSize.v1';
+const KEY_TANK_SHAPE = 'fishtank.tankShape.v1';
+export const TANK_SHAPES: TankShape[] = ['rectangle', 'rounded', 'oval'];
 const KEY_SAVED_COLORS = 'fishtank.savedColors.v1';
 const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
 const KEY_CANVAS_BG = 'fishtank.canvasBackground.v1';
@@ -130,6 +132,39 @@ export function saveTankSize(size: { width: number; height: number } | null): vo
   if (!size) localStorage.removeItem(KEY_TANK_SIZE);
   else localStorage.setItem(KEY_TANK_SIZE, JSON.stringify(size));
 }
+
+export function loadTankShape(): TankShape | null {
+  try {
+    const raw = localStorage.getItem(KEY_TANK_SHAPE);
+    return raw && (TANK_SHAPES as string[]).includes(raw) ? (raw as TankShape) : null;
+  } catch (e) {
+    console.warn('loadTankShape failed', e);
+    return null;
+  }
+}
+
+export function saveTankShape(shape: TankShape): void {
+  localStorage.setItem(KEY_TANK_SHAPE, shape);
+}
+
+export function loadTankShapeParam(key: string): number | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  } catch (e) {
+    console.warn('loadTankShapeParam failed', e);
+    return null;
+  }
+}
+
+export function saveTankShapeParam(key: string, value: number): void {
+  localStorage.setItem(key, String(value));
+}
+
+export const KEY_TANK_CORNER_RADIUS_FRAC = 'fishtank.tankCornerRadiusFrac.v1';
+export const KEY_TANK_OVAL_TOP_CUT_FRAC = 'fishtank.tankOvalTopCutFrac.v1';
 
 export function loadSavedColors(): string[] {
   try {
