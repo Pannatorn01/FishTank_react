@@ -1,10 +1,17 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { Button } from '@/components/ui/button';
 import { useTank } from '@/hooks/useTank';
+import { useLanguage } from '@/lib/i18n';
 import { TankCanvas } from './TankCanvas';
+import { TankLayers } from './TankLayers';
 import { TankPalette } from './TankPalette';
+
+type SidebarTab = 'layers' | 'palette';
 
 export function TankPanel({ active }: { active: boolean }) {
   const engine = useTank();
+  const { t } = useLanguage();
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>('layers');
 
   useEffect(() => {
     const onSpritesUpdated = () => engine.refreshPalette();
@@ -22,6 +29,7 @@ export function TankPanel({ active }: { active: boolean }) {
   }, []);
 
   useEffect(() => {
+    engine.setActive(active);
     if (active) {
       engine.resizeCanvas();
       engine.refreshPalette();
@@ -32,7 +40,27 @@ export function TankPanel({ active }: { active: boolean }) {
   return (
     <div className="tank-layout">
       <TankCanvas engine={engine} />
-      <TankPalette engine={engine} />
+      <div className="tank-sidebar">
+        <div className="tank-sidebar-tabs">
+          <Button
+            type="button"
+            size="sm"
+            variant={sidebarTab === 'layers' ? 'default' : 'secondary'}
+            onClick={() => setSidebarTab('layers')}
+          >
+            <i className="fa-solid fa-layer-group" /> {t('tank.tabLayers')}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={sidebarTab === 'palette' ? 'default' : 'secondary'}
+            onClick={() => setSidebarTab('palette')}
+          >
+            <i className="fa-solid fa-fish" /> {t('tank.tabPalette')}
+          </Button>
+        </div>
+        {sidebarTab === 'layers' ? <TankLayers engine={engine} /> : <TankPalette engine={engine} />}
+      </div>
     </div>
   );
 }

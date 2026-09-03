@@ -1996,7 +1996,9 @@ class PixelEditorEngine {
   }
 
   saveCurrentSprite(name: string, type: Sprite['type'], onError: (msg: string) => void): void {
-    const finalName = name.trim() || (type === 'fish' ? t('sprite.defaultFishName') : t('sprite.defaultObjectName'));
+    const finalName =
+      name.trim() ||
+      (type === 'fish' ? t('sprite.defaultFishName') : type === 'room' ? t('sprite.defaultRoomName') : t('sprite.defaultObjectName'));
     this.current.name = finalName;
     this.current.type = type;
 

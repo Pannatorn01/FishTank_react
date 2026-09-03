@@ -1063,39 +1063,146 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 
 /* ---------- Tank ---------- */
 .tank-layout { display: flex; gap: 8px; height: 100%; }
+/* min-width:0 is load-bearing here: without it, a flex item's automatic minimum width is its
+ * content's min-content size, not its flex-basis - so a wide row (the group header's drag-handle +
+ * chevron + folder + name + member-count + eye + ungroup + delete, all `white-space:nowrap`) could
+ * force this whole column past 190px instead of truncating/scrolling, visibly squeezing the tank
+ * canvas narrower only while such a row happened to be on screen. */
+.tank-sidebar { flex: 0 0 300px; min-width: 0; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.tank-sidebar-tabs { display: flex; gap: 4px; }
+.tank-sidebar-tabs button { flex: 1; font-size: 0.68rem; padding: 0 6px; }
+.tank-canvas-col { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 8px; overflow: auto; }
+
+/* The aquarium casing - a chunky pixel-art frame (lid bar / glass / stand bar) around the actual
+ * simulation, in the same hard-edged bevel idiom used everywhere else in this UI. This whole box is
+ * what's user-resizable (native `resize`, synced back into engine.tankWidth/Height by the
+ * ResizeObserver in TankCanvas.tsx) - .tank-wrap inside it just fills whatever's left after the
+ * lid/stand bars, so the swimmable area is always the frame size minus that fixed chrome. */
+/* The viewport the frame lives and centers in - fixed to the column's available space (fills it,
+ * like .pixel-canvas-wrap does for the sprite editor) and clips anything that doesn't fit, though
+ * in practice nothing should: TankCanvas computes a "fit" scale from this element's own measured
+ * size so the frame (however large its *logical* tankWidth/Height is) is always drawn small enough
+ * to stay fully inside it, the same way the editor lets you zoom out to see a whole large canvas. */
+.tank-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--pixel-bg-deep);
+  border: 3px solid var(--bevel-dark);
+  border-top-color: var(--bevel-light);
+  border-left-color: var(--bevel-light);
+  box-shadow: 4px 4px 0 var(--bevel-dark);
+  padding: 12px;
+}
+/* Room decorations (kind 'room' sprites) live outside the tank's own swim space, in the area
+ * around it - this layer sits directly in .tank-viewport, after .tank-frame in DOM order, so it
+ * always paints above the tank chrome and lets a decoration overlap the tank. The layer itself
+ * ignores pointer events (so empty space still reaches the tank/frame beneath it); each item
+ * re-enables them so it stays individually draggable. */
+.tank-room-layer { position: absolute; inset: 0; pointer-events: none; }
+.tank-room-item {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+.tank-room-item canvas { display: block; image-rendering: pixelated; }
+.tank-room-item.selected canvas { outline: 2px solid #ffeb3b; outline-offset: 2px; }
+.tank-frame {
+  /* Width/height are set inline as tankWidth/Height * the current display scale - not flex:1, since
+   * flex-grow would win over an explicit inline height on the main (vertical) axis of a column
+   * container and silently override it. */
+  flex: 0 0 auto;
+  min-width: 120px;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  background: var(--pixel-dark-2);
+  border: 3px solid var(--bevel-dark);
+  border-top-color: var(--bevel-light);
+  border-left-color: var(--bevel-light);
+  box-shadow: 4px 4px 0 var(--bevel-dark);
+  padding: 0 8px 8px;
+  overflow: hidden;
+}
+/* `resize` (the native drag-corner handle) only turns on at 100% zoom - see TankCanvas - since below
+ * that the frame is drawn smaller than its logical size and a drag would feel disconnected from the
+ * cursor. The W/H inputs in the action bar always work regardless of zoom, so resizing is never
+ * blocked, just the corner grip specifically. */
+.tank-frame.resizable { resize: both; }
+.tank-frame-lid {
+  flex: 0 0 16px;
+  margin: 0 -8px 6px;
+  background: var(--pixel-dark-1);
+  border-bottom: 3px solid var(--bevel-dark);
+  box-shadow: inset 0 2px 0 var(--bevel-light);
+}
+.tank-frame-stand {
+  flex: 0 0 12px;
+  margin: 6px -8px 0;
+  background: var(--pixel-dark-1);
+  border-top: 3px solid var(--bevel-light);
+  box-shadow: inset 0 -2px 0 var(--bevel-dark);
+}
 .tank-wrap {
   position: relative;
   flex: 1;
-  min-width: 0;
+  min-height: 0;
   overflow: hidden;
-  border: 2px solid var(--bevel-dark);
-  box-shadow: 4px 4px 0 var(--bevel-dark);
-  min-height: 320px;
-}
-.tank-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
-
-.trash-zone {
-  position: absolute;
-  right: 10px; bottom: 10px;
-  width: 44px; height: 44px;
   border: 2px solid var(--bevel-dark);
   border-top-color: var(--bevel-light);
   border-left-color: var(--bevel-light);
-  background: var(--pixel-dark-3);
-  color: var(--pixel-bevel-light);
-  font-size: 1.1rem;
-  cursor: pointer;
 }
-.trash-zone.armed { background: var(--pixel-accent); transform: scale(1.1); }
+.tank-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.tank-canvas.drawing-zone { cursor: crosshair; }
 
-.selection-toolbar {
-  position: absolute;
-  left: 50%; bottom: 10px;
-  transform: translateX(-50%);
+/* A fixed strip below the canvas (not floating over it) that hosts every contextual action -
+ * undo/redo plus whatever selection/marquee/zone toolbar applies right now - so buttons never
+ * overlap the fish/decorations they act on. */
+/* Fixed height (not min-height) and no wrapping - so the bar never grows a second row when more
+ * buttons show up (e.g. selecting a fish adds swim-speed + zone buttons), which would otherwise eat
+ * into .tank-wrap's flex:1 space and visibly resize/jump the whole tank. Overflow scrolls sideways
+ * instead of wrapping if a narrow viewport can't fit everything in one row. */
+.tank-action-bar {
+  flex: 0 0 48px;
+  height: 48px;
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
+  padding: 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--pixel-panel);
+  border: 2px solid var(--bevel-dark);
+  box-shadow: 4px 4px 0 var(--bevel-dark);
 }
+.tank-action-bar > * { flex-shrink: 0; }
+.tank-action-group { display: flex; align-items: center; gap: 6px; }
+.tank-action-divider { width: 2px; align-self: stretch; margin: 8px 0; background: var(--pixel-panel-hover); }
+.tank-zoom-label { min-width: 32px; text-align: center; font-family: "VT323", monospace; font-size: 0.95rem; color: var(--pixel-text); }
+
+.tank-size-group { display: flex; align-items: center; gap: 4px; margin-left: auto; color: var(--pixel-text); font-size: 0.7rem; }
+.tank-size-group input {
+  width: 3.4rem;
+  height: 1.7rem;
+  font-family: "VT323", monospace;
+  font-size: 0.9rem;
+  text-align: center;
+  background: var(--pixel-field-bg);
+  color: var(--pixel-field-text);
+  border: 2px solid var(--bevel-dark);
+  border-top-color: var(--bevel-light);
+  border-left-color: var(--bevel-light);
+  padding: 0 2px;
+}
+
+.selection-toolbar, .swim-toolbar, .marquee-toolbar { display: flex; align-items: center; gap: 6px; }
 .selection-toolbar-btn {
   background: var(--pixel-dark-3);
   color: var(--pixel-bevel-light);
@@ -1107,6 +1214,24 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   font-size: 0.85rem;
   cursor: pointer;
 }
+.selection-toolbar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.selection-toolbar-btn.active { background: var(--pixel-accent); color: var(--pixel-text-strong); }
+.swim-toolbar-btn {
+  background: var(--pixel-dark-3);
+  color: var(--pixel-bevel-light);
+  border: 2px solid var(--bevel-dark);
+  border-top-color: var(--bevel-light);
+  border-left-color: var(--bevel-light);
+  width: 28px;
+  height: 28px;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+.swim-toolbar-btn.active { background: var(--pixel-accent); color: var(--pixel-text-strong); }
+.swim-toolbar-divider { width: 2px; align-self: stretch; background: var(--pixel-panel-hover); margin: 0 2px; }
+
+.marquee-toolbar-count { font-size: 0.72rem; color: var(--pixel-text); white-space: nowrap; }
+
 .delete-selected-btn {
   background: var(--pixel-accent);
   color: var(--pixel-text-strong);
@@ -1119,7 +1244,9 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 }
 
 .tank-palette {
-  flex: 0 0 190px;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   background: var(--pixel-panel);
   border: 2px solid var(--bevel-dark);
   box-shadow: 4px 4px 0 var(--bevel-dark);
@@ -1130,12 +1257,94 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   overflow-y: auto;
 }
 .palette-hint { font-size: 0.74rem; margin: 0; opacity: 0.75; color: var(--pixel-text); }
-.tank-palette-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+
+.tank-layers {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--pixel-panel);
+  border: 2px solid var(--bevel-dark);
+  box-shadow: 4px 4px 0 var(--bevel-dark);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+/* Icon tabs at the top of the Layers panel - switch which sprite type's layers are shown (fish,
+ * decorations, room decor) instead of listing everything mixed together in one long list. */
+.tank-layer-type-tabs { display: flex; gap: 4px; flex-shrink: 0; }
+.tank-layer-type-tab {
+  flex: 1;
+  background: var(--pixel-dark-3);
+  color: var(--pixel-bevel-light);
+  border: 2px solid var(--bevel-dark);
+  border-top-color: var(--bevel-light);
+  border-left-color: var(--bevel-light);
+  height: 30px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.tank-layer-type-tab.active { background: var(--pixel-accent); color: var(--pixel-text-strong); }
+.tank-layer-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tank-layer-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  min-width: 0;
+  border: 2px solid transparent;
+  background: rgba(242, 240, 236, 0.03);
+  cursor: pointer;
+}
+.tank-layer-row:hover { background: var(--pixel-panel-hover); }
+.tank-layer-row.active { border-color: var(--pixel-highlight); background: rgba(255, 204, 0, 0.12); }
+.tank-layer-row.selected { border-color: var(--pixel-accent); background: rgba(255, 143, 171, 0.15); }
+.tank-layer-row.dragging { opacity: 0.4; }
+.tank-layer-row.drag-over { border-color: var(--pixel-highlight); box-shadow: 0 0 0 1px rgba(255, 204, 0, 0.5); }
+.tank-layer-row.nested { margin-left: 16px; }
+/* A group header packs a lot in (drag/collapse/name/eye, plus count/ungroup/delete) - one line was
+ * too tight for the 190px sidebar (the fixed-width icons alone left ~0px for the name), so it's two
+ * lines instead, same pattern as the sprite editor's own LayerPanel (.layer-row-main/-actions). */
+.tank-layer-row.group-header { flex-direction: column; align-items: stretch; background: rgba(242, 240, 236, 0.08); font-weight: 600; }
+.tank-layer-row-main { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.tank-layer-row-actions { display: flex; align-items: center; gap: 4px; padding-left: calc(0.9rem + 4px + 0.9rem + 4px); }
+.tank-layer-row .layer-name-input { flex: 1; min-width: 0; }
+.tank-layer-drag-handle { cursor: grab; display: flex; align-items: center; justify-content: center; color: var(--pixel-muted); width: 0.9rem; height: 0.9rem; flex-shrink: 0; }
+.tank-layer-row.dragging .tank-layer-drag-handle { cursor: grabbing; }
+.tank-layer-folder-icon { color: var(--pixel-accent); flex-shrink: 0; }
+.tank-layer-name { flex: 1; font-size: 0.68rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tank-layer-count { font-size: 0.6rem; color: var(--pixel-muted); white-space: nowrap; flex-shrink: 0; }
+.tank-layer-ungroup, .tank-layer-del, .tank-layer-eye, .tank-layer-collapse {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--pixel-muted);
+  cursor: pointer;
+  font-size: 0.65rem;
+  width: 0.9rem;
+  height: 0.9rem;
+  flex-shrink: 0;
+}
+.tank-layer-ungroup:hover, .tank-layer-del:hover, .tank-layer-eye:hover, .tank-layer-collapse:hover { color: var(--pixel-text-strong); }
+.tank-layer-eye { color: var(--pixel-text-strong); }
+.tank-layer-collapse { display: flex; align-items: center; justify-content: center; }
+/* Shared by both PaletteThumb call sites (Sprites palette + Tank Layers rows) so the thumbnail is
+ * never at the mercy of its row's flex-shrink - without this a canvas with no intrinsic flex-basis
+ * protection gets visibly squeezed smaller than its 32x32 attribute size the moment its row's other
+ * content (name text, action buttons) needs the space, which is what made the two panels' thumbnails
+ * look like two different sizes even though they were the same component. */
+.tank-thumb { flex-shrink: 0; }
+.tank-palette-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow-y: auto; }
+/* Same compact single-row layout as .tank-layer-row (this panel and Tank Layers share a sidebar
+ * column, so their rows should read as one consistent size, not two different densities). */
 .tank-palette-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px;
+  gap: 4px;
+  padding: 3px;
+  min-width: 0;
   background: var(--pixel-panel-hover);
   border: 2px solid var(--bevel-dark);
   border-top-color: var(--bevel-light);
@@ -1145,7 +1354,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   user-select: none;
 }
 .tank-palette-item:hover { background: var(--pixel-accent); }
-.tank-palette-item span { font-size: 0.74rem; }
+.tank-palette-item-name { flex: 1; min-width: 0; font-size: 0.68rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tank-clear-btn {
   border: 2px solid var(--pixel-accent);
   color: var(--pixel-accent-hover);
@@ -1169,10 +1378,12 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   .side-panel { flex: 0 0 auto; min-width: 0; }
   .pixel-canvas-wrap { height: 46vh; }
   .tank-layout { flex-direction: column; }
-  .tank-wrap { min-height: 55vh; }
+  .tank-viewport { min-height: 55vh; }
+  .tank-sidebar { flex: 0 0 auto; max-height: 280px; }
   .tank-palette { flex: 0 0 auto; max-height: 140px; }
   .tank-palette-list { flex-direction: row; flex-wrap: nowrap; }
   .tank-palette-item { flex-direction: column; min-width: 70px; }
+  .tank-layers { flex: 0 0 auto; max-height: 140px; }
   .toolbar-row { flex-direction: column; align-items: stretch; }
   .header-editor-actions { margin-left: 0; }
 }

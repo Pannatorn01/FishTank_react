@@ -51,7 +51,7 @@ export function SpriteLibrary({
           <div key={sprite.id} className="library-card" onClick={() => engine.loadSpriteForEdit(sprite, onConfirmDiscard)}>
             <LibraryThumb sprite={sprite} />
             <div className="library-label">
-              <i className={`fa-solid fa-${sprite.type === 'fish' ? 'fish' : 'leaf'}`} /> {sprite.name}
+              <i className={`fa-solid fa-${sprite.type === 'fish' ? 'fish' : sprite.type === 'room' ? 'image' : 'leaf'}`} /> {sprite.name}
             </div>
             <button
               type="button"

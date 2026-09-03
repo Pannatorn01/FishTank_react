@@ -37,6 +37,7 @@ export function CanvasMetaBar({
         <SelectContent>
           <SelectItem value="fish">{t('form.typeFish')}</SelectItem>
           <SelectItem value="object">{t('form.typeObject')}</SelectItem>
+          <SelectItem value="room">{t('form.typeRoom')}</SelectItem>
         </SelectContent>
       </Select>
 

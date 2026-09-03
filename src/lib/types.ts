@@ -1,6 +1,7 @@
 export type CellColor = string | null;
 export type Frame = CellColor[];
-export type SpriteType = 'fish' | 'object';
+export type SpriteType = 'fish' | 'object' | 'room';
+export type SwimSpeed = 'slow' | 'medium' | 'fast' | 'veryFast';
 
 export interface Layer {
   id: string;
@@ -62,6 +63,16 @@ export interface SelectionBox {
   y1: number;
 }
 
+/** A user-created, flat (non-nested) group of tank instances - see TankEngine in useTank.ts. */
+export interface TankGroup {
+  id: string;
+  name: string;
+  /** Confines every member's wandering/schooling to this rectangle (tank canvas coordinates) - null
+   *  means the whole tank. Set by dragging a rectangle after arming the zone tool on a selected
+   *  member (see TankEngine.armZoneTool). */
+  zone: SelectionBox | null;
+}
+
 export interface Instance {
   id: string;
   spriteId: string;
@@ -76,4 +87,32 @@ export interface Instance {
   frameTimer: number;
   bobPhase: number;
   isDragging: boolean;
+  /** Only meaningful for kind 'fish'. */
+  swimSpeed: SwimSpeed;
+  /** id of the TankGroup this instance belongs to, or null. Fish in the same group school together
+   *  and dragging any member moves the whole group. */
+  groupId: string | null;
+  /** Fixed per-instance vertical offset from the school's centroid, so grouped fish spread out instead of stacking. */
+  schoolOffsetY: number;
+  /** Confines this fish's wandering to this rectangle when ungrouped - see TankGroup.zone for the
+   *  grouped equivalent (a grouped instance's own `zone` is ignored in favor of its group's). */
+  zone: SelectionBox | null;
+  /** Show/hide toggle from the Layers panel - hidden instances keep swimming/simulating, they just
+   *  don't get painted (same "visibility doesn't touch data" convention as sprite Layer.visible). */
+  visible: boolean;
+}
+
+/** A decoration placed in the area around the tank (kind 'room' sprites) rather than inside its
+ *  swim space - can be dragged anywhere in that area, always renders above the tank frame (so it
+ *  can overlap the tank), and never swims/animates/groups the way an in-tank Instance does. See
+ *  TankEngine.roomInstances in useTank.ts. */
+export interface RoomInstance {
+  id: string;
+  spriteId: string;
+  /** Center position as a fraction (0..1) of the viewport's width/height - fraction-based so it
+   *  stays proportionally put if the viewport is ever resized. Kept inset from 0/1 by a fixed
+   *  margin (see ROOM_MARGIN_PX in useTank.ts) so it's never dropped flush against the outer edge. */
+  xFrac: number;
+  yFrac: number;
+  visible: boolean;
 }

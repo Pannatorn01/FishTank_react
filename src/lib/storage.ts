@@ -1,7 +1,10 @@
-import type { CanvasBackground, Frame, Instance, Layer, Sprite, UiTheme } from './types';
+import type { CanvasBackground, Frame, Instance, Layer, RoomInstance, Sprite, TankGroup, UiTheme } from './types';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
+const KEY_GROUPS = 'fishtank.groups.v1';
+const KEY_ROOM_INSTANCES = 'fishtank.roomInstances.v1';
+const KEY_TANK_SIZE = 'fishtank.tankSize.v1';
 const KEY_SAVED_COLORS = 'fishtank.savedColors.v1';
 const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
 const KEY_CANVAS_BG = 'fishtank.canvasBackground.v1';
@@ -80,6 +83,52 @@ export function loadInstances(): Instance[] {
 
 export function saveInstances(instances: Instance[]): void {
   localStorage.setItem(KEY_INSTANCES, JSON.stringify(instances));
+}
+
+export function loadGroups(): TankGroup[] {
+  try {
+    const raw = localStorage.getItem(KEY_GROUPS);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    console.warn('loadGroups failed', e);
+    return [];
+  }
+}
+
+export function saveGroups(groups: TankGroup[]): void {
+  localStorage.setItem(KEY_GROUPS, JSON.stringify(groups));
+}
+
+export function loadRoomInstances(): RoomInstance[] {
+  try {
+    const raw = localStorage.getItem(KEY_ROOM_INSTANCES);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    console.warn('loadRoomInstances failed', e);
+    return [];
+  }
+}
+
+export function saveRoomInstances(roomInstances: RoomInstance[]): void {
+  localStorage.setItem(KEY_ROOM_INSTANCES, JSON.stringify(roomInstances));
+}
+
+export function loadTankSize(): { width: number; height: number } | null {
+  try {
+    const raw = localStorage.getItem(KEY_TANK_SIZE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.width !== 'number' || typeof parsed?.height !== 'number') return null;
+    return parsed;
+  } catch (e) {
+    console.warn('loadTankSize failed', e);
+    return null;
+  }
+}
+
+export function saveTankSize(size: { width: number; height: number } | null): void {
+  if (!size) localStorage.removeItem(KEY_TANK_SIZE);
+  else localStorage.setItem(KEY_TANK_SIZE, JSON.stringify(size));
 }
 
 export function loadSavedColors(): string[] {

@@ -2,10 +2,41 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { paintLayers } from '@/lib/pixelMath';
 import * as storage from '@/lib/storage';
-import type { Instance, Sprite } from '@/lib/types';
+import type { Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup } from '@/lib/types';
 
 const DISPLAY_SCALE = 4;
 const TAP_MOVE_THRESHOLD = 6;
+/** Room decorations (kind 'room' sprites, placed in the area around the tank) are kept this many
+ *  screen px inset from the viewport's edge on every side - satisfies "not flush against the
+ *  canvas edge" regardless of viewport size. Capped as a fraction of the viewport (see
+ *  clampRoomFrac) so a tiny viewport can't invert the clamp range. */
+export const ROOM_MARGIN_PX = 16;
+
+export const TANK_SIZE_MIN = { width: 300, height: 300 };
+export const TANK_SIZE_MAX = { width: 1400, height: 900 };
+/** Starting size when there's no saved preference - a reasonable "medium tank", not an attempt to
+ *  match whatever the available space happens to be (trying to precisely capture that via a DOM
+ *  measurement raced against the tab's own show/hide and nested-flex stretch timing in practice). */
+export const TANK_SIZE_DEFAULT = { width: 900, height: 600 };
+/** View zoom, as a fraction of "as large as fits the viewport" (see the auto-fit computation in
+ *  TankCanvas) - 100% here never exceeds that fit size, so zooming in can't make the tank spill
+ *  outside its viewport the way an unbounded zoom could. */
+export const TANK_ZOOM_STEPS = [0.5, 0.75, 1];
+
+/** Horizontal/vertical speed ranges (px/s) per swim-speed preset - randomized within the range on pick
+ *  so same-speed fish still don't move in perfect lockstep. */
+const SWIM_SPEED_PRESETS: Record<SwimSpeed, { vxMin: number; vxMax: number; vyMin: number; vyMax: number }> = {
+  slow: { vxMin: 8, vxMax: 14, vyMin: 3, vyMax: 6 },
+  medium: { vxMin: 18, vxMax: 28, vyMin: 6, vyMax: 12 },
+  fast: { vxMin: 35, vxMax: 50, vyMin: 10, vyMax: 18 },
+  veryFast: { vxMin: 55, vxMax: 80, vyMin: 15, vyMax: 25 },
+};
+export const SWIM_SPEEDS: SwimSpeed[] = ['slow', 'medium', 'fast', 'veryFast'];
+
+function randomSwimVelocity(speed: SwimSpeed): { vx: number; vy: number } {
+  const p = SWIM_SPEED_PRESETS[speed] ?? SWIM_SPEED_PRESETS.medium;
+  return { vx: p.vxMin + Math.random() * (p.vxMax - p.vxMin), vy: p.vyMin + Math.random() * (p.vyMax - p.vyMin) };
+}
 
 interface Bubble {
   x: number;
@@ -15,34 +46,114 @@ interface Bubble {
   phase: number;
 }
 
+type Snapshot = { instances: Instance[]; groups: TankGroup[]; roomInstances: RoomInstance[] };
+
 class TankEngine {
   canvas: HTMLCanvasElement | null = null;
   ctx: CanvasRenderingContext2D | null = null;
   wrap: HTMLDivElement | null = null;
-  trash: HTMLButtonElement | null = null;
+  /** The tank viewport element (see TankCanvas's .tank-viewport) - the placement area for room
+   *  decorations, which live outside the tank's own canvas/coordinate space. */
+  viewportEl: HTMLDivElement | null = null;
 
   sprites: Sprite[] = [];
   instances: Instance[] = [];
+  groups: TankGroup[] = [];
+  /** Decorations placed around the tank rather than inside it - see RoomInstance. Always rendered
+   *  above the tank frame (so they can overlap it) by TankCanvas, which draws them as a DOM layer
+   *  after (i.e. on top of) .tank-frame rather than through this engine's own <canvas>. */
+  roomInstances: RoomInstance[] = [];
   bubbles: Bubble[] = [];
+
+  /** Logical tank size (the actual simulation space fish swim in) set via the size controls or by
+   *  dragging the resize handle - null only very briefly before init() runs. A view/layout
+   *  preference, not tank content, so it's saved immediately rather than gated behind the manual
+   *  Save button. This is independent of how large the tank is drawn on screen - see zoomIndex/
+   *  displayScale for that. */
+  tankWidth: number | null = null;
+  tankHeight: number | null = null;
+
+  /** Index into TANK_ZOOM_STEPS - the user's view-zoom preference, expressed relative to "as large
+   *  as fits the viewport" (see TankCanvas's auto-fit computation, which multiplies this in). */
+  zoomIndex = TANK_ZOOM_STEPS.length - 1;
+
+  /** The actual on-screen-pixels-per-logical-pixel ratio right now (auto-fit scale x zoom step),
+   *  computed and kept in sync by TankCanvas since only it knows the live viewport size. Every
+   *  screen<->logical conversion (canvasPoint, resizeCanvas) goes through this - never assume 1:1. */
+  displayScale = 1;
 
   draggingInstance: Instance | null = null;
   dragOffset = { x: 0, y: 0 };
   dragStart = { x: 0, y: 0 };
   dragMoved = false;
   selectedId: string | null = null;
-  trashArmed = false;
+
+  /** Selected room decoration (mutually exclusive with selectedId/marqueeIds - see selectInstance
+   *  and selectRoomInstance). */
+  selectedRoomId: string | null = null;
+  private draggingRoomId: string | null = null;
+  private roomDragOffsetFrac = { x: 0, y: 0 };
+  private roomDragMoved = false;
+  private roomDragUndoSnapshot: Snapshot | null = null;
+
+  /** Whether the Fish Tank tab is the active one - set from TankPanel via setActive(), same pattern
+   *  as the sprite editor's engine.active. Gates the Ctrl+Z/Ctrl+Y listener below so it doesn't
+   *  steal undo/redo from the sprite editor while that tab is the one showing. */
+  private active = false;
+
+  /** Undo/redo for delete and move (drag) actions - a snapshot is the smallest state that fully
+   *  captures both (instances carry position and group membership; groups carry name/zone). */
+  private undoStack: Snapshot[] = [];
+  private redoStack: Snapshot[] = [];
+  private static readonly UNDO_LIMIT = 50;
+  /** Captured at drag-start; only committed to `undoStack` on release if the drag actually moved
+   *  something, so merely clicking to select a fish doesn't spam the undo history. */
+  private dragUndoSnapshot: Snapshot | null = null;
+
+  /** Rectangle-select over the tank (drag on empty space). `marqueeIds` persists after release so
+   *  a floating action bar can offer Group/Delete; it's cleared on the next click/marquee. */
+  marqueeIds: string[] | null = null;
+  marqueeRect: SelectionBox | null = null;
+  private marqueeStart: { x: number; y: number } | null = null;
+  private marqueeActive = false;
+
+  /** Armed by armZoneTool() on the currently-selected instance/group; the next drag on the canvas
+   *  draws the zone rectangle for that target instead of selecting/marqueeing. */
+  zoneDraftTarget: { kind: 'instance' | 'group'; id: string } | null = null;
+  zoneDraftRect: SelectionBox | null = null;
+  private zoneDrawStart: { x: number; y: number } | null = null;
 
   private paletteGhost: HTMLCanvasElement | null = null;
   private paletteGhostPx = { pw: 64, ph: 64 };
   private paletteDragSpriteId: string | null = null;
   private lastTime = 0;
   private rafId: number | null = null;
+  /** True once resizeCanvas() has actually measured a real (visible, nonzero) size at least once.
+   *  The animation loop starts on mount and runs every frame even while the Fish Tank tab is hidden
+   *  (both tabs stay mounted - see TankPanel), so without this guard update() would clamp every
+   *  fish's position against the <canvas> element's un-set HTML default (300x150) for however long
+   *  the tab stays hidden, silently collapsing everyone toward that tiny corner before the tab is
+   *  ever shown. */
+  private hasSized = false;
+  /** True when the in-memory tank has edits not yet written to localStorage (manual save() - see
+   *  persist()/save()/refresh()). Gates the beforeunload warning and the Save/Refresh buttons. */
+  dirty = false;
   private reactNotify: () => void = () => {};
 
   init(notify: () => void): void {
     this.reactNotify = notify;
     this.sprites = storage.loadSprites() || [];
-    this.instances = storage.loadInstances() || [];
+    this.instances = (storage.loadInstances() || []).map((inst) => ({
+      ...inst,
+      groupId: inst.groupId ?? null,
+      zone: inst.zone ?? null,
+      visible: inst.visible ?? true,
+    }));
+    this.groups = storage.loadGroups().map((g) => ({ ...g, zone: g.zone ?? null }));
+    this.roomInstances = (storage.loadRoomInstances() || []).map((r) => ({ ...r, visible: r.visible ?? true }));
+    const savedSize = storage.loadTankSize();
+    this.tankWidth = savedSize?.width ?? TANK_SIZE_DEFAULT.width;
+    this.tankHeight = savedSize?.height ?? TANK_SIZE_DEFAULT.height;
 
     for (let i = 0; i < 14; i++) {
       this.bubbles.push({
@@ -55,10 +166,95 @@ class TankEngine {
     }
 
     this.rafId = requestAnimationFrame((t) => this.loop(t));
+    document.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('beforeunload', this.onBeforeUnload);
   }
 
   destroy(): void {
     if (this.rafId) cancelAnimationFrame(this.rafId);
+    document.removeEventListener('keydown', this.onKeyDown);
+    window.removeEventListener('beforeunload', this.onBeforeUnload);
+  }
+
+  private onBeforeUnload = (e: BeforeUnloadEvent): void => {
+    if (!this.dirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+  };
+
+  setActive(active: boolean): void {
+    this.active = active;
+  }
+
+  private onKeyDown = (e: KeyboardEvent): void => {
+    const tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) return;
+    if (!this.active) return;
+
+    const key = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
+      e.preventDefault();
+      this.undo();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && (key === 'y' || (key === 'z' && e.shiftKey))) {
+      e.preventDefault();
+      this.redo();
+    }
+  };
+
+  private snapshotState(): Snapshot {
+    return {
+      instances: JSON.parse(JSON.stringify(this.instances)),
+      groups: JSON.parse(JSON.stringify(this.groups)),
+      roomInstances: JSON.parse(JSON.stringify(this.roomInstances)),
+    };
+  }
+
+  private commitUndo(snapshot: Snapshot): void {
+    this.undoStack.push(snapshot);
+    if (this.undoStack.length > TankEngine.UNDO_LIMIT) this.undoStack.shift();
+    this.redoStack = [];
+  }
+
+  private pushUndo(): void {
+    this.commitUndo(this.snapshotState());
+  }
+
+  get canUndo(): boolean {
+    return this.undoStack.length > 0;
+  }
+
+  get canRedo(): boolean {
+    return this.redoStack.length > 0;
+  }
+
+  undo(): void {
+    const snap = this.undoStack.pop();
+    if (!snap) return;
+    this.redoStack.push(this.snapshotState());
+    this.instances = snap.instances;
+    this.groups = snap.groups;
+    this.roomInstances = snap.roomInstances;
+    this.selectedId = null;
+    this.marqueeIds = null;
+    this.selectedRoomId = null;
+    this.persist();
+    this.persistGroups();
+  }
+
+  redo(): void {
+    const snap = this.redoStack.pop();
+    if (!snap) return;
+    this.undoStack.push(this.snapshotState());
+    this.instances = snap.instances;
+    this.groups = snap.groups;
+    this.roomInstances = snap.roomInstances;
+    this.selectedId = null;
+    this.marqueeIds = null;
+    this.selectedRoomId = null;
+    this.persist();
+    this.persistGroups();
   }
 
   attachCanvas(el: HTMLCanvasElement | null): void {
@@ -70,8 +266,8 @@ class TankEngine {
     this.wrap = el;
   }
 
-  attachTrash(el: HTMLButtonElement | null): void {
-    this.trash = el;
+  attachViewport(el: HTMLDivElement | null): void {
+    this.viewportEl = el;
   }
 
   spriteDims(sprite?: Sprite): { width: number; height: number } {
@@ -86,29 +282,142 @@ class TankEngine {
     return { pw: width * DISPLAY_SCALE, ph: height * DISPLAY_SCALE };
   }
 
-  spriteFor(inst: Instance): Sprite | undefined {
+  spriteFor(inst: { spriteId: string }): Sprite | undefined {
     return this.sprites.find((s) => s.id === inst.spriteId);
   }
 
-  private randomTargetY(ph: number): number {
+  private maxSwimY(ph: number): number {
     if (!this.canvas) return 0;
     const h = this.canvas.height;
     const sandH = Math.max(18, h * 0.08);
-    const maxY = Math.max(0, h - sandH - ph);
-    return Math.random() * maxY;
+    return Math.max(0, h - sandH - ph);
+  }
+
+  private randomTargetY(ph: number): number {
+    return Math.random() * this.maxSwimY(ph);
+  }
+
+  private zoneFor(inst: Instance): SelectionBox | null {
+    if (inst.groupId) return this.groups.find((g) => g.id === inst.groupId)?.zone ?? null;
+    return inst.zone;
+  }
+
+  /** Min/max allowed values for inst.x/inst.y (top-left anchored), folding in the zone (if any), the
+   *  sand strip at the bottom, and the canvas edges - so a zone that's gone stale (canvas resized,
+   *  zone now partly off-screen) never traps a fish outside the reachable area. */
+  private swimBoundsFor(inst: Instance): { xMin: number; xMax: number; yMin: number; yMax: number } {
+    const { pw, ph } = this.spritePx(this.spriteFor(inst));
+    const w = this.canvas!.width;
+    const h = this.canvas!.height;
+    const sandH = Math.max(18, h * 0.08);
+    const xMaxFull = Math.max(0, w - pw);
+    const yMaxFull = Math.max(0, h - sandH - ph);
+    const zone = this.zoneFor(inst);
+    if (!zone) return { xMin: 0, xMax: xMaxFull, yMin: 0, yMax: yMaxFull };
+    const xMin = Math.min(Math.max(0, zone.x0), xMaxFull);
+    const xMax = Math.min(xMaxFull, Math.max(xMin, zone.x1 - pw));
+    const yMin = Math.min(Math.max(0, zone.y0), yMaxFull);
+    const yMax = Math.min(yMaxFull, Math.max(yMin, zone.y1 - ph));
+    return { xMin, xMax, yMin, yMax };
+  }
+
+  private randomTargetYInBounds(yMin: number, yMax: number): number {
+    return yMin + Math.random() * Math.max(0, yMax - yMin);
+  }
+
+  /** Screen (client) point -> canvas-relative *logical* point (i.e. dividing out displayScale, so
+   *  it lands in the same coordinate space as instance x/y regardless of current zoom). Every
+   *  pointer handler goes through this instead of repeating the rect subtraction so hit-testing/
+   *  dragging/marquee/zone-drawing all agree on the same conversion. */
+  private canvasPoint(clientX: number, clientY: number): { x: number; y: number } | null {
+    if (!this.canvas) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: (clientX - rect.left) / this.displayScale, y: (clientY - rect.top) / this.displayScale };
+  }
+
+  setDisplayScale(scale: number): void {
+    this.displayScale = scale > 0 ? scale : 1;
+  }
+
+  zoomLabel(): string {
+    return `${Math.round(TANK_ZOOM_STEPS[this.zoomIndex] * 100)}%`;
+  }
+
+  zoomIn(): void {
+    this.zoomIndex = Math.min(TANK_ZOOM_STEPS.length - 1, this.zoomIndex + 1);
+    this.reactNotify();
+  }
+
+  zoomOut(): void {
+    this.zoomIndex = Math.max(0, this.zoomIndex - 1);
+    this.reactNotify();
   }
 
   resizeCanvas(): void {
     if (!this.canvas || !this.wrap) return;
     const rect = this.wrap.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return;
-    this.canvas.width = Math.max(200, Math.floor(rect.width));
-    this.canvas.height = Math.max(200, Math.floor(rect.height));
-    this.instances.forEach((inst) => {
-      const { pw, ph } = this.spritePx(this.spriteFor(inst));
-      inst.x = Math.min(inst.x, this.canvas!.width - pw);
-      inst.y = Math.min(inst.y, this.canvas!.height - ph);
-    });
+    // .tank-wrap's rendered size already reflects the current view zoom (the frame it's nested in
+    // is drawn at tankWidth*displayScale) - dividing that back out here is what keeps the canvas's
+    // own pixel buffer, and every instance's x/y, in one stable logical space independent of zoom.
+    const newWidth = Math.max(200, Math.floor(rect.width / this.displayScale));
+    const newHeight = Math.max(200, Math.floor(rect.height / this.displayScale));
+
+    // Only reconcile existing instances against the new size once we've already sized at least once
+    // for real - on that very first measurement there's nothing to reconcile (loaded positions are
+    // trusted as-is), which is what keeps a reload from disturbing anyone before the tab is shown.
+    //
+    // Reconciling means *scaling* everyone's x/y by how much the tank actually changed, not clamping
+    // them down to fit - a plain clamp only ever pulls positions in when the tank shrinks and can
+    // never push them back out when it grows again, so shrink-then-grow used to permanently collapse
+    // the whole layout toward the top-left instead of restoring it.
+    if (this.hasSized && this.canvas.width > 0 && this.canvas.height > 0) {
+      const scaleX = newWidth / this.canvas.width;
+      const scaleY = newHeight / this.canvas.height;
+      if (scaleX !== 1 || scaleY !== 1) {
+        const scaleZone = (z: SelectionBox): SelectionBox => ({
+          x0: z.x0 * scaleX,
+          y0: z.y0 * scaleY,
+          x1: z.x1 * scaleX,
+          y1: z.y1 * scaleY,
+        });
+        this.groups.forEach((g) => {
+          if (g.zone) g.zone = scaleZone(g.zone);
+        });
+        this.instances.forEach((inst) => {
+          const { pw, ph } = this.spritePx(this.spriteFor(inst));
+          inst.x = Math.min(Math.max(0, inst.x * scaleX), Math.max(0, newWidth - pw));
+          inst.y = Math.min(Math.max(0, inst.y * scaleY), Math.max(0, newHeight - ph));
+          inst.targetY *= scaleY;
+          if (inst.zone) inst.zone = scaleZone(inst.zone);
+        });
+      }
+    }
+
+    this.canvas.width = newWidth;
+    this.canvas.height = newHeight;
+    this.hasSized = true;
+  }
+
+  /** Sets a custom tank size (from the W/H inputs, or synced back from a native resize-handle drag -
+   *  see the ResizeObserver in TankCanvas). Clamped so the tank can't be dragged/typed down to
+   *  nothing or past a reasonable ceiling. Takes effect immediately (the tank visibly resizes right
+   *  away), but - like every other in-tank edit - doesn't touch localStorage until save(); doesn't
+   *  touch instances directly either (resizeCanvas(), triggered by the resulting DOM size change,
+   *  does the actual proportional repositioning). */
+  setTankSize(width: number, height: number): void {
+    const w = Math.round(Math.min(TANK_SIZE_MAX.width, Math.max(TANK_SIZE_MIN.width, width)));
+    const h = Math.round(Math.min(TANK_SIZE_MAX.height, Math.max(TANK_SIZE_MIN.height, height)));
+    if (this.tankWidth === w && this.tankHeight === h) return;
+    this.tankWidth = w;
+    this.tankHeight = h;
+    this.dirty = true;
+    this.reactNotify();
+  }
+
+  /** Back to the default medium size. */
+  resetTankSize(): void {
+    this.setTankSize(TANK_SIZE_DEFAULT.width, TANK_SIZE_DEFAULT.height);
   }
 
   refreshPalette(): void {
@@ -118,30 +427,83 @@ class TankEngine {
 
   removeInstancesBySprite(spriteId: string): void {
     this.instances = this.instances.filter((inst) => inst.spriteId !== spriteId);
+    this.roomInstances = this.roomInstances.filter((r) => r.spriteId !== spriteId);
+    this.pruneEmptyGroups();
     this.persist();
   }
 
+  /** The tank is manual-save (see save()/refresh() below) - every in-tank edit funnels through this
+   *  (or persistGroups()) to mark the in-memory state dirty and re-render, but nothing touches
+   *  localStorage until the user explicitly saves. */
   private persist(): void {
+    this.dirty = true;
+    this.reactNotify();
+  }
+
+  private persistGroups(): void {
+    this.dirty = true;
+    this.reactNotify();
+  }
+
+  /** Writes the current in-memory instances/groups/tank size to localStorage. */
+  save(): void {
     try {
       storage.saveInstances(this.instances);
+      storage.saveGroups(this.groups);
+      storage.saveRoomInstances(this.roomInstances);
+      storage.saveTankSize({ width: this.tankWidth ?? TANK_SIZE_DEFAULT.width, height: this.tankHeight ?? TANK_SIZE_DEFAULT.height });
+      this.dirty = false;
     } catch (err) {
-      console.warn('saveInstances failed', err);
+      console.warn('tank save failed', err);
     }
+    this.reactNotify();
+  }
+
+  /** Reloads instances/groups/tank size from localStorage, discarding any unsaved in-memory edits
+   *  (including an unsaved resize) - prompts first if there's actually something to lose (mirrors
+   *  the sprite editor's newSprite()). */
+  refresh(confirmDiscard: () => boolean): void {
+    if (this.dirty && !confirmDiscard()) return;
+    this.instances = (storage.loadInstances() || []).map((inst) => ({
+      ...inst,
+      groupId: inst.groupId ?? null,
+      zone: inst.zone ?? null,
+      visible: inst.visible ?? true,
+    }));
+    this.groups = storage.loadGroups().map((g) => ({ ...g, zone: g.zone ?? null }));
+    this.roomInstances = (storage.loadRoomInstances() || []).map((r) => ({ ...r, visible: r.visible ?? true }));
+    const savedSize = storage.loadTankSize();
+    this.tankWidth = savedSize?.width ?? TANK_SIZE_DEFAULT.width;
+    this.tankHeight = savedSize?.height ?? TANK_SIZE_DEFAULT.height;
+    this.selectedId = null;
+    this.marqueeIds = null;
+    this.draggingInstance = null;
+    this.selectedRoomId = null;
+    this.draggingRoomId = null;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.dirty = false;
     this.reactNotify();
   }
 
   clearTank(confirmClear: () => boolean): void {
     if (!this.instances.length) return;
     if (!confirmClear()) return;
+    this.pushUndo();
     this.instances = [];
+    this.groups = [];
+    this.marqueeIds = null;
     this.selectInstance(null);
     this.persist();
+    this.persistGroups();
   }
 
   addInstance(spriteId: string, x: number, y: number): void {
     const sprite = this.sprites.find((s) => s.id === spriteId);
     if (!sprite || !this.canvas) return;
     const { pw, ph } = this.spritePx(sprite);
+    const swimSpeed: SwimSpeed = 'medium';
+    const { vx, vy } = sprite.type === 'fish' ? randomSwimVelocity(swimSpeed) : { vx: 0, vy: 0 };
     const inst: Instance = {
       id: storage.uid('inst'),
       spriteId,
@@ -149,25 +511,403 @@ class TankEngine {
       x: Math.min(Math.max(0, x - pw / 2), this.canvas.width - pw),
       y: Math.min(Math.max(0, y - ph / 2), this.canvas.height - ph),
       dir: Math.random() < 0.5 ? -1 : 1,
-      vx: sprite.type === 'fish' ? 18 + Math.random() * 22 : 0,
-      vy: sprite.type === 'fish' ? 6 + Math.random() * 12 : 0,
+      vx,
+      vy,
       targetY: sprite.type === 'fish' ? this.randomTargetY(ph) : 0,
       frameIndex: 0,
       frameTimer: 0,
       bobPhase: Math.random() * Math.PI * 2,
       isDragging: false,
+      swimSpeed,
+      groupId: null,
+      schoolOffsetY: (Math.random() - 0.5) * 40,
+      zone: null,
+      visible: true,
     };
     this.instances.push(inst);
     this.persist();
   }
 
+  /** Keeps a room decoration's center at least ROOM_MARGIN_PX in from every edge of `rect` (the
+   *  viewport), expressed as a clamp on its fraction - so it can never land flush against the
+   *  outer edge regardless of viewport size. The margin fraction is capped at 0.45 per axis so a
+   *  very small viewport can't invert the min/max range. */
+  private clampRoomFrac(xFrac: number, yFrac: number, rect: { width: number; height: number }): { xFrac: number; yFrac: number } {
+    const mx = rect.width > 0 ? Math.min(0.45, ROOM_MARGIN_PX / rect.width) : 0;
+    const my = rect.height > 0 ? Math.min(0.45, ROOM_MARGIN_PX / rect.height) : 0;
+    return {
+      xFrac: Math.min(1 - mx, Math.max(mx, xFrac)),
+      yFrac: Math.min(1 - my, Math.max(my, yFrac)),
+    };
+  }
+
+  /** Drops a new room decoration at the given screen point, converted into a viewport-relative,
+   *  margin-clamped fraction (see clampRoomFrac) - counterpart to addInstance() for kind 'room'
+   *  sprites, but placed in the viewport's coordinate space instead of the tank canvas's, since
+   *  room decorations live around the tank rather than inside its swim space. */
+  addRoomInstance(spriteId: string, clientX: number, clientY: number): void {
+    const sprite = this.sprites.find((s) => s.id === spriteId);
+    if (!sprite || !this.viewportEl) return;
+    const rect = this.viewportEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const { xFrac, yFrac } = this.clampRoomFrac((clientX - rect.left) / rect.width, (clientY - rect.top) / rect.height, rect);
+    const inst: RoomInstance = { id: storage.uid('room'), spriteId, xFrac, yFrac, visible: true };
+    this.roomInstances.push(inst);
+    this.persist();
+  }
+
+  selectRoomInstance(id: string | null): void {
+    this.selectedRoomId = id;
+    if (id) {
+      this.selectedId = null;
+      this.marqueeIds = null;
+    }
+    this.reactNotify();
+  }
+
+  removeRoomInstance(id: string): void {
+    this.pushUndo();
+    this.roomInstances = this.roomInstances.filter((r) => r.id !== id);
+    if (this.selectedRoomId === id) this.selectedRoomId = null;
+    this.persist();
+  }
+
+  onRoomPointerDown(e: React.PointerEvent<HTMLDivElement>, id: string): void {
+    e.stopPropagation();
+    const inst = this.roomInstances.find((r) => r.id === id);
+    if (!inst || !this.viewportEl) return;
+    const rect = this.viewportEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    this.roomDragOffsetFrac = {
+      x: (e.clientX - rect.left) / rect.width - inst.xFrac,
+      y: (e.clientY - rect.top) / rect.height - inst.yFrac,
+    };
+    this.draggingRoomId = id;
+    this.roomDragMoved = false;
+    this.roomDragUndoSnapshot = this.snapshotState();
+    this.selectRoomInstance(id);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  onRoomPointerMove(e: React.PointerEvent<HTMLDivElement>): void {
+    if (!this.draggingRoomId || !this.viewportEl) return;
+    const inst = this.roomInstances.find((r) => r.id === this.draggingRoomId);
+    if (!inst) return;
+    const rect = this.viewportEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const rawX = (e.clientX - rect.left) / rect.width - this.roomDragOffsetFrac.x;
+    const rawY = (e.clientY - rect.top) / rect.height - this.roomDragOffsetFrac.y;
+    const { xFrac, yFrac } = this.clampRoomFrac(rawX, rawY, rect);
+    if (Math.abs(xFrac - inst.xFrac) > 0.0005 || Math.abs(yFrac - inst.yFrac) > 0.0005) this.roomDragMoved = true;
+    inst.xFrac = xFrac;
+    inst.yFrac = yFrac;
+    this.reactNotify();
+  }
+
+  onRoomPointerUp(): void {
+    if (!this.draggingRoomId) return;
+    this.draggingRoomId = null;
+    if (this.roomDragMoved && this.roomDragUndoSnapshot) this.commitUndo(this.roomDragUndoSnapshot);
+    this.roomDragUndoSnapshot = null;
+    if (this.roomDragMoved) this.persist();
+    this.roomDragMoved = false;
+  }
+
+  /** Looked up by id (not stored directly) so the caller always gets the live instance from `instances`. */
+  get selectedInstance(): Instance | null {
+    return this.instances.find((inst) => inst.id === this.selectedId) ?? null;
+  }
+
+  /** The zone that actually governs the selected instance's movement right now - its group's zone
+   *  if it's grouped, otherwise its own. Used by the UI to show current state and by draw(). */
+  get selectedZone(): SelectionBox | null {
+    const inst = this.selectedInstance;
+    return inst ? this.zoneFor(inst) : null;
+  }
+
+  /** Arms zone-drawing for whatever's currently selected (the whole group, if the selection is
+   *  grouped - same "acts on the group" convention as bringToFront/sendToBack). The next drag on
+   *  the canvas becomes the zone rectangle instead of a select/marquee. */
+  armZoneTool(): void {
+    const inst = this.selectedInstance;
+    if (!inst || inst.kind !== 'fish') return;
+    this.zoneDraftTarget = inst.groupId ? { kind: 'group', id: inst.groupId } : { kind: 'instance', id: inst.id };
+    this.zoneDraftRect = null;
+    this.reactNotify();
+  }
+
+  cancelZoneTool(): void {
+    this.zoneDraftTarget = null;
+    this.zoneDraftRect = null;
+    this.zoneDrawStart = null;
+    this.reactNotify();
+  }
+
+  clearZone(): void {
+    const inst = this.selectedInstance;
+    if (!inst) return;
+    if (inst.groupId) {
+      const group = this.groups.find((g) => g.id === inst.groupId);
+      if (!group) return;
+      group.zone = null;
+      this.persistGroups();
+    } else {
+      inst.zone = null;
+      this.persist();
+    }
+  }
+
+  private applyZone(target: { kind: 'instance' | 'group'; id: string }, zone: SelectionBox): void {
+    const members = target.kind === 'group' ? this.instances.filter((i) => i.groupId === target.id) : [];
+    if (target.kind === 'group') {
+      const group = this.groups.find((g) => g.id === target.id);
+      if (!group) return;
+      group.zone = zone;
+    } else {
+      const inst = this.instances.find((i) => i.id === target.id);
+      if (!inst) return;
+      inst.zone = zone;
+      members.push(inst);
+    }
+    // Snap anyone now outside the new zone back inside it immediately, instead of waiting for the
+    // gradual swim-toward-target to eventually notice.
+    members.forEach((i) => {
+      const { xMin, xMax, yMin, yMax } = this.swimBoundsFor(i);
+      i.x = Math.min(Math.max(i.x, xMin), xMax);
+      i.y = Math.min(Math.max(i.y, yMin), yMax);
+    });
+    this.persist();
+    this.persistGroups();
+  }
+
+  setInstanceSpeed(id: string, speed: SwimSpeed): void {
+    const inst = this.instances.find((i) => i.id === id);
+    if (!inst || inst.kind !== 'fish') return;
+    inst.swimSpeed = speed;
+    const { vx, vy } = randomSwimVelocity(speed);
+    inst.vx = vx;
+    inst.vy = vy;
+    this.persist();
+  }
+
+  setInstanceVisible(id: string, visible: boolean): void {
+    const inst = this.instances.find((i) => i.id === id);
+    if (!inst) return;
+    inst.visible = visible;
+    this.persist();
+  }
+
+  /** Sets visibility on exactly the given instances - not necessarily a whole group. The Layers
+   *  panel's per-type tabs (see TankLayers) show a mixed-type group's members split across tabs,
+   *  so that group's eye toggle only affects whichever members are visible in the tab it's clicked
+   *  from (e.g. toggling it from the Fish tab leaves that group's decorations untouched). */
+  setInstancesVisible(ids: string[], visible: boolean): void {
+    const idSet = new Set(ids);
+    let changed = false;
+    this.instances.forEach((i) => {
+      if (idSet.has(i.id) && (i.visible ?? true) !== visible) {
+        i.visible = visible;
+        changed = true;
+      }
+    });
+    if (changed) this.persist();
+  }
+
+  setRoomInstanceVisible(id: string, visible: boolean): void {
+    const inst = this.roomInstances.find((r) => r.id === id);
+    if (!inst) return;
+    inst.visible = visible;
+    this.persist();
+  }
+
+  private groupMemberIds(groupId: string): string[] {
+    return this.instances.filter((i) => i.groupId === groupId).map((i) => i.id);
+  }
+
+  /** Other instance ids that should move together with `inst` while it's being dragged: its group's
+   *  other members, or - if it's not grouped but is part of the current multi-item marquee
+   *  selection - the rest of that selection. Drives both the drag-delta propagation in
+   *  onCanvasPointerMove and the "draw whatever's moving on top" logic in draw(). */
+  private coMoversFor(inst: Instance): string[] {
+    if (inst.groupId) return this.groupMemberIds(inst.groupId).filter((id) => id !== inst.id);
+    if (this.marqueeIds && this.marqueeIds.length > 1 && this.marqueeIds.includes(inst.id)) {
+      return this.marqueeIds.filter((id) => id !== inst.id);
+    }
+    return [];
+  }
+
+  /** Fans a group's members out into a formation instead of a same-random-band clump: evenly spaced
+   *  vertical slots around the school's centroid (plus a little jitter so it doesn't look like a
+   *  ruler), scaled by member count so a bigger school spreads wider. Re-run whenever membership
+   *  changes so a new join gets its own slot and everyone else's stays roughly put. */
+  private reflowSchoolOffsets(groupId: string): void {
+    const members = this.instances.filter((i) => i.groupId === groupId);
+    const spacing = 55;
+    members.forEach((m, i) => {
+      m.schoolOffsetY = (i - (members.length - 1) / 2) * spacing + (Math.random() - 0.5) * 14;
+    });
+  }
+
+  /** Drops any group left with fewer than 2 members (after a delete/leave) - the lone survivor,
+   *  if any, goes back to swimming solo instead of sitting in a pointless one-member group. */
+  private pruneEmptyGroups(): void {
+    const counts = new Map<string, number>();
+    this.instances.forEach((i) => {
+      if (i.groupId) counts.set(i.groupId, (counts.get(i.groupId) || 0) + 1);
+    });
+    const dissolve = new Set(this.groups.filter((g) => (counts.get(g.id) || 0) < 2).map((g) => g.id));
+    if (!dissolve.size) return;
+    this.instances.forEach((i) => {
+      if (i.groupId && dissolve.has(i.groupId)) i.groupId = null;
+    });
+    this.groups = this.groups.filter((g) => !dissolve.has(g.id));
+    this.persistGroups();
+  }
+
+  /** Turns the current marquee selection into a named group; members become one contiguous
+   *  z-order block (reinserted at the position the frontmost selected member used to occupy). */
+  groupMarquee(): void {
+    if (!this.marqueeIds || this.marqueeIds.length < 2) return;
+    const ids = new Set(this.marqueeIds);
+    const group: TankGroup = { id: storage.uid('group'), name: `Group ${this.groups.length + 1}`, zone: null };
+    this.groups.push(group);
+
+    let lastMatchIdx = -1;
+    this.instances.forEach((inst, idx) => {
+      if (ids.has(inst.id)) lastMatchIdx = idx;
+    });
+    let anchorId: string | null = null;
+    for (let i = lastMatchIdx + 1; i < this.instances.length; i++) {
+      if (!ids.has(this.instances[i].id)) {
+        anchorId = this.instances[i].id;
+        break;
+      }
+    }
+
+    const members = this.instances.filter((i) => ids.has(i.id));
+    members.forEach((i) => (i.groupId = group.id));
+    const remaining = this.instances.filter((i) => !ids.has(i.id));
+    const insertAt = anchorId ? remaining.findIndex((i) => i.id === anchorId) : -1;
+    remaining.splice(insertAt === -1 ? remaining.length : insertAt, 0, ...members);
+    this.instances = remaining;
+    this.reflowSchoolOffsets(group.id);
+
+    this.marqueeIds = null;
+    this.persist();
+    this.persistGroups();
+  }
+
+  deleteMarquee(): void {
+    if (!this.marqueeIds || !this.marqueeIds.length) return;
+    this.pushUndo();
+    const ids = new Set(this.marqueeIds);
+    this.instances = this.instances.filter((i) => !ids.has(i.id));
+    this.marqueeIds = null;
+    if (this.selectedId && ids.has(this.selectedId)) this.selectedId = null;
+    this.pruneEmptyGroups();
+    this.persist();
+  }
+
+  renameGroup(id: string, name: string): void {
+    const group = this.groups.find((g) => g.id === id);
+    if (!group) return;
+    const trimmed = name.trim();
+    if (trimmed) group.name = trimmed;
+    this.persistGroups();
+  }
+
+  ungroup(id: string): void {
+    this.instances.forEach((i) => {
+      if (i.groupId === id) i.groupId = null;
+    });
+    this.groups = this.groups.filter((g) => g.id !== id);
+    this.persist();
+    this.persistGroups();
+  }
+
+  deleteGroup(id: string): void {
+    this.pushUndo();
+    const removedIds = new Set(this.groupMemberIds(id));
+    this.instances = this.instances.filter((i) => i.groupId !== id);
+    this.groups = this.groups.filter((g) => g.id !== id);
+    if (this.selectedId && removedIds.has(this.selectedId)) this.selectedId = null;
+    this.persist();
+    this.persistGroups();
+  }
+
+  /** The single drag-and-drop entry point for the Layers panel: dropping an instance row onto
+   *  another instance row reorders to that slot and inherits its group membership (or leaves any
+   *  group, if the target is top-level) - same splice-to-index mechanic as the sprite editor's
+   *  LayerPanel.moveLayer. Dropping onto a group's folder header always means "join this group".
+   *  Dragging a group header moves its whole member block (groups can't nest, so a group can only
+   *  be dropped relative to another row, never "into" one). */
+  moveRow(draggedId: string, targetKind: 'group' | 'instance', targetId: string): void {
+    const draggedIsGroup = this.groups.some((g) => g.id === draggedId);
+    if (draggedIsGroup && targetKind === 'group') return;
+    if (!draggedIsGroup && targetKind === 'instance' && targetId === draggedId) return;
+
+    const draggedIds = draggedIsGroup ? this.groupMemberIds(draggedId) : [draggedId];
+    if (!draggedIds.length) return;
+    const draggedSet = new Set(draggedIds);
+    const block = this.instances.filter((i) => draggedSet.has(i.id));
+    const remaining = this.instances.filter((i) => !draggedSet.has(i.id));
+    const oldGroupId = draggedIsGroup ? draggedId : (block[0]?.groupId ?? null);
+
+    let insertAt: number;
+    let newGroupId: string | null;
+
+    if (targetKind === 'group') {
+      newGroupId = targetId;
+      insertAt = 0;
+      remaining.forEach((i, idx) => {
+        if (i.groupId === targetId) insertAt = idx + 1;
+      });
+    } else {
+      const idx = remaining.findIndex((i) => i.id === targetId);
+      if (idx === -1) return;
+      newGroupId = remaining[idx].groupId;
+      insertAt = idx;
+    }
+
+    if (!draggedIsGroup) block[0].groupId = newGroupId;
+    remaining.splice(insertAt, 0, ...block);
+    this.instances = remaining;
+
+    if (!draggedIsGroup && oldGroupId !== newGroupId) {
+      this.pruneEmptyGroups();
+      if (newGroupId) this.reflowSchoolOffsets(newGroupId);
+    }
+    this.persist();
+    this.persistGroups();
+  }
+
   removeInstance(id: string): void {
+    this.pushUndo();
     this.instances = this.instances.filter((inst) => inst.id !== id);
+    this.pruneEmptyGroups();
     this.persist();
   }
 
   selectInstance(id: string | null): void {
     this.selectedId = id;
+    if (id) this.marqueeIds = null;
+    this.selectedRoomId = null;
+    this.reactNotify();
+  }
+
+  /** Shift-click multi-select from the Layers panel - adds/removes `ids` from the same `marqueeIds`
+   *  a canvas rectangle-select would produce, so the existing Group/Delete floating bar and the
+   *  yellow canvas highlight just work for panel-driven selection too. Toggles as one block: if
+   *  every id is already selected, they're all removed; otherwise they're all added (this is how a
+   *  shift-click on a group's folder row selects/deselects the whole group in one click). */
+  toggleMarqueeSelect(ids: string[]): void {
+    if (!ids.length) return;
+    const current = new Set(this.marqueeIds ?? []);
+    const allSelected = ids.every((id) => current.has(id));
+    ids.forEach((id) => (allSelected ? current.delete(id) : current.add(id)));
+    this.marqueeIds = current.size ? Array.from(current) : null;
+    this.selectedId = null;
+    this.selectedRoomId = null;
     this.reactNotify();
   }
 
@@ -176,20 +916,34 @@ class TankEngine {
     this.selectInstance(null);
   }
 
-  bringToFront(id: string): void {
-    const idx = this.instances.findIndex((inst) => inst.id === id);
-    if (idx === -1 || idx === this.instances.length - 1) return;
-    const [inst] = this.instances.splice(idx, 1);
-    this.instances.push(inst);
+  private moveBlockToFront(ids: string[]): void {
+    const idSet = new Set(ids);
+    const block = this.instances.filter((i) => idSet.has(i.id));
+    if (!block.length) return;
+    this.instances = this.instances.filter((i) => !idSet.has(i.id));
+    this.instances.push(...block);
     this.persist();
   }
 
-  sendToBack(id: string): void {
-    const idx = this.instances.findIndex((inst) => inst.id === id);
-    if (idx <= 0) return;
-    const [inst] = this.instances.splice(idx, 1);
-    this.instances.unshift(inst);
+  private moveBlockToBack(ids: string[]): void {
+    const idSet = new Set(ids);
+    const block = this.instances.filter((i) => idSet.has(i.id));
+    if (!block.length) return;
+    this.instances = this.instances.filter((i) => !idSet.has(i.id));
+    this.instances.unshift(...block);
     this.persist();
+  }
+
+  bringToFront(id: string): void {
+    const inst = this.instances.find((i) => i.id === id);
+    if (!inst) return;
+    this.moveBlockToFront(inst.groupId ? this.groupMemberIds(inst.groupId) : [id]);
+  }
+
+  sendToBack(id: string): void {
+    const inst = this.instances.find((i) => i.id === id);
+    if (!inst) return;
+    this.moveBlockToBack(inst.groupId ? this.groupMemberIds(inst.groupId) : [id]);
   }
 
   private hitTest(x: number, y: number): Instance | null {
@@ -206,69 +960,157 @@ class TankEngine {
   onCanvasPointerDown(e: React.PointerEvent<HTMLCanvasElement>): void {
     const canvas = this.canvas;
     if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const p = this.canvasPoint(e.clientX, e.clientY);
+    if (!p) return;
+    const { x, y } = p;
+
+    if (this.zoneDraftTarget) {
+      this.zoneDrawStart = { x, y };
+      this.zoneDraftRect = { x0: x, y0: y, x1: x, y1: y };
+      canvas.setPointerCapture(e.pointerId);
+      this.reactNotify();
+      return;
+    }
+
     const inst = this.hitTest(x, y);
     if (!inst) {
       this.selectInstance(null);
+      this.marqueeIds = null;
+      this.marqueeRect = null;
+      this.marqueeStart = { x, y };
+      this.marqueeActive = false;
+      canvas.setPointerCapture(e.pointerId);
+      this.reactNotify();
       return;
     }
-    this.instances.splice(this.instances.indexOf(inst), 1);
-    this.instances.push(inst);
+    // Dragging a member of the current multi-selection moves the whole selection together, so keep
+    // it intact instead of collapsing to just this one instance - clicking anything else (or just
+    // tapping without dragging - see onCanvasPointerUp) still clears it as before.
+    const partOfMarquee = !!this.marqueeIds && this.marqueeIds.length > 1 && this.marqueeIds.includes(inst.id);
+    if (!partOfMarquee) {
+      this.marqueeIds = null;
+      this.marqueeRect = null;
+    }
+    // Selecting/dragging never reorders `instances` (that would jump the row to the top of the
+    // Layers panel just from clicking it) - draw() renders whatever's being dragged on top instead,
+    // purely visually. Z-order only changes via bring-to-front/send-to-back or a panel drag-reorder.
     inst.isDragging = true;
     this.draggingInstance = inst;
     this.dragOffset = { x: x - inst.x, y: y - inst.y };
     this.dragStart = { x, y };
     this.dragMoved = false;
+    // Captured now, committed to the undo stack on release only if this turns into an actual move
+    // (see onCanvasPointerUp) - so a plain click-to-select never pollutes the undo history.
+    this.dragUndoSnapshot = this.snapshotState();
     canvas.setPointerCapture(e.pointerId);
     this.reactNotify();
   }
 
+  private updateMarquee(e: React.PointerEvent<HTMLCanvasElement>): void {
+    if (!this.marqueeStart) return;
+    const p = this.canvasPoint(e.clientX, e.clientY);
+    if (!p) return;
+    const { x, y } = p;
+    if (!this.marqueeActive) {
+      if (Math.hypot(x - this.marqueeStart.x, y - this.marqueeStart.y) < TAP_MOVE_THRESHOLD) return;
+      this.marqueeActive = true;
+    }
+    const x0 = Math.min(this.marqueeStart.x, x);
+    const x1 = Math.max(this.marqueeStart.x, x);
+    const y0 = Math.min(this.marqueeStart.y, y);
+    const y1 = Math.max(this.marqueeStart.y, y);
+    this.marqueeRect = { x0, y0, x1, y1 };
+    this.marqueeIds = this.instances
+      .filter((inst) => {
+        const { pw, ph } = this.spritePx(this.spriteFor(inst));
+        return inst.x < x1 && inst.x + pw > x0 && inst.y < y1 && inst.y + ph > y0;
+      })
+      .map((inst) => inst.id);
+    this.reactNotify();
+  }
+
   onCanvasPointerMove(e: React.PointerEvent<HTMLCanvasElement>): void {
-    if (!this.draggingInstance || !this.canvas || !this.trash) return;
-    const rect = this.canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    if (this.zoneDrawStart) {
+      const p = this.canvasPoint(e.clientX, e.clientY);
+      if (!p) return;
+      this.zoneDraftRect = {
+        x0: Math.min(this.zoneDrawStart.x, p.x),
+        y0: Math.min(this.zoneDrawStart.y, p.y),
+        x1: Math.max(this.zoneDrawStart.x, p.x),
+        y1: Math.max(this.zoneDrawStart.y, p.y),
+      };
+      this.reactNotify();
+      return;
+    }
+    if (this.marqueeStart) {
+      this.updateMarquee(e);
+      return;
+    }
+    if (!this.draggingInstance || !this.canvas) return;
+    const p = this.canvasPoint(e.clientX, e.clientY);
+    if (!p) return;
+    const { x, y } = p;
     if (Math.hypot(x - this.dragStart.x, y - this.dragStart.y) > TAP_MOVE_THRESHOLD) this.dragMoved = true;
     const inst = this.draggingInstance;
     const { pw, ph } = this.spritePx(this.spriteFor(inst));
+    const prevX = inst.x;
+    const prevY = inst.y;
     inst.x = Math.min(Math.max(0, x - this.dragOffset.x), this.canvas.width - pw);
     inst.y = Math.min(Math.max(0, y - this.dragOffset.y), this.canvas.height - ph);
 
-    const trashRect = this.trash.getBoundingClientRect();
-    const over =
-      e.clientX >= trashRect.left && e.clientX <= trashRect.right && e.clientY >= trashRect.top && e.clientY <= trashRect.bottom;
-    if (this.trashArmed !== over) {
-      this.trashArmed = over;
-      this.reactNotify();
+    const coMovers = this.coMoversFor(inst);
+    if (coMovers.length) {
+      const dx = inst.x - prevX;
+      const dy = inst.y - prevY;
+      if (dx !== 0 || dy !== 0) {
+        const coMoverSet = new Set(coMovers);
+        this.instances.forEach((other) => {
+          if (!coMoverSet.has(other.id)) return;
+          const { pw: opw, ph: oph } = this.spritePx(this.spriteFor(other));
+          other.x = Math.min(Math.max(0, other.x + dx), this.canvas!.width - opw);
+          other.y = Math.min(Math.max(0, other.y + dy), this.canvas!.height - oph);
+        });
+      }
     }
   }
 
-  onCanvasPointerUp(e: React.PointerEvent<HTMLCanvasElement>): void {
-    if (!this.draggingInstance || !this.trash) return;
+  onCanvasPointerUp(): void {
+    if (this.zoneDrawStart) {
+      this.zoneDrawStart = null;
+      const r = this.zoneDraftRect;
+      const target = this.zoneDraftTarget;
+      this.zoneDraftRect = null;
+      this.zoneDraftTarget = null;
+      if (r && target && r.x1 - r.x0 > 10 && r.y1 - r.y0 > 10) this.applyZone(target, r);
+      this.reactNotify();
+      return;
+    }
+    if (this.marqueeStart) {
+      this.marqueeStart = null;
+      this.marqueeActive = false;
+      this.marqueeRect = null;
+      if (this.marqueeIds && this.marqueeIds.length === 0) this.marqueeIds = null;
+      this.reactNotify();
+      return;
+    }
+    if (!this.draggingInstance) {
+      this.dragUndoSnapshot = null;
+      return;
+    }
     const inst = this.draggingInstance;
-    const trashRect = this.trash.getBoundingClientRect();
-    const over =
-      e.clientX >= trashRect.left && e.clientX <= trashRect.right && e.clientY >= trashRect.top && e.clientY <= trashRect.bottom;
-
     inst.isDragging = false;
-    this.trashArmed = false;
 
-    if (over) {
-      this.removeInstance(inst.id);
-      this.selectInstance(null);
-    } else if (!this.dragMoved) {
+    if (!this.dragMoved) {
+      // Just a click, nothing actually moved - nothing to record.
+      this.dragUndoSnapshot = null;
       this.selectInstance(inst.id);
     } else {
+      if (this.dragUndoSnapshot) this.commitUndo(this.dragUndoSnapshot);
+      this.dragUndoSnapshot = null;
       this.selectInstance(null);
     }
     this.draggingInstance = null;
     this.persist();
-  }
-
-  get trashVisible(): boolean {
-    return !!this.draggingInstance;
   }
 
   startPaletteDrag(e: React.PointerEvent<HTMLDivElement>, spriteId: string): void {
@@ -312,22 +1154,58 @@ class TankEngine {
       this.paletteGhost.remove();
       this.paletteGhost = null;
     }
-    if (this.canvas && this.paletteDragSpriteId) {
+    const spriteId = this.paletteDragSpriteId;
+    this.paletteDragSpriteId = null;
+    if (!spriteId) return;
+    const sprite = this.sprites.find((s) => s.id === spriteId);
+
+    // 'room' sprites drop anywhere in the viewport (the area around the tank, including on top of
+    // the frame) instead of only onto the tank canvas itself - see addRoomInstance.
+    if (sprite?.type === 'room') {
+      if (!this.viewportEl) return;
+      const rect = this.viewportEl.getBoundingClientRect();
+      if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
+        this.addRoomInstance(spriteId, clientX, clientY);
+      }
+      return;
+    }
+
+    if (this.canvas) {
       const rect = this.canvas.getBoundingClientRect();
       if (clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom) {
-        this.addInstance(this.paletteDragSpriteId, clientX - rect.left, clientY - rect.top);
+        const p = this.canvasPoint(clientX, clientY);
+        if (p) this.addInstance(spriteId, p.x, p.y);
       }
     }
-    this.paletteDragSpriteId = null;
   }
 
   private update(dt: number): void {
-    if (!this.canvas) return;
-    const w = this.canvas.width;
+    if (!this.canvas || !this.hasSized) return;
     const h = this.canvas.height;
     this.bubbles.forEach((b) => {
       b.y -= (b.speed * dt) / h;
       if (b.y < -0.05) b.y = 1.05;
+    });
+
+    // Schooling: fish belonging to a user-made group (see TankGroup) flock together, whatever their
+    // species - the user picked those members deliberately via the marquee-select + Group action.
+    // Each group steers toward a common heading and a common vertical centroid instead of each fish
+    // wandering independently. Computed once per frame from last frame's positions; good enough
+    // since it's just a steering target. Decorations in the group simply never enter the fish branch
+    // below, so they're unaffected by schooling but still move together (see onCanvasPointerMove).
+    const schoolsByGroup = new Map<string, Instance[]>();
+    this.instances.forEach((inst) => {
+      if (inst.kind !== 'fish' || !inst.groupId || inst.isDragging) return;
+      const list = schoolsByGroup.get(inst.groupId);
+      if (list) list.push(inst);
+      else schoolsByGroup.set(inst.groupId, [inst]);
+    });
+    const schoolSteer = new Map<string, { dir: 1 | -1; centerY: number }>();
+    schoolsByGroup.forEach((members, groupId) => {
+      if (members.length < 2) return;
+      const dir: 1 | -1 = members.reduce((sum, inst) => sum + inst.dir, 0) >= 0 ? 1 : -1;
+      const centerY = members.reduce((sum, inst) => sum + inst.y, 0) / members.length;
+      schoolSteer.set(groupId, { dir, centerY });
     });
 
     this.instances.forEach((inst) => {
@@ -342,25 +1220,36 @@ class TankEngine {
       if (inst.isDragging) return;
       inst.bobPhase += dt * 2;
       if (inst.kind === 'fish') {
-        const { pw, ph } = this.spritePx(sprite);
         if (inst.vy === undefined) inst.vy = 6 + Math.random() * 12;
-        if (inst.targetY === undefined) inst.targetY = this.randomTargetY(ph);
+        if (inst.targetY === undefined) inst.targetY = this.randomTargetY(this.spritePx(sprite).ph);
+        if (inst.schoolOffsetY === undefined) inst.schoolOffsetY = (Math.random() - 0.5) * 40;
 
-        inst.x += inst.vx * inst.dir * dt;
-        if (inst.x <= 0) {
-          inst.x = 0;
-          inst.dir = 1;
-          inst.targetY = this.randomTargetY(ph);
+        const bounds = this.swimBoundsFor(inst);
+        const steer = inst.groupId ? schoolSteer.get(inst.groupId) : undefined;
+        const schooling = !!steer;
+        if (steer) {
+          inst.dir = steer.dir;
+          inst.targetY = Math.max(bounds.yMin, Math.min(bounds.yMax, steer.centerY + inst.schoolOffsetY));
         }
-        if (inst.x >= w - pw) {
-          inst.x = w - pw;
+
+        // Clamp first in case the zone shrank (or moved) since last frame and this fish is now
+        // outside it - otherwise it'd sail straight past the new wall before ever "bouncing".
+        inst.x = Math.min(Math.max(inst.x, bounds.xMin), bounds.xMax);
+        inst.x += inst.vx * inst.dir * dt;
+        if (inst.x <= bounds.xMin) {
+          inst.x = bounds.xMin;
+          inst.dir = 1;
+          if (!schooling) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
+        }
+        if (inst.x >= bounds.xMax) {
+          inst.x = bounds.xMax;
           inst.dir = -1;
-          inst.targetY = this.randomTargetY(ph);
+          if (!schooling) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
         }
 
         const dy = inst.targetY - inst.y;
         if (Math.abs(dy) < 2) {
-          inst.targetY = this.randomTargetY(ph);
+          if (!schooling) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
         } else {
           inst.y += Math.sign(dy) * Math.min(Math.abs(dy), inst.vy * dt);
         }
@@ -393,30 +1282,72 @@ class TankEngine {
     ctx.fillRect(0, h - sandH, w, sandH);
   }
 
-  private draw(): void {
+  private drawInstance(inst: Instance): void {
+    if (!inst.visible) return;
+    const sprite = this.spriteFor(inst);
+    if (!sprite || !this.ctx) return;
+    const { width, height } = this.spriteDims(sprite);
+    const { pw, ph } = this.spritePx(sprite);
+    const layers = sprite.frames[inst.frameIndex % sprite.frames.length];
+    const renderY = inst.y + (inst.kind === 'fish' && !inst.isDragging ? Math.sin(inst.bobPhase) * 3 : 0);
+
+    this.ctx.save();
+    this.ctx.translate(inst.x + pw / 2, renderY + ph / 2);
+    if (inst.kind === 'fish' && inst.dir < 0) this.ctx.scale(-1, 1);
+    this.ctx.translate(-pw / 2, -ph / 2);
+    paintLayers(this.ctx, layers, width, height, DISPLAY_SCALE);
+    this.ctx.restore();
+
+    if (inst.id === this.selectedId || this.marqueeIds?.includes(inst.id)) {
+      this.ctx.strokeStyle = '#ffeb3b';
+      this.ctx.lineWidth = 2;
+      this.ctx.strokeRect(inst.x - 2, renderY - 2, pw + 4, ph + 4);
+    }
+  }
+
+  private strokeZoneRect(zone: SelectionBox, color: string, fill?: string): void {
     if (!this.ctx) return;
+    const { x0, y0, x1, y1 } = zone;
+    this.ctx.save();
+    if (fill) {
+      this.ctx.fillStyle = fill;
+      this.ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    }
+    this.ctx.strokeStyle = color;
+    this.ctx.lineWidth = 1.5;
+    this.ctx.setLineDash([6, 4]);
+    this.ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    this.ctx.restore();
+  }
+
+  private draw(): void {
+    if (!this.ctx || !this.canvas) return;
+
     this.drawBackground();
-    this.instances.forEach((inst) => {
-      const sprite = this.spriteFor(inst);
-      if (!sprite || !this.ctx) return;
-      const { width, height } = this.spriteDims(sprite);
-      const { pw, ph } = this.spritePx(sprite);
-      const layers = sprite.frames[inst.frameIndex % sprite.frames.length];
-      const renderY = inst.y + (inst.kind === 'fish' && !inst.isDragging ? Math.sin(inst.bobPhase) * 3 : 0);
 
-      this.ctx.save();
-      this.ctx.translate(inst.x + pw / 2, renderY + ph / 2);
-      if (inst.kind === 'fish' && inst.dir < 0) this.ctx.scale(-1, 1);
-      this.ctx.translate(-pw / 2, -ph / 2);
-      paintLayers(this.ctx, layers, width, height, DISPLAY_SCALE);
-      this.ctx.restore();
+    if (this.selectedZone) this.strokeZoneRect(this.selectedZone, 'rgba(120, 255, 160, 0.9)');
 
-      if (inst.id === this.selectedId) {
-        this.ctx.strokeStyle = '#ffeb3b';
-        this.ctx.lineWidth = 2;
-        this.ctx.strokeRect(inst.x - 2, renderY - 2, pw + 4, ph + 4);
-      }
-    });
+    // Draw order follows `instances` (z-order) as-is - EXCEPT whatever's actively being dragged (and
+    // anything moving with it - its group, or the rest of a multi-selection) gets drawn last so it
+    // visually sits on top while moving, without ever touching the persisted array order (a mere
+    // click/drag must not reorder anything or jump rows around in the Layers panel - only explicit
+    // bring-to-front/send-to-back/panel-reorder should).
+    const raised = this.draggingInstance
+      ? new Set([this.draggingInstance.id, ...this.coMoversFor(this.draggingInstance)])
+      : null;
+    if (raised) {
+      this.instances.forEach((inst) => {
+        if (!raised.has(inst.id)) this.drawInstance(inst);
+      });
+      this.instances.forEach((inst) => {
+        if (raised.has(inst.id)) this.drawInstance(inst);
+      });
+    } else {
+      this.instances.forEach((inst) => this.drawInstance(inst));
+    }
+
+    if (this.marqueeRect) this.strokeZoneRect(this.marqueeRect, '#ffeb3b', 'rgba(255, 235, 59, 0.15)');
+    if (this.zoneDraftRect) this.strokeZoneRect(this.zoneDraftRect, '#4ade80', 'rgba(74, 222, 128, 0.15)');
   }
 
   private loop(t: number): void {
