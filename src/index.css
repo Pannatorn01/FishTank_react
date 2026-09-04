@@ -1346,6 +1346,24 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 }
 .tank-palette-item:hover { background: var(--pixel-accent); }
 .tank-palette-item-name { flex: 1; min-width: 0; font-size: 0.68rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Background picker items are click-to-select (not drag), so they get a pointer cursor and a
+ * highlighted state for whichever background is currently applied - unlike the sprite palette rows
+ * above, which are always draggable and never "selected" in this sense. */
+.tank-bg-item { cursor: pointer; }
+.tank-bg-item.active { background: var(--pixel-accent); border-color: var(--pixel-highlight); }
+.tank-bg-thumb {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border: 1px solid var(--bevel-dark);
+}
+.tank-bg-thumb-default {
+  background: linear-gradient(180deg, #7fd7e8 0%, #0f6f97 100%);
+}
+.tank-bg-position { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; padding-top: 4px; border-top: 1px solid var(--bevel-dark); }
+.tank-bg-position-row { display: flex; flex-direction: column; gap: 2px; font-size: 0.68rem; color: var(--pixel-text); }
+.tank-bg-position-row input[type='range'] { width: 100%; }
 .tank-clear-btn {
   border: 2px solid var(--pixel-accent);
   color: var(--pixel-accent-hover);

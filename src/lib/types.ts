@@ -1,6 +1,6 @@
 export type CellColor = string | null;
 export type Frame = CellColor[];
-export type SpriteType = 'fish' | 'object' | 'room';
+export type SpriteType = 'fish' | 'object' | 'room' | 'background';
 export type SwimSpeed = 'slow' | 'medium' | 'fast' | 'veryFast';
 /** The tank's swim-area silhouette: 'rectangle' is the classic box, 'rounded' cuts its four corners
  *  on a radius, 'oval' inscribes an ellipse in the tank's bounding box (a round bowl look). Affects

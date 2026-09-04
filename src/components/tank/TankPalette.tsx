@@ -36,7 +36,9 @@ export function TankPalette({ engine }: { engine: TankEngine }) {
         {t('tank.dragHint')} <i className="fa-solid fa-arrow-down" />
       </p>
       <div className="tank-palette-list">
-        {engine.sprites.map((sprite) => (
+        {engine.sprites
+          .filter((sprite) => sprite.type !== 'background')
+          .map((sprite) => (
           <div
             key={sprite.id}
             className="tank-palette-item"

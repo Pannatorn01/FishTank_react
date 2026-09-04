@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { useTank } from '@/hooks/useTank';
 import { useLanguage } from '@/lib/i18n';
+import { TankBackgroundPanel } from './TankBackgroundPanel';
 import { TankCanvas } from './TankCanvas';
 import { TankLayers } from './TankLayers';
 import { TankPalette } from './TankPalette';
 
-type SidebarTab = 'layers' | 'palette';
+type SidebarTab = 'layers' | 'palette' | 'background';
 
 export function TankPanel({ active }: { active: boolean }) {
   const engine = useTank();
@@ -58,8 +59,22 @@ export function TankPanel({ active }: { active: boolean }) {
           >
             <i className="fa-solid fa-fish" /> {t('tank.tabPalette')}
           </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={sidebarTab === 'background' ? 'default' : 'secondary'}
+            onClick={() => setSidebarTab('background')}
+          >
+            <i className="fa-solid fa-image" /> {t('tank.tabBackground')}
+          </Button>
         </div>
-        {sidebarTab === 'layers' ? <TankLayers engine={engine} /> : <TankPalette engine={engine} />}
+        {sidebarTab === 'layers' ? (
+          <TankLayers engine={engine} />
+        ) : sidebarTab === 'palette' ? (
+          <TankPalette engine={engine} />
+        ) : (
+          <TankBackgroundPanel engine={engine} />
+        )}
       </div>
     </div>
   );

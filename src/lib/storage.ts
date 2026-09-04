@@ -7,6 +7,13 @@ const KEY_ROOM_INSTANCES = 'fishtank.roomInstances.v1';
 const KEY_TANK_SIZE = 'fishtank.tankSize.v1';
 const KEY_TANK_SHAPE = 'fishtank.tankShape.v1';
 export const TANK_SHAPES: TankShape[] = ['rectangle', 'rounded', 'oval'];
+/** Which 'background'-type Sprite (drawn in the pixel editor, see SpriteType) is painted behind the
+ *  fish instead of the default gradient - null means the default gradient. */
+const KEY_TANK_BACKGROUND_SPRITE_ID = 'fishtank.tankBackgroundSpriteId.v1';
+/** Pan position (0..1 each axis, like CSS object-position) within the cover-fit background image -
+ *  see TankEngine.backgroundOffsetXFrac/YFrac. */
+export const KEY_TANK_BACKGROUND_OFFSET_X = 'fishtank.tankBackgroundOffsetX.v1';
+export const KEY_TANK_BACKGROUND_OFFSET_Y = 'fishtank.tankBackgroundOffsetY.v1';
 const KEY_SAVED_COLORS = 'fishtank.savedColors.v1';
 const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
 const KEY_CANVAS_BG = 'fishtank.canvasBackground.v1';
@@ -165,6 +172,21 @@ export function saveTankShapeParam(key: string, value: number): void {
 
 export const KEY_TANK_CORNER_RADIUS_FRAC = 'fishtank.tankCornerRadiusFrac.v1';
 export const KEY_TANK_OVAL_TOP_CUT_FRAC = 'fishtank.tankOvalTopCutFrac.v1';
+
+/** null means "use the default gradient water background". */
+export function loadTankBackgroundSpriteId(): string | null {
+  try {
+    return localStorage.getItem(KEY_TANK_BACKGROUND_SPRITE_ID);
+  } catch (e) {
+    console.warn('loadTankBackgroundSpriteId failed', e);
+    return null;
+  }
+}
+
+export function saveTankBackgroundSpriteId(id: string | null): void {
+  if (id) localStorage.setItem(KEY_TANK_BACKGROUND_SPRITE_ID, id);
+  else localStorage.removeItem(KEY_TANK_BACKGROUND_SPRITE_ID);
+}
 
 export function loadSavedColors(): string[] {
   try {

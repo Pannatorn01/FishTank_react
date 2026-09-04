@@ -49,14 +49,6 @@ function randomSwimVelocity(speed: SwimSpeed): { vx: number; vy: number } {
   return { vx: p.vxMin + Math.random() * (p.vxMax - p.vxMin), vy: p.vyMin + Math.random() * (p.vyMax - p.vyMin) };
 }
 
-interface Bubble {
-  x: number;
-  y: number;
-  r: number;
-  speed: number;
-  phase: number;
-}
-
 type Snapshot = { instances: Instance[]; groups: TankGroup[]; roomInstances: RoomInstance[] };
 
 class TankEngine {
@@ -74,7 +66,6 @@ class TankEngine {
    *  above the tank frame (so they can overlap it) by TankCanvas, which draws them as a DOM layer
    *  after (i.e. on top of) .tank-frame rather than through this engine's own <canvas>. */
   roomInstances: RoomInstance[] = [];
-  bubbles: Bubble[] = [];
 
   /** Logical tank size (the actual simulation space fish swim in) set via the size controls or by
    *  dragging the resize handle - null only very briefly before init() runs. A view/layout
@@ -97,6 +88,16 @@ class TankEngine {
    *  (0 = a full ellipse, larger values flatten more of the top - see OVAL_TOP_CUT_MIN/MAX for the
    *  slider's range). Same shapePath/clampCenterToShape split as tankCornerRadiusFrac above. */
   tankOvalTopCutFrac = 0.28;
+
+  /** Which 'background'-type sprite (drawn in the pixel editor, same as fish/decor) is painted behind
+   *  the fish - null means the default gradient. Like tankShape, takes effect immediately but only
+   *  reaches localStorage via the manual Save button. */
+  backgroundSpriteId: string | null = null;
+  /** Pan position within the cover-fit background image, each 0..1 (like CSS object-position) -
+   *  0.5/0.5 centers it. Lets a background sprite bigger than the tank be framed deliberately instead
+   *  of always centering on crop. */
+  backgroundOffsetXFrac = 0.5;
+  backgroundOffsetYFrac = 0.5;
 
   /** Index into TANK_ZOOM_STEPS - the user's view-zoom preference, expressed relative to "as large
    *  as fits the viewport" (see TankCanvas's auto-fit computation, which multiplies this in). */
@@ -182,16 +183,9 @@ class TankEngine {
     this.tankShape = storage.loadTankShape() ?? 'rectangle';
     this.tankCornerRadiusFrac = storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22;
     this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
-
-    for (let i = 0; i < 14; i++) {
-      this.bubbles.push({
-        x: Math.random(),
-        y: Math.random(),
-        r: 2 + Math.random() * 3,
-        speed: 8 + Math.random() * 10,
-        phase: Math.random() * Math.PI * 2,
-      });
-    }
+    this.backgroundSpriteId = storage.loadTankBackgroundSpriteId();
+    this.backgroundOffsetXFrac = storage.loadTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_X) ?? 0.5;
+    this.backgroundOffsetYFrac = storage.loadTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_Y) ?? 0.5;
 
     this.rafId = requestAnimationFrame((t) => this.loop(t));
     document.addEventListener('keydown', this.onKeyDown);
@@ -568,9 +562,34 @@ class TankEngine {
     this.reactNotify();
   }
 
+  /** Selects a 'background'-type sprite by id to paint behind the fish, or null for the default
+   *  gradient. Takes effect immediately but (like tankShape) only reaches localStorage via the
+   *  manual Save button. */
+  setTankBackgroundSprite(id: string | null): void {
+    if (this.backgroundSpriteId === id) return;
+    this.backgroundSpriteId = id;
+    this.dirty = true;
+    this.reactNotify();
+  }
+
+  /** Pans the background image within its cover-fit frame - see backgroundOffsetXFrac/YFrac. */
+  setBackgroundOffset(xFrac: number, yFrac: number): void {
+    const x = Math.max(0, Math.min(1, xFrac));
+    const y = Math.max(0, Math.min(1, yFrac));
+    if (this.backgroundOffsetXFrac === x && this.backgroundOffsetYFrac === y) return;
+    this.backgroundOffsetXFrac = x;
+    this.backgroundOffsetYFrac = y;
+    this.dirty = true;
+    this.reactNotify();
+  }
+
   removeInstancesBySprite(spriteId: string): void {
     this.instances = this.instances.filter((inst) => inst.spriteId !== spriteId);
     this.roomInstances = this.roomInstances.filter((r) => r.spriteId !== spriteId);
+    if (this.backgroundSpriteId === spriteId) {
+      this.backgroundSpriteId = null;
+      this.dirty = true;
+    }
     this.pruneEmptyGroups();
     this.persist();
   }
@@ -598,6 +617,9 @@ class TankEngine {
       storage.saveTankShape(this.tankShape);
       storage.saveTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC, this.tankCornerRadiusFrac);
       storage.saveTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC, this.tankOvalTopCutFrac);
+      storage.saveTankBackgroundSpriteId(this.backgroundSpriteId);
+      storage.saveTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_X, this.backgroundOffsetXFrac);
+      storage.saveTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_Y, this.backgroundOffsetYFrac);
       this.dirty = false;
     } catch (err) {
       console.warn('tank save failed', err);
@@ -624,6 +646,9 @@ class TankEngine {
     this.tankShape = storage.loadTankShape() ?? 'rectangle';
     this.tankCornerRadiusFrac = storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22;
     this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
+    this.backgroundSpriteId = storage.loadTankBackgroundSpriteId();
+    this.backgroundOffsetXFrac = storage.loadTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_X) ?? 0.5;
+    this.backgroundOffsetYFrac = storage.loadTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_Y) ?? 0.5;
     this.selectedId = null;
     this.marqueeIds = null;
     this.draggingInstance = null;
@@ -1337,11 +1362,6 @@ class TankEngine {
 
   private update(dt: number): void {
     if (!this.canvas || !this.hasSized) return;
-    const h = this.canvas.height;
-    this.bubbles.forEach((b) => {
-      b.y -= (b.speed * dt) / h;
-      if (b.y < -0.05) b.y = 1.05;
-    });
 
     // Schooling: fish belonging to a user-made group (see TankGroup) flock together, whatever their
     // species - the user picked those members deliberately via the marquee-select + Group action.
@@ -1434,30 +1454,39 @@ class TankEngine {
     const ctx = this.ctx;
     const w = this.canvas.width;
     const h = this.canvas.height;
-    const grad = ctx.createLinearGradient(0, 0, 0, h);
-    grad.addColorStop(0, '#7fd7e8');
-    grad.addColorStop(1, '#0f6f97');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
+
+    const bgSprite = this.backgroundSpriteId
+      ? this.sprites.find((s) => s.id === this.backgroundSpriteId && s.type === 'background')
+      : null;
+    if (bgSprite) {
+      const { width: sw, height: sh } = this.spriteDims(bgSprite);
+      // Cover-fit at a uniform pixel-art scale (same crisp-rect painting as any other sprite, via
+      // paintLayers) so the drawn background always fills the tank edge-to-edge instead of
+      // letterboxing/stretching, then pan within the overflow per backgroundOffsetXFrac/YFrac
+      // (CSS object-position-style) so the user can choose which part of the art shows.
+      const cellPx = Math.max(w / sw, h / sh);
+      const dw = sw * cellPx;
+      const dh = sh * cellPx;
+      const dx = -(dw - w) * this.backgroundOffsetXFrac;
+      const dy = -(dh - h) * this.backgroundOffsetYFrac;
+      const layers = bgSprite.frames[0];
+      ctx.save();
+      ctx.translate(dx, dy);
+      paintLayers(ctx, layers, sw, sh, cellPx);
+      ctx.restore();
+    } else {
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, '#7fd7e8');
+      grad.addColorStop(1, '#0f6f97');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+    }
 
     // A bright waterline band right at the top - the glassy "surface glint" seen in reference tank
     // art, distinguishing the water's top edge from the glass/lid above it.
     const waterlineH = Math.max(3, h * 0.02);
     ctx.fillStyle = 'rgba(255,255,255,0.35)';
     ctx.fillRect(0, 0, w, waterlineH);
-
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    this.bubbles.forEach((b) => {
-      const bx = b.x * w + Math.sin(b.phase + b.y * 10) * 6;
-      const by = b.y * h;
-      ctx.beginPath();
-      ctx.arc(bx, by, b.r, 0, Math.PI * 2);
-      ctx.fill();
-    });
-
-    const sandH = Math.max(18, h * 0.08);
-    ctx.fillStyle = '#e4c48a';
-    ctx.fillRect(0, h - sandH, w, sandH);
   }
 
   private drawInstance(inst: Instance): void {

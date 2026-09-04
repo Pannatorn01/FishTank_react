@@ -29,10 +29,11 @@ pid=$(netstat -ano | grep ':5199' | grep LISTENING | awk '{print $5}' | head -1)
 [ -n "$pid" ] && powershell.exe -NoProfile -Command "Stop-Process -Id $pid -Force"
 ```
 
-## Build / typecheck
+## Build / typecheck / lint
 
 ```bash
 npm run build     # tsc -b && vite build -> dist/
+npm run lint       # oxlint
 npm run preview -- --port 5200 --strictPort   # serve the built dist/ to sanity-check it
 ```
 
@@ -40,7 +41,17 @@ npm run preview -- --port 5200 --strictPort   # serve the built dist/ to sanity-
 clean `npm run build` is a real correctness signal here, not just a bundle
 step.
 
-## Drive it (no chromium-cli in this sandbox - use local Playwright)
+## After a UI/frontend change, prefer the tank-ui-tester agent
+
+For any change under `src/components/tank/`, `src/components/editor/`,
+`src/hooks/usePixelEditor.ts`, `src/hooks/useTank.ts`, `src/lib/*`, or
+`src/index.css`, dispatch the **tank-ui-tester** agent instead of
+hand-rolling a Playwright script - it already knows how to boot the dev
+server, drive the editor/tank panels, and report PASS/FAIL with
+screenshots and console errors. Reach for the manual steps below only when
+driving the app yourself outside that agent (e.g. one-off exploration).
+
+## Drive it manually (no chromium-cli in this sandbox - use local Playwright)
 
 `chromium-cli` was not available in the container this project was built
 in. Fallback that worked (Chromium ~200MB, only needs to happen once,
@@ -60,6 +71,23 @@ One representative interaction: load the editor tab, pick the pen tool,
 drag a stroke on `.pixel-canvas`, confirm a pixel's alpha changed via
 `ctx.getImageData(...)`, screenshot. Confirms the canvas engine, pointer
 capture, and Tailwind/8bitcn theme all loaded correctly in one shot.
+
+## Project layout (editor vs tank)
+
+Two independent imperative engines, each with its own panel tree:
+
+- **Editor** (`src/hooks/usePixelEditor.ts`) - pixel sprite editing.
+  Panels live in `src/components/editor/` (`CanvasMetaBar.tsx`,
+  `SpriteLibrary.tsx`, ...).
+- **Tank** (`src/hooks/useTank.ts`) - animated tank simulator. Panels live
+  in `src/components/tank/`: `TankPanel.tsx` (host), `TankCanvas.tsx`
+  (render loop), `TankPalette.tsx` (place fish/decor), `TankLayers.tsx`
+  (layer list/reorder), `TankBackgroundPanel.tsx` (background/room decor +
+  tank shape config), `RoomLayer.tsx`.
+
+Both engines persist to `localStorage` and both stay mounted at once (see
+gotcha below) - a change to one hook's state shape usually needs a
+`storage.ts` migration to avoid breaking existing saved data.
 
 ## Gotchas hit while building this project
 

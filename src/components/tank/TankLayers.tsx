@@ -8,7 +8,7 @@ type Row = { kind: 'group'; group: TankGroup; members: Instance[] } | { kind: 'i
 
 /** The Layers panel shows one sprite-type at a time (icon tabs switch between them), instead of
  *  one flat list mixing fish/decorations/room-decor together. */
-type LayerTab = SpriteType;
+type LayerTab = Exclude<SpriteType, 'background'>;
 const LAYER_TABS: LayerTab[] = ['fish', 'object', 'room'];
 const TAB_ICON: Record<LayerTab, string> = { fish: 'fish', object: 'leaf', room: 'image' };
 

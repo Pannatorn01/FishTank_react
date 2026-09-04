@@ -79,6 +79,7 @@ const en: Dict = {
   'form.typeFish': '🐟 Fish (swims automatically)',
   'form.typeObject': '🌿 Decoration (stays still)',
   'form.typeRoom': '🖼️ Room decor (placed outside the tank, can overlap it)',
+  'form.typeBackground': '🌊 Background (fills the tank behind the fish)',
   'form.save': 'Save to library',
   'form.new': 'New',
   'form.exportPng': 'Export PNG',
@@ -94,6 +95,7 @@ const en: Dict = {
   'sprite.defaultFishName': 'Unnamed fish',
   'sprite.defaultObjectName': 'Unnamed decoration',
   'sprite.defaultRoomName': 'Unnamed room decor',
+  'sprite.defaultBackgroundName': 'Unnamed background',
 
   'preview.onionSkin': 'Onion Skin',
   'preview.speed': 'Speed',
@@ -154,6 +156,13 @@ const en: Dict = {
   'tank.shape.oval': 'Oval',
   'tank.shapeRoundedAmount': 'Corner roundness',
   'tank.shapeOvalTopCut': 'Flatten top',
+
+  'tank.tabBackground': 'Background',
+  'tank.backgroundDefault': 'Default',
+  'tank.backgroundHint': 'Draw a background in the editor (type "Background"), then pick it here',
+  'tank.backgroundEmpty': 'No backgrounds drawn yet - go to Draw Fish/Decor and save a sprite as type "Background"',
+  'tank.backgroundPositionX': 'Horizontal position',
+  'tank.backgroundPositionY': 'Vertical position',
 };
 
 export function t(key: string, vars?: Record<string, string | number>): string {
