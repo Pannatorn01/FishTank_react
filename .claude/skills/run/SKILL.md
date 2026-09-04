@@ -51,6 +51,17 @@ server, drive the editor/tank panels, and report PASS/FAIL with
 screenshots and console errors. Reach for the manual steps below only when
 driving the app yourself outside that agent (e.g. one-off exploration).
 
+For a change focused on layout, labels, or interaction flow (not correctness),
+also dispatch **ux-ui-reviewer** for a design-quality pass with screenshots.
+For feature/content brainstorming (new fish, decor, mechanics), dispatch
+**game-design-ideator** instead of answering ad hoc - it checks the current
+engine first so ideas fit `useTank`/`usePixelEditor` as they exist today.
+Before merging any non-trivial code change, dispatch **code-reviewer** for a
+quality pass (hook cleanup, dependency arrays, error paths). If the change
+touches the shape of anything persisted by `usePixelEditor.ts` or
+`useTank.ts`, dispatch **storage-migration-guardian** as well - see the
+storage note under "Project layout" below for why this matters.
+
 ## Drive it manually (no chromium-cli in this sandbox - use local Playwright)
 
 `chromium-cli` was not available in the container this project was built
@@ -87,7 +98,8 @@ Two independent imperative engines, each with its own panel tree:
 
 Both engines persist to `localStorage` and both stay mounted at once (see
 gotcha below) - a change to one hook's state shape usually needs a
-`storage.ts` migration to avoid breaking existing saved data.
+`storage.ts` migration to avoid breaking existing saved data. Dispatch
+**storage-migration-guardian** to verify this before merging.
 
 ## Gotchas hit while building this project
 

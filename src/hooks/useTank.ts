@@ -23,14 +23,16 @@ export const OVAL_TOP_CUT_MAX = 0.45;
  *  clampRoomFrac) so a tiny viewport can't invert the clamp range. */
 export const ROOM_MARGIN_PX = 16;
 
-/** Background free-transform handles (see TankEngine.bgHitTest/drawBackgroundHandles) - hit radius
- *  and the corner/rotate-handle drawn size are both in tank canvas logical px (same space as
- *  Instance.x/y), and the rotate handle sits this many logical px above the box's top edge. */
-const BG_HANDLE_HIT_RADIUS = 10;
-const BG_HANDLE_DRAW_SIZE = 8;
-const BG_ROTATE_HANDLE_GAP = 24;
+/** Background free-transform handles - see TankBackgroundOverlay.tsx, which renders these as a DOM
+ *  layer in .tank-viewport (not this engine's own <canvas>) specifically so a placement dragged past
+ *  the tank frame's edge stays visible/grabbable out to the viewport's edge instead of vanishing the
+ *  instant it crosses the canvas's own raster bounds (a plain canvas can never draw outside itself).
+ *  The gap is in tank canvas logical px (same space as Instance.x/y); the overlay scales it by
+ *  effectiveScale to get on-screen px. */
+export const BG_ROTATE_HANDLE_GAP = 24;
 const BG_MIN_SCALE = 0.1;
 const BG_MAX_SCALE = 8;
+export type BgHandle = 'move' | 'nw' | 'ne' | 'sw' | 'se' | 'rotate';
 
 export const TANK_SIZE_MIN = { width: 300, height: 300 };
 export const TANK_SIZE_MAX = { width: 1400, height: 900 };
@@ -111,7 +113,16 @@ class TankEngine {
    *  setBackgroundEditing, called from TankBackgroundPanel), so it doesn't steal clicks meant for
    *  placing/selecting fish the rest of the time. */
   backgroundEditing = false;
-  /** In-progress background handle drag, captured on pointerdown - see onBgPointerDown/Move/Up. */
+  /** Whether the transform box/handles are actually drawn right now, separate from backgroundEditing
+   *  (which just gates "is background interaction possible at all while this tab is open"). Saving
+   *  the tank hides them - like Photoshop committing a free transform - so the finished placement
+   *  isn't cluttered by a yellow box; clicking the background again (either its palette row or its
+   *  own footprint on the canvas) brings them back for further adjustment. */
+  backgroundHandlesVisible = true;
+  /** In-progress background handle drag, captured on pointerdown - see startBgDrag/onBgPointerMove/Up.
+   *  Which handle was grabbed comes from the DOM overlay itself (TankBackgroundOverlay - each corner/
+   *  rotate/body element already knows what it is via native hit-testing), not a hand-rolled
+   *  hit-test against canvas coordinates. */
   private bgDrag: {
     mode: 'move' | 'resize' | 'rotate';
     startPointer: { x: number; y: number };
@@ -587,7 +598,13 @@ class TankEngine {
    *  manual Save button. Switching to a *different* sprite re-centers its transform at native size -
    *  re-selecting the one already active leaves whatever placement the user set alone. */
   setTankBackgroundSprite(id: string | null): void {
-    if (this.backgroundSpriteId === id) return;
+    // Re-picking the sprite (even the one already active) is also how the user brings the handles
+    // back after a save hid them - see backgroundHandlesVisible.
+    this.backgroundHandlesVisible = true;
+    if (this.backgroundSpriteId === id) {
+      this.reactNotify();
+      return;
+    }
     this.backgroundSpriteId = id;
     if (id) {
       const w = this.canvas?.width ?? TANK_SIZE_DEFAULT.width;
@@ -606,9 +623,17 @@ class TankEngine {
     this.reactNotify();
   }
 
+  /** Brings the handles back after a save hid them (see backgroundHandlesVisible) - called when the
+   *  user clicks the background's own footprint in TankBackgroundOverlay while it's hidden. */
+  revealBackgroundHandles(): void {
+    if (this.backgroundHandlesVisible) return;
+    this.backgroundHandlesVisible = true;
+    this.reactNotify();
+  }
+
   /** Half-width/height (canvas px) of the selected background sprite's current on-canvas footprint,
-   *  or null if there isn't one - shared by hit-testing and handle drawing so they always agree. */
-  private bgHalfSize(): { halfW: number; halfH: number } | null {
+   *  or null if there isn't one - read by TankBackgroundOverlay to size/position the DOM box. */
+  backgroundBoxHalfSize(): { halfW: number; halfH: number } | null {
     const sprite = this.backgroundSpriteId
       ? this.sprites.find((s) => s.id === this.backgroundSpriteId && s.type === 'background')
       : null;
@@ -618,45 +643,12 @@ class TankEngine {
     return { halfW: (sw * cellPx) / 2, halfH: (sh * cellPx) / 2 };
   }
 
-  /** Which handle (if any) a canvas-space point lands on, in the background's own unrotated local
-   *  space (inverse-rotating the point around its center first) - mirrors the sprite editor's
-   *  selection-handle hit-testing (see usePixelEditor's hitTestHandle), simplified to uniform-scale
-   *  corners since a background doesn't need independent-axis resize. */
-  private bgHitTest(px: number, py: number): 'move' | 'nw' | 'ne' | 'sw' | 'se' | 'rotate' | null {
-    const half = this.bgHalfSize();
-    if (!half) return null;
-    const { halfW, halfH } = half;
-    const { x: cx, y: cy, rotation } = this.backgroundTransform;
-    const cos = Math.cos(rotation);
-    const sin = Math.sin(rotation);
-    const dx = px - cx;
-    const dy = py - cy;
-    const lx = dx * cos + dy * sin;
-    const ly = -dx * sin + dy * cos;
-    const corners: Array<['nw' | 'ne' | 'sw' | 'se', number, number]> = [
-      ['nw', -halfW, -halfH],
-      ['ne', halfW, -halfH],
-      ['sw', -halfW, halfH],
-      ['se', halfW, halfH],
-    ];
-    for (const [name, hx, hy] of corners) {
-      if (Math.hypot(lx - hx, ly - hy) <= BG_HANDLE_HIT_RADIUS) return name;
-    }
-    if (Math.hypot(lx, ly - (-halfH - BG_ROTATE_HANDLE_GAP)) <= BG_HANDLE_HIT_RADIUS) return 'rotate';
-    if (Math.abs(lx) <= halfW && Math.abs(ly) <= halfH) return 'move';
-    return null;
-  }
-
-  /** Starts a move/resize/rotate drag if the pointer landed on the background's box or a handle -
-   *  returns whether it did, so onCanvasPointerDown can fall through to normal instance/marquee
-   *  handling when it didn't. Only called while backgroundEditing is true. */
-  private onBgPointerDown(e: React.PointerEvent<HTMLCanvasElement>): boolean {
-    const canvas = this.canvas;
-    if (!canvas) return false;
-    const p = this.canvasPoint(e.clientX, e.clientY);
-    if (!p) return false;
-    const handle = this.bgHitTest(p.x, p.y);
-    if (!handle) return false;
+  /** Starts a move/resize/rotate drag - called from TankBackgroundOverlay's pointerdown on the box
+   *  body or one of its handle elements, which already knows which one from native DOM hit-testing
+   *  (no hand-rolled geometry hit-test needed, unlike when this lived on the canvas). */
+  startBgDrag(handle: BgHandle, clientX: number, clientY: number): void {
+    const p = this.canvasPoint(clientX, clientY);
+    if (!p) return;
     const startDist = Math.hypot(p.x - this.backgroundTransform.x, p.y - this.backgroundTransform.y) || 1;
     this.bgDrag = {
       mode: handle === 'rotate' ? 'rotate' : handle === 'move' ? 'move' : 'resize',
@@ -664,12 +656,10 @@ class TankEngine {
       startTransform: { ...this.backgroundTransform },
       startDist,
     };
-    canvas.setPointerCapture(e.pointerId);
     this.reactNotify();
-    return true;
   }
 
-  private onBgPointerMove(e: React.PointerEvent<HTMLCanvasElement>): void {
+  onBgPointerMove(e: React.PointerEvent<HTMLDivElement>): void {
     if (!this.bgDrag) return;
     const p = this.canvasPoint(e.clientX, e.clientY);
     if (!p) return;
@@ -692,7 +682,7 @@ class TankEngine {
     this.reactNotify();
   }
 
-  private onBgPointerUp(): void {
+  onBgPointerUp(): void {
     if (!this.bgDrag) return;
     this.bgDrag = null;
     this.dirty = true;
@@ -739,6 +729,8 @@ class TankEngine {
     } catch (err) {
       console.warn('tank save failed', err);
     }
+    // Committing the placement, Photoshop-free-transform-style - see backgroundHandlesVisible.
+    this.backgroundHandlesVisible = false;
     this.reactNotify();
   }
 
@@ -1250,12 +1242,6 @@ class TankEngine {
     const canvas = this.canvas;
     if (!canvas) return;
 
-    // While the Background tab is actively showing its handles, the canvas is a modal transform
-    // surface for that one thing (same idea as the zone-draft branch just below) - a background
-    // sprite intentionally isn't a placeable/draggable Instance, so it can't go through the
-    // hitTest()/marquee path those use.
-    if (this.backgroundEditing && this.onBgPointerDown(e)) return;
-
     const p = this.canvasPoint(e.clientX, e.clientY);
     if (!p) return;
     const { x, y } = p;
@@ -1326,10 +1312,6 @@ class TankEngine {
   }
 
   onCanvasPointerMove(e: React.PointerEvent<HTMLCanvasElement>): void {
-    if (this.bgDrag) {
-      this.onBgPointerMove(e);
-      return;
-    }
     if (this.zoneDrawStart) {
       const p = this.canvasPoint(e.clientX, e.clientY);
       if (!p) return;
@@ -1381,10 +1363,6 @@ class TankEngine {
   }
 
   onCanvasPointerUp(): void {
-    if (this.bgDrag) {
-      this.onBgPointerUp();
-      return;
-    }
     if (this.zoneDrawStart) {
       this.zoneDrawStart = null;
       const r = this.zoneDraftRect;
@@ -1616,57 +1594,6 @@ class TankEngine {
     ctx.fillRect(0, 0, w, waterlineH);
   }
 
-  /** Draws the selected background's move/resize/rotate handles - only while backgroundEditing is
-   *  true (see setBackgroundEditing), same on/off gating as the zone-draft/marquee overlays drawn
-   *  alongside it in draw(). Purely visual; hit-testing for the actual drag is bgHitTest. */
-  private drawBackgroundHandles(): void {
-    if (!this.ctx || !this.backgroundEditing) return;
-    const half = this.bgHalfSize();
-    if (!half) return;
-    const { halfW, halfH } = half;
-    const ctx = this.ctx;
-    const { x, y, rotation } = this.backgroundTransform;
-
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(rotation);
-
-    ctx.strokeStyle = '#ffeb3b';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 4]);
-    ctx.strokeRect(-halfW, -halfH, halfW * 2, halfH * 2);
-    ctx.setLineDash([]);
-
-    // Line from the box's top edge up to the rotate handle, same "handle floats above a dashed
-    // stalk" convention as the pixel editor's own rotate handle.
-    ctx.beginPath();
-    ctx.moveTo(0, -halfH);
-    ctx.lineTo(0, -halfH - BG_ROTATE_HANDLE_GAP);
-    ctx.stroke();
-
-    const drawHandle = (hx: number, hy: number) => {
-      ctx.fillStyle = '#ffeb3b';
-      ctx.strokeStyle = '#1c2436';
-      ctx.lineWidth = 1.5;
-      ctx.fillRect(hx - BG_HANDLE_DRAW_SIZE / 2, hy - BG_HANDLE_DRAW_SIZE / 2, BG_HANDLE_DRAW_SIZE, BG_HANDLE_DRAW_SIZE);
-      ctx.strokeRect(hx - BG_HANDLE_DRAW_SIZE / 2, hy - BG_HANDLE_DRAW_SIZE / 2, BG_HANDLE_DRAW_SIZE, BG_HANDLE_DRAW_SIZE);
-    };
-    drawHandle(-halfW, -halfH);
-    drawHandle(halfW, -halfH);
-    drawHandle(-halfW, halfH);
-    drawHandle(halfW, halfH);
-
-    ctx.beginPath();
-    ctx.fillStyle = '#ffeb3b';
-    ctx.strokeStyle = '#1c2436';
-    ctx.lineWidth = 1.5;
-    ctx.arc(0, -halfH - BG_ROTATE_HANDLE_GAP, BG_HANDLE_DRAW_SIZE / 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.restore();
-  }
-
   private drawInstance(inst: Instance): void {
     if (!inst.visible) return;
     const sprite = this.spriteFor(inst);
@@ -1786,7 +1713,6 @@ class TankEngine {
 
     if (this.marqueeRect) this.strokeZoneRect(this.marqueeRect, '#ffeb3b', 'rgba(255, 235, 59, 0.15)');
     if (this.zoneDraftRect) this.strokeZoneRect(this.zoneDraftRect, '#4ade80', 'rgba(74, 222, 128, 0.15)');
-    this.drawBackgroundHandles();
 
     ctx.restore();
 

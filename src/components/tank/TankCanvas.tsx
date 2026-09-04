@@ -14,6 +14,7 @@ import { useLanguage } from '@/lib/i18n';
 import { TANK_SHAPES } from '@/lib/storage';
 import type { TankShape } from '@/lib/types';
 import { RoomLayer } from './RoomLayer';
+import { TankBackgroundOverlay } from './TankBackgroundOverlay';
 
 const SPEED_ICON: Record<(typeof SWIM_SPEEDS)[number], string> = {
   slow: 'fa-solid fa-turtle',
@@ -187,6 +188,15 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
         ? { borderRadius: Math.min(tankWidth, tankHeight) * engine.tankCornerRadiusFrac * effectiveScale }
         : undefined;
 
+  // .tank-frame is centered in .tank-viewport via flexbox (see index.css) - this is that same
+  // centering done in JS, so TankBackgroundOverlay can convert the engine's canvas-logical
+  // coordinates into on-screen positions within the viewport, independent of the frame's own DOM
+  // position.
+  const frameOffset = {
+    left: Math.max(0, (viewportSize.width - frameStyle.width) / 2),
+    top: Math.max(0, (viewportSize.height - frameStyle.height) / 2),
+  };
+
   return (
     <div className="tank-canvas-col">
       <div
@@ -216,6 +226,7 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
          * so they can overlap the tank chrome - unlike in-tank instances they aren't drawn into the
          * simulation <canvas> at all, since they live outside that coordinate space entirely. */}
         <RoomLayer engine={engine} viewportSize={viewportSize} />
+        <TankBackgroundOverlay engine={engine} frameOffset={frameOffset} effectiveScale={effectiveScale} />
       </div>
 
       <div className="tank-action-bar">

@@ -1121,6 +1121,39 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 }
 .tank-room-item canvas { display: block; image-rendering: pixelated; }
 .tank-room-item.selected canvas { outline: 2px solid #ffeb3b; outline-offset: 2px; }
+
+/* The selected background's move/resize/rotate box (TankBackgroundOverlay.tsx) - lives in
+ * .tank-viewport, same as .tank-room-item above, specifically so it stays visible/grabbable when
+ * dragged past .tank-frame's edge instead of vanishing at the <canvas>'s own raster bounds (see the
+ * component's own comment). touch-action:none matches every other draggable tank surface. */
+.tank-bg-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px dashed #ffeb3b;
+  cursor: move;
+  touch-action: none;
+}
+.tank-bg-reveal { position: absolute; box-sizing: border-box; cursor: pointer; touch-action: none; }
+/* top/height come from the component as inline styles (both depend on BG_ROTATE_HANDLE_GAP scaled
+ * by the current zoom) - this only fixes the line's horizontal position and dash styling. */
+.tank-bg-stalk { position: absolute; left: 50%; width: 0; border-left: 2px dashed #ffeb3b; }
+.tank-bg-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px;
+  background: #ffeb3b;
+  border: 1.5px solid #1c2436;
+  box-sizing: border-box;
+}
+/* Percent left/top (not right/bottom) so the fixed -5px margin centers the 10px handle on the exact
+ * corner point regardless of the box's own (dynamic, sprite-dependent) width/height. */
+.tank-bg-handle-nw { left: 0; top: 0; cursor: nwse-resize; }
+.tank-bg-handle-se { left: 100%; top: 100%; cursor: nwse-resize; }
+.tank-bg-handle-ne { left: 100%; top: 0; cursor: nesw-resize; }
+.tank-bg-handle-sw { left: 0; top: 100%; cursor: nesw-resize; }
+.tank-bg-handle-rotate { left: 50%; border-radius: 50%; cursor: grab; }
+.tank-bg-handle-rotate:active { cursor: grabbing; }
 .tank-frame {
   /* Width/height are set inline as tankWidth/Height * the current display scale - not flex:1, since
    * flex-grow would win over an explicit inline height on the main (vertical) axis of a column

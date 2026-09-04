@@ -952,7 +952,11 @@ class PixelEditorEngine {
 
   /**
    * Inverse-maps each cell of the rotated bounding box back into the captured source region
-   * (nearest-neighbor) so the preview has no holes, unlike forward-mapping source pixels.
+   * (nearest-neighbor) so the preview has no holes, unlike forward-mapping source pixels. A rotated
+   * rectangle never fills its own axis-aligned bounding box - the four corner triangles are
+   * genuinely outside the rotated shape - so instead of leaving them empty/checkered, the inverse
+   * lookup is clamped to the nearest edge pixel (standard "clamp to edge" extrapolation), stretching
+   * each edge's color into the corner it borders rather than showing a hole.
    */
   private computeRotatePreview(angle: number): { cells: MoveBufferCell[]; box: SelectionBox } {
     const origin = this.rotateOrigin!;
@@ -994,12 +998,10 @@ class PixelEditorEngine {
           const relY = y + 0.5 - cy;
           const srcRelX = relX * cos + relY * sin;
           const srcRelY = -relX * sin + relY * cos;
-          const srcX = Math.floor(srcRelX + cx - origin.x0);
-          const srcY = Math.floor(srcRelY + cy - origin.y0);
-          if (srcX >= 0 && srcY >= 0 && srcX < w && srcY < h) {
-            const color = source[srcY][srcX];
-            if (color) cells.push({ x, y, color });
-          }
+          const srcX = Math.min(w - 1, Math.max(0, Math.floor(srcRelX + cx - origin.x0)));
+          const srcY = Math.min(h - 1, Math.max(0, Math.floor(srcRelY + cy - origin.y0)));
+          const color = source[srcY][srcX];
+          if (color) cells.push({ x, y, color });
         }
       }
     }
@@ -1759,14 +1761,20 @@ class PixelEditorEngine {
     const activeBox = this.selectionDraft || this.selection;
     if (activeBox) {
       const shown = this.moveBuffer && this.selection && !this.selectionDraft ? shiftBox(activeBox, this.moveDelta) : activeBox;
+      const settled = this.tool === 'select' && this.selection && !this.selectionDraft;
       ctx.save();
-      ctx.strokeStyle = '#ffcc00';
+      ctx.strokeStyle = '#ffeb3b';
       ctx.lineWidth = 2;
+      // A settled selection (handles live, ready to move/resize/rotate) reads as dashed, same
+      // free-transform-box convention as the tank's background placement (see TankEngine's
+      // drawBackgroundHandles) - still drawn solid while merely being dragged out (selectionDraft),
+      // since that's a one-shot marquee, not yet an editable box.
+      if (settled) ctx.setLineDash([6, 4]);
       ctx.strokeRect(shown.x0 * cellPx, shown.y0 * cellPx, (shown.x1 - shown.x0 + 1) * cellPx, (shown.y1 - shown.y0 + 1) * cellPx);
       ctx.restore();
 
-      if (this.tool === 'select' && this.selection && !this.selectionDraft) {
-        this.drawSelectionHandles(this.selection, cellPx);
+      if (settled) {
+        this.drawSelectionHandles(this.selection!, cellPx);
       }
     }
 
@@ -1804,8 +1812,8 @@ class PixelEditorEngine {
     ];
     const s = HANDLE_SIZE;
     ctx.save();
-    ctx.fillStyle = '#ffcc00';
-    ctx.strokeStyle = '#1a1a1a';
+    ctx.fillStyle = '#ffeb3b';
+    ctx.strokeStyle = '#1c2436';
     ctx.lineWidth = 1;
     points.forEach(([px, py]) => {
       ctx.fillRect(px - s / 2, py - s / 2, s, s);
@@ -1814,44 +1822,29 @@ class PixelEditorEngine {
 
     // Hidden entirely while actively dragging - the connecting line and handle glyph are just
     // clutter once the user has already grabbed the handle and is watching the artwork rotate;
-    // they reappear at rest once the drag ends.
+    // they reappear at rest once the drag ends. Same dashed-stalk-to-a-filled-circle look as the
+    // tank's own background rotate handle (see TankEngine.drawBackgroundHandles), for one
+    // consistent "free transform" affordance across both tools.
     if (!this.rotateOrigin) {
       const { hx, hy } = this.rotateHandlePos(box, cellPx);
-      ctx.strokeStyle = '#ffcc00';
+      ctx.strokeStyle = '#ffeb3b';
+      ctx.setLineDash([4, 3]);
       ctx.beginPath();
       ctx.moveTo(mx, y0);
       ctx.lineTo(hx, hy);
       ctx.stroke();
-      this.drawRotateIcon(ctx, hx, hy);
+      ctx.setLineDash([]);
+
+      ctx.beginPath();
+      ctx.fillStyle = '#ffeb3b';
+      ctx.strokeStyle = '#1c2436';
+      ctx.lineWidth = 1.5;
+      ctx.arc(hx, hy, ROTATE_HANDLE_RADIUS, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     }
 
     ctx.restore();
-  }
-
-  /** A circular-arrow "rotate" glyph (⟳-style), matching the affordance PowerPoint uses for its rotate handle. */
-  private drawRotateIcon(ctx: CanvasRenderingContext2D, x: number, y: number): void {
-    const r = ROTATE_HANDLE_RADIUS;
-    const start = Math.PI * 0.2;
-    const end = Math.PI * 1.85;
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = '#ffcc00';
-    ctx.beginPath();
-    ctx.arc(x, y, r, start, end);
-    ctx.stroke();
-
-    const tipAngle = end;
-    const tipX = x + r * Math.cos(tipAngle);
-    const tipY = y + r * Math.sin(tipAngle);
-    const tangent = tipAngle + Math.PI / 2;
-    const headLen = r * 0.85;
-    const spread = Math.PI * 0.7;
-    ctx.fillStyle = '#ffcc00';
-    ctx.beginPath();
-    ctx.moveTo(tipX, tipY);
-    ctx.lineTo(tipX + headLen * Math.cos(tangent + spread), tipY + headLen * Math.sin(tangent + spread));
-    ctx.lineTo(tipX + headLen * Math.cos(tangent - spread), tipY + headLen * Math.sin(tangent - spread));
-    ctx.closePath();
-    ctx.fill();
   }
 
   /** Re-armed whenever the current sprite's frameMs changes, or a different sprite becomes current. */
