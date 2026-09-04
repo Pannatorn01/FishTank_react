@@ -159,10 +159,9 @@ const en: Dict = {
 
   'tank.tabBackground': 'Background',
   'tank.backgroundDefault': 'Default',
-  'tank.backgroundHint': 'Draw a background in the editor (type "Background"), then pick it here',
+  'tank.backgroundHint':
+    'Draw a background in the editor (type "Background"), then pick it here - drag it in the tank to move, drag a corner to resize, drag the top handle to rotate',
   'tank.backgroundEmpty': 'No backgrounds drawn yet - go to Draw Fish/Decor and save a sprite as type "Background"',
-  'tank.backgroundPositionX': 'Horizontal position',
-  'tank.backgroundPositionY': 'Vertical position',
 };
 
 export function t(key: string, vars?: Record<string, string | number>): string {

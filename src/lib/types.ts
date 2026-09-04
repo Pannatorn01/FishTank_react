@@ -8,6 +8,18 @@ export type SwimSpeed = 'slow' | 'medium' | 'fast' | 'veryFast';
  *  to sit (TankEngine.clampCenterToShape) - not purely cosmetic. */
 export type TankShape = 'rectangle' | 'rounded' | 'oval';
 
+/** Free-transform placement of the selected background sprite (see TankEngine.backgroundTransform
+ *  in useTank.ts) - a Photoshop-Ctrl+T-style move/scale/rotate, not a crop/pan. x/y is the image's
+ *  center in the tank canvas's own logical pixel space (same space as Instance.x/y); scale is a
+ *  multiplier on the sprite's native pixel-art size (1 = drawn at the same px-per-cell as any other
+ *  sprite); rotation is radians. */
+export interface BackgroundTransform {
+  x: number;
+  y: number;
+  scale: number;
+  rotation: number;
+}
+
 export interface Layer {
   id: string;
   name: string;

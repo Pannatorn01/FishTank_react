@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useLanguage } from '@/lib/i18n';
 import type { TankEngine } from '@/hooks/useTank';
 import { PaletteThumb } from './TankPalette';
@@ -5,7 +6,14 @@ import { PaletteThumb } from './TankPalette';
 export function TankBackgroundPanel({ engine }: { engine: TankEngine }) {
   const { t } = useLanguage();
   const backgrounds = engine.sprites.filter((s) => s.type === 'background');
-  const selected = engine.backgroundSpriteId ? backgrounds.find((s) => s.id === engine.backgroundSpriteId) : null;
+
+  // The on-canvas move/resize/rotate handles (see TankEngine.backgroundEditing) are only meaningful
+  // while this tab is the one showing - turned off on unmount so switching to Layers/Sprites doesn't
+  // leave a stale transform box intercepting clicks meant for placing/selecting fish.
+  useEffect(() => {
+    engine.setBackgroundEditing(true);
+    return () => engine.setBackgroundEditing(false);
+  }, [engine]);
 
   return (
     <div className="tank-palette">
@@ -32,33 +40,6 @@ export function TankBackgroundPanel({ engine }: { engine: TankEngine }) {
         ))}
       </div>
       {backgrounds.length === 0 && <p className="palette-hint">{t('tank.backgroundEmpty')}</p>}
-
-      {selected && (
-        <div className="tank-bg-position">
-          <label className="tank-bg-position-row">
-            <span>{t('tank.backgroundPositionX')}</span>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.01}
-              value={engine.backgroundOffsetXFrac}
-              onChange={(e) => engine.setBackgroundOffset(parseFloat(e.target.value), engine.backgroundOffsetYFrac)}
-            />
-          </label>
-          <label className="tank-bg-position-row">
-            <span>{t('tank.backgroundPositionY')}</span>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.01}
-              value={engine.backgroundOffsetYFrac}
-              onChange={(e) => engine.setBackgroundOffset(engine.backgroundOffsetXFrac, parseFloat(e.target.value))}
-            />
-          </label>
-        </div>
-      )}
     </div>
   );
 }

@@ -2,7 +2,7 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { paintLayers } from '@/lib/pixelMath';
 import * as storage from '@/lib/storage';
-import type { Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape } from '@/lib/types';
+import type { BackgroundTransform, Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape } from '@/lib/types';
 
 const DISPLAY_SCALE = 4;
 const TAP_MOVE_THRESHOLD = 6;
@@ -22,6 +22,15 @@ export const OVAL_TOP_CUT_MAX = 0.45;
  *  canvas edge" regardless of viewport size. Capped as a fraction of the viewport (see
  *  clampRoomFrac) so a tiny viewport can't invert the clamp range. */
 export const ROOM_MARGIN_PX = 16;
+
+/** Background free-transform handles (see TankEngine.bgHitTest/drawBackgroundHandles) - hit radius
+ *  and the corner/rotate-handle drawn size are both in tank canvas logical px (same space as
+ *  Instance.x/y), and the rotate handle sits this many logical px above the box's top edge. */
+const BG_HANDLE_HIT_RADIUS = 10;
+const BG_HANDLE_DRAW_SIZE = 8;
+const BG_ROTATE_HANDLE_GAP = 24;
+const BG_MIN_SCALE = 0.1;
+const BG_MAX_SCALE = 8;
 
 export const TANK_SIZE_MIN = { width: 300, height: 300 };
 export const TANK_SIZE_MAX = { width: 1400, height: 900 };
@@ -93,11 +102,23 @@ class TankEngine {
    *  the fish - null means the default gradient. Like tankShape, takes effect immediately but only
    *  reaches localStorage via the manual Save button. */
   backgroundSpriteId: string | null = null;
-  /** Pan position within the cover-fit background image, each 0..1 (like CSS object-position) -
-   *  0.5/0.5 centers it. Lets a background sprite bigger than the tank be framed deliberately instead
-   *  of always centering on crop. */
-  backgroundOffsetXFrac = 0.5;
-  backgroundOffsetYFrac = 0.5;
+  /** Free-transform (move/scale/rotate) placement of the background sprite - see BackgroundTransform.
+   *  Reset to a centered, native-size default whenever a *different* background sprite is picked
+   *  (setTankBackgroundSprite), then only ever changed by dragging its on-canvas handles. */
+  backgroundTransform: BackgroundTransform = { x: 0, y: 0, scale: 1, rotation: 0 };
+  /** Whether the background's move/resize/rotate handles are shown and interactive on the tank
+   *  canvas right now - true only while the sidebar's Background tab is open (see
+   *  setBackgroundEditing, called from TankBackgroundPanel), so it doesn't steal clicks meant for
+   *  placing/selecting fish the rest of the time. */
+  backgroundEditing = false;
+  /** In-progress background handle drag, captured on pointerdown - see onBgPointerDown/Move/Up. */
+  private bgDrag: {
+    mode: 'move' | 'resize' | 'rotate';
+    startPointer: { x: number; y: number };
+    startTransform: BackgroundTransform;
+    /** 'resize' only: distance from center to the pointer at drag-start, to derive a scale ratio. */
+    startDist: number;
+  } | null = null;
 
   /** Index into TANK_ZOOM_STEPS - the user's view-zoom preference, expressed relative to "as large
    *  as fits the viewport" (see TankCanvas's auto-fit computation, which multiplies this in). */
@@ -184,8 +205,7 @@ class TankEngine {
     this.tankCornerRadiusFrac = storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22;
     this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
     this.backgroundSpriteId = storage.loadTankBackgroundSpriteId();
-    this.backgroundOffsetXFrac = storage.loadTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_X) ?? 0.5;
-    this.backgroundOffsetYFrac = storage.loadTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_Y) ?? 0.5;
+    this.backgroundTransform = storage.loadTankBackgroundTransform() ?? { x: 0, y: 0, scale: 1, rotation: 0 };
 
     this.rafId = requestAnimationFrame((t) => this.loop(t));
     document.addEventListener('keydown', this.onKeyDown);
@@ -564,21 +584,117 @@ class TankEngine {
 
   /** Selects a 'background'-type sprite by id to paint behind the fish, or null for the default
    *  gradient. Takes effect immediately but (like tankShape) only reaches localStorage via the
-   *  manual Save button. */
+   *  manual Save button. Switching to a *different* sprite re-centers its transform at native size -
+   *  re-selecting the one already active leaves whatever placement the user set alone. */
   setTankBackgroundSprite(id: string | null): void {
     if (this.backgroundSpriteId === id) return;
     this.backgroundSpriteId = id;
+    if (id) {
+      const w = this.canvas?.width ?? TANK_SIZE_DEFAULT.width;
+      const h = this.canvas?.height ?? TANK_SIZE_DEFAULT.height;
+      this.backgroundTransform = { x: w / 2, y: h / 2, scale: 1, rotation: 0 };
+    }
     this.dirty = true;
     this.reactNotify();
   }
 
-  /** Pans the background image within its cover-fit frame - see backgroundOffsetXFrac/YFrac. */
-  setBackgroundOffset(xFrac: number, yFrac: number): void {
-    const x = Math.max(0, Math.min(1, xFrac));
-    const y = Math.max(0, Math.min(1, yFrac));
-    if (this.backgroundOffsetXFrac === x && this.backgroundOffsetYFrac === y) return;
-    this.backgroundOffsetXFrac = x;
-    this.backgroundOffsetYFrac = y;
+  /** Shows/activates the background's move/resize/rotate handles on the tank canvas - see
+   *  backgroundEditing. Called from TankBackgroundPanel while its tab is the visible one. */
+  setBackgroundEditing(editing: boolean): void {
+    if (this.backgroundEditing === editing) return;
+    this.backgroundEditing = editing;
+    this.reactNotify();
+  }
+
+  /** Half-width/height (canvas px) of the selected background sprite's current on-canvas footprint,
+   *  or null if there isn't one - shared by hit-testing and handle drawing so they always agree. */
+  private bgHalfSize(): { halfW: number; halfH: number } | null {
+    const sprite = this.backgroundSpriteId
+      ? this.sprites.find((s) => s.id === this.backgroundSpriteId && s.type === 'background')
+      : null;
+    if (!sprite) return null;
+    const { width: sw, height: sh } = this.spriteDims(sprite);
+    const cellPx = DISPLAY_SCALE * this.backgroundTransform.scale;
+    return { halfW: (sw * cellPx) / 2, halfH: (sh * cellPx) / 2 };
+  }
+
+  /** Which handle (if any) a canvas-space point lands on, in the background's own unrotated local
+   *  space (inverse-rotating the point around its center first) - mirrors the sprite editor's
+   *  selection-handle hit-testing (see usePixelEditor's hitTestHandle), simplified to uniform-scale
+   *  corners since a background doesn't need independent-axis resize. */
+  private bgHitTest(px: number, py: number): 'move' | 'nw' | 'ne' | 'sw' | 'se' | 'rotate' | null {
+    const half = this.bgHalfSize();
+    if (!half) return null;
+    const { halfW, halfH } = half;
+    const { x: cx, y: cy, rotation } = this.backgroundTransform;
+    const cos = Math.cos(rotation);
+    const sin = Math.sin(rotation);
+    const dx = px - cx;
+    const dy = py - cy;
+    const lx = dx * cos + dy * sin;
+    const ly = -dx * sin + dy * cos;
+    const corners: Array<['nw' | 'ne' | 'sw' | 'se', number, number]> = [
+      ['nw', -halfW, -halfH],
+      ['ne', halfW, -halfH],
+      ['sw', -halfW, halfH],
+      ['se', halfW, halfH],
+    ];
+    for (const [name, hx, hy] of corners) {
+      if (Math.hypot(lx - hx, ly - hy) <= BG_HANDLE_HIT_RADIUS) return name;
+    }
+    if (Math.hypot(lx, ly - (-halfH - BG_ROTATE_HANDLE_GAP)) <= BG_HANDLE_HIT_RADIUS) return 'rotate';
+    if (Math.abs(lx) <= halfW && Math.abs(ly) <= halfH) return 'move';
+    return null;
+  }
+
+  /** Starts a move/resize/rotate drag if the pointer landed on the background's box or a handle -
+   *  returns whether it did, so onCanvasPointerDown can fall through to normal instance/marquee
+   *  handling when it didn't. Only called while backgroundEditing is true. */
+  private onBgPointerDown(e: React.PointerEvent<HTMLCanvasElement>): boolean {
+    const canvas = this.canvas;
+    if (!canvas) return false;
+    const p = this.canvasPoint(e.clientX, e.clientY);
+    if (!p) return false;
+    const handle = this.bgHitTest(p.x, p.y);
+    if (!handle) return false;
+    const startDist = Math.hypot(p.x - this.backgroundTransform.x, p.y - this.backgroundTransform.y) || 1;
+    this.bgDrag = {
+      mode: handle === 'rotate' ? 'rotate' : handle === 'move' ? 'move' : 'resize',
+      startPointer: p,
+      startTransform: { ...this.backgroundTransform },
+      startDist,
+    };
+    canvas.setPointerCapture(e.pointerId);
+    this.reactNotify();
+    return true;
+  }
+
+  private onBgPointerMove(e: React.PointerEvent<HTMLCanvasElement>): void {
+    if (!this.bgDrag) return;
+    const p = this.canvasPoint(e.clientX, e.clientY);
+    if (!p) return;
+    const { mode, startPointer, startTransform, startDist } = this.bgDrag;
+    if (mode === 'move') {
+      this.backgroundTransform = {
+        ...startTransform,
+        x: startTransform.x + (p.x - startPointer.x),
+        y: startTransform.y + (p.y - startPointer.y),
+      };
+    } else if (mode === 'resize') {
+      const dist = Math.hypot(p.x - startTransform.x, p.y - startTransform.y);
+      const scale = Math.max(BG_MIN_SCALE, Math.min(BG_MAX_SCALE, startTransform.scale * (dist / startDist)));
+      this.backgroundTransform = { ...startTransform, scale };
+    } else {
+      const startAngle = Math.atan2(startPointer.y - startTransform.y, startPointer.x - startTransform.x);
+      const currentAngle = Math.atan2(p.y - startTransform.y, p.x - startTransform.x);
+      this.backgroundTransform = { ...startTransform, rotation: startTransform.rotation + (currentAngle - startAngle) };
+    }
+    this.reactNotify();
+  }
+
+  private onBgPointerUp(): void {
+    if (!this.bgDrag) return;
+    this.bgDrag = null;
     this.dirty = true;
     this.reactNotify();
   }
@@ -618,8 +734,7 @@ class TankEngine {
       storage.saveTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC, this.tankCornerRadiusFrac);
       storage.saveTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC, this.tankOvalTopCutFrac);
       storage.saveTankBackgroundSpriteId(this.backgroundSpriteId);
-      storage.saveTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_X, this.backgroundOffsetXFrac);
-      storage.saveTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_Y, this.backgroundOffsetYFrac);
+      storage.saveTankBackgroundTransform(this.backgroundTransform);
       this.dirty = false;
     } catch (err) {
       console.warn('tank save failed', err);
@@ -647,8 +762,7 @@ class TankEngine {
     this.tankCornerRadiusFrac = storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22;
     this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
     this.backgroundSpriteId = storage.loadTankBackgroundSpriteId();
-    this.backgroundOffsetXFrac = storage.loadTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_X) ?? 0.5;
-    this.backgroundOffsetYFrac = storage.loadTankShapeParam(storage.KEY_TANK_BACKGROUND_OFFSET_Y) ?? 0.5;
+    this.backgroundTransform = storage.loadTankBackgroundTransform() ?? { x: 0, y: 0, scale: 1, rotation: 0 };
     this.selectedId = null;
     this.marqueeIds = null;
     this.draggingInstance = null;
@@ -1135,6 +1249,13 @@ class TankEngine {
   onCanvasPointerDown(e: React.PointerEvent<HTMLCanvasElement>): void {
     const canvas = this.canvas;
     if (!canvas) return;
+
+    // While the Background tab is actively showing its handles, the canvas is a modal transform
+    // surface for that one thing (same idea as the zone-draft branch just below) - a background
+    // sprite intentionally isn't a placeable/draggable Instance, so it can't go through the
+    // hitTest()/marquee path those use.
+    if (this.backgroundEditing && this.onBgPointerDown(e)) return;
+
     const p = this.canvasPoint(e.clientX, e.clientY);
     if (!p) return;
     const { x, y } = p;
@@ -1205,6 +1326,10 @@ class TankEngine {
   }
 
   onCanvasPointerMove(e: React.PointerEvent<HTMLCanvasElement>): void {
+    if (this.bgDrag) {
+      this.onBgPointerMove(e);
+      return;
+    }
     if (this.zoneDrawStart) {
       const p = this.canvasPoint(e.clientX, e.clientY);
       if (!p) return;
@@ -1256,6 +1381,10 @@ class TankEngine {
   }
 
   onCanvasPointerUp(): void {
+    if (this.bgDrag) {
+      this.onBgPointerUp();
+      return;
+    }
     if (this.zoneDrawStart) {
       this.zoneDrawStart = null;
       const r = this.zoneDraftRect;
@@ -1455,31 +1584,29 @@ class TankEngine {
     const w = this.canvas.width;
     const h = this.canvas.height;
 
+    // The gradient is always the base layer - a background sprite is placed freely (see
+    // BackgroundTransform) rather than forced to cover the whole tank, so whatever it doesn't cover
+    // still needs to read as water rather than as a transparent hole.
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, '#7fd7e8');
+    grad.addColorStop(1, '#0f6f97');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
     const bgSprite = this.backgroundSpriteId
       ? this.sprites.find((s) => s.id === this.backgroundSpriteId && s.type === 'background')
       : null;
     if (bgSprite) {
       const { width: sw, height: sh } = this.spriteDims(bgSprite);
-      // Cover-fit at a uniform pixel-art scale (same crisp-rect painting as any other sprite, via
-      // paintLayers) so the drawn background always fills the tank edge-to-edge instead of
-      // letterboxing/stretching, then pan within the overflow per backgroundOffsetXFrac/YFrac
-      // (CSS object-position-style) so the user can choose which part of the art shows.
-      const cellPx = Math.max(w / sw, h / sh);
+      const cellPx = DISPLAY_SCALE * this.backgroundTransform.scale;
       const dw = sw * cellPx;
       const dh = sh * cellPx;
-      const dx = -(dw - w) * this.backgroundOffsetXFrac;
-      const dy = -(dh - h) * this.backgroundOffsetYFrac;
-      const layers = bgSprite.frames[0];
       ctx.save();
-      ctx.translate(dx, dy);
-      paintLayers(ctx, layers, sw, sh, cellPx);
+      ctx.translate(this.backgroundTransform.x, this.backgroundTransform.y);
+      ctx.rotate(this.backgroundTransform.rotation);
+      ctx.translate(-dw / 2, -dh / 2);
+      paintLayers(ctx, bgSprite.frames[0], sw, sh, cellPx);
       ctx.restore();
-    } else {
-      const grad = ctx.createLinearGradient(0, 0, 0, h);
-      grad.addColorStop(0, '#7fd7e8');
-      grad.addColorStop(1, '#0f6f97');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, w, h);
     }
 
     // A bright waterline band right at the top - the glassy "surface glint" seen in reference tank
@@ -1487,6 +1614,57 @@ class TankEngine {
     const waterlineH = Math.max(3, h * 0.02);
     ctx.fillStyle = 'rgba(255,255,255,0.35)';
     ctx.fillRect(0, 0, w, waterlineH);
+  }
+
+  /** Draws the selected background's move/resize/rotate handles - only while backgroundEditing is
+   *  true (see setBackgroundEditing), same on/off gating as the zone-draft/marquee overlays drawn
+   *  alongside it in draw(). Purely visual; hit-testing for the actual drag is bgHitTest. */
+  private drawBackgroundHandles(): void {
+    if (!this.ctx || !this.backgroundEditing) return;
+    const half = this.bgHalfSize();
+    if (!half) return;
+    const { halfW, halfH } = half;
+    const ctx = this.ctx;
+    const { x, y, rotation } = this.backgroundTransform;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(rotation);
+
+    ctx.strokeStyle = '#ffeb3b';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(-halfW, -halfH, halfW * 2, halfH * 2);
+    ctx.setLineDash([]);
+
+    // Line from the box's top edge up to the rotate handle, same "handle floats above a dashed
+    // stalk" convention as the pixel editor's own rotate handle.
+    ctx.beginPath();
+    ctx.moveTo(0, -halfH);
+    ctx.lineTo(0, -halfH - BG_ROTATE_HANDLE_GAP);
+    ctx.stroke();
+
+    const drawHandle = (hx: number, hy: number) => {
+      ctx.fillStyle = '#ffeb3b';
+      ctx.strokeStyle = '#1c2436';
+      ctx.lineWidth = 1.5;
+      ctx.fillRect(hx - BG_HANDLE_DRAW_SIZE / 2, hy - BG_HANDLE_DRAW_SIZE / 2, BG_HANDLE_DRAW_SIZE, BG_HANDLE_DRAW_SIZE);
+      ctx.strokeRect(hx - BG_HANDLE_DRAW_SIZE / 2, hy - BG_HANDLE_DRAW_SIZE / 2, BG_HANDLE_DRAW_SIZE, BG_HANDLE_DRAW_SIZE);
+    };
+    drawHandle(-halfW, -halfH);
+    drawHandle(halfW, -halfH);
+    drawHandle(-halfW, halfH);
+    drawHandle(halfW, halfH);
+
+    ctx.beginPath();
+    ctx.fillStyle = '#ffeb3b';
+    ctx.strokeStyle = '#1c2436';
+    ctx.lineWidth = 1.5;
+    ctx.arc(0, -halfH - BG_ROTATE_HANDLE_GAP, BG_HANDLE_DRAW_SIZE / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.restore();
   }
 
   private drawInstance(inst: Instance): void {
@@ -1608,6 +1786,7 @@ class TankEngine {
 
     if (this.marqueeRect) this.strokeZoneRect(this.marqueeRect, '#ffeb3b', 'rgba(255, 235, 59, 0.15)');
     if (this.zoneDraftRect) this.strokeZoneRect(this.zoneDraftRect, '#4ade80', 'rgba(74, 222, 128, 0.15)');
+    this.drawBackgroundHandles();
 
     ctx.restore();
 

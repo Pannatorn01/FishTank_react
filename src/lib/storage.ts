@@ -1,4 +1,4 @@
-import type { CanvasBackground, Frame, Instance, Layer, RoomInstance, Sprite, TankGroup, TankShape, UiTheme } from './types';
+import type { BackgroundTransform, CanvasBackground, Frame, Instance, Layer, RoomInstance, Sprite, TankGroup, TankShape, UiTheme } from './types';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
@@ -10,10 +10,8 @@ export const TANK_SHAPES: TankShape[] = ['rectangle', 'rounded', 'oval'];
 /** Which 'background'-type Sprite (drawn in the pixel editor, see SpriteType) is painted behind the
  *  fish instead of the default gradient - null means the default gradient. */
 const KEY_TANK_BACKGROUND_SPRITE_ID = 'fishtank.tankBackgroundSpriteId.v1';
-/** Pan position (0..1 each axis, like CSS object-position) within the cover-fit background image -
- *  see TankEngine.backgroundOffsetXFrac/YFrac. */
-export const KEY_TANK_BACKGROUND_OFFSET_X = 'fishtank.tankBackgroundOffsetX.v1';
-export const KEY_TANK_BACKGROUND_OFFSET_Y = 'fishtank.tankBackgroundOffsetY.v1';
+/** Free-transform (move/scale/rotate) placement of the background sprite - see BackgroundTransform. */
+const KEY_TANK_BACKGROUND_TRANSFORM = 'fishtank.tankBackgroundTransform.v2';
 const KEY_SAVED_COLORS = 'fishtank.savedColors.v1';
 const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
 const KEY_CANVAS_BG = 'fishtank.canvasBackground.v1';
@@ -186,6 +184,29 @@ export function loadTankBackgroundSpriteId(): string | null {
 export function saveTankBackgroundSpriteId(id: string | null): void {
   if (id) localStorage.setItem(KEY_TANK_BACKGROUND_SPRITE_ID, id);
   else localStorage.removeItem(KEY_TANK_BACKGROUND_SPRITE_ID);
+}
+
+export function loadTankBackgroundTransform(): BackgroundTransform | null {
+  try {
+    const raw = localStorage.getItem(KEY_TANK_BACKGROUND_TRANSFORM);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      typeof parsed?.x !== 'number' ||
+      typeof parsed?.y !== 'number' ||
+      typeof parsed?.scale !== 'number' ||
+      typeof parsed?.rotation !== 'number'
+    )
+      return null;
+    return parsed;
+  } catch (e) {
+    console.warn('loadTankBackgroundTransform failed', e);
+    return null;
+  }
+}
+
+export function saveTankBackgroundTransform(transform: BackgroundTransform): void {
+  localStorage.setItem(KEY_TANK_BACKGROUND_TRANSFORM, JSON.stringify(transform));
 }
 
 export function loadSavedColors(): string[] {

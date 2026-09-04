@@ -1361,9 +1361,6 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .tank-bg-thumb-default {
   background: linear-gradient(180deg, #7fd7e8 0%, #0f6f97 100%);
 }
-.tank-bg-position { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; padding-top: 4px; border-top: 1px solid var(--bevel-dark); }
-.tank-bg-position-row { display: flex; flex-direction: column; gap: 2px; font-size: 0.68rem; color: var(--pixel-text); }
-.tank-bg-position-row input[type='range'] { width: 100%; }
 .tank-clear-btn {
   border: 2px solid var(--pixel-accent);
   color: var(--pixel-accent-hover);
