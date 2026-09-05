@@ -121,6 +121,23 @@ class TankEngine {
    *  isn't cluttered by a yellow box; clicking the background again (either its palette row or its
    *  own footprint on the canvas) brings them back for further adjustment. */
   backgroundHandlesVisible = true;
+  /** Offscreen render of the background sprite at its current pixel dimensions and
+   *  backgroundTransform.scale, reused across animation frames instead of re-running paintLayers'
+   *  per-cell fillRect loop every frame - see drawBackground()/getBackgroundCache(). Reused in place
+   *  (resized only when its own dimensions change) rather than replaced, so no new canvas is ever
+   *  allocated just to redraw the same-size content. */
+  private bgCacheCanvas: HTMLCanvasElement | null = null;
+  private bgCacheCtx: CanvasRenderingContext2D | null = null;
+  /** Identity of whatever's currently painted into bgCacheCanvas - a *reference* to the exact Sprite
+   *  object last painted (not just its id) and the scale used, so the cache is invalidated whenever
+   *  either actually changes: picking a different background (new id -> different object), scaling it
+   *  via the resize handle (bgCacheScale mismatch), or the sprite's own pixel data being edited and
+   *  re-saved (refreshPalette() reloads `sprites` from storage as freshly-parsed objects, so the old
+   *  and new sprite objects are never `===` even when the id is unchanged). Position/rotation changes
+   *  deliberately do NOT invalidate this - drawBackground() re-applies those every frame via
+   *  ctx.translate/rotate around the cached bitmap, since they don't change what the bitmap looks like. */
+  private bgCacheSpriteRef: Sprite | null = null;
+  private bgCacheScale = 0;
   /** In-progress background handle drag, captured on pointerdown - see startBgDrag/onBgPointerMove/Up.
    *  Which handle was grabbed comes from the DOM overlay itself (TankBackgroundOverlay - each corner/
    *  rotate/body element already knows what it is via native hit-testing), not a hand-rolled
@@ -1581,6 +1598,40 @@ class TankEngine {
     });
   }
 
+  /** Returns an offscreen canvas holding bgSprite painted at dw×dh (see the bgCache* fields' doc
+   *  comment for the invalidation rule), redrawing via the same per-cell paintLayers() the on-canvas
+   *  path used to run every frame only when actually stale. `canvas.width =`/`height =` clears the
+   *  backing store as a side effect even when set to its current value, so that's only touched on an
+   *  actual size change; a same-size redraw (sprite swapped for one of identical footprint, or a live
+   *  pixel edit re-saved at the same scale) instead clears via clearRect - either way the cache is
+   *  fully repainted before use, never partially. */
+  private getBackgroundCache(sprite: Sprite, sw: number, sh: number, cellPx: number, dw: number, dh: number): HTMLCanvasElement {
+    const width = Math.max(1, Math.round(dw));
+    const height = Math.max(1, Math.round(dh));
+    const stale =
+      this.bgCacheSpriteRef !== sprite ||
+      this.bgCacheScale !== this.backgroundTransform.scale ||
+      !this.bgCacheCanvas ||
+      this.bgCacheCanvas.width !== width ||
+      this.bgCacheCanvas.height !== height;
+
+    if (!this.bgCacheCanvas) {
+      this.bgCacheCanvas = document.createElement('canvas');
+      this.bgCacheCtx = this.bgCacheCanvas.getContext('2d');
+    }
+    if (!stale) return this.bgCacheCanvas;
+
+    if (this.bgCacheCanvas.width !== width) this.bgCacheCanvas.width = width;
+    if (this.bgCacheCanvas.height !== height) this.bgCacheCanvas.height = height;
+    if (this.bgCacheCtx) {
+      this.bgCacheCtx.clearRect(0, 0, width, height);
+      paintLayers(this.bgCacheCtx, sprite.frames[0], sw, sh, cellPx);
+    }
+    this.bgCacheSpriteRef = sprite;
+    this.bgCacheScale = this.backgroundTransform.scale;
+    return this.bgCacheCanvas;
+  }
+
   private drawBackground(): void {
     if (!this.canvas || !this.ctx) return;
     const ctx = this.ctx;
@@ -1604,11 +1655,12 @@ class TankEngine {
       const cellPx = DISPLAY_SCALE * this.backgroundTransform.scale;
       const dw = sw * cellPx;
       const dh = sh * cellPx;
+      const cache = this.getBackgroundCache(bgSprite, sw, sh, cellPx, dw, dh);
       ctx.save();
       ctx.translate(this.backgroundTransform.x, this.backgroundTransform.y);
       ctx.rotate(this.backgroundTransform.rotation);
       ctx.translate(-dw / 2, -dh / 2);
-      paintLayers(ctx, bgSprite.frames[0], sw, sh, cellPx);
+      ctx.drawImage(cache, 0, 0);
       ctx.restore();
     }
 

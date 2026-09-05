@@ -34,19 +34,20 @@ export const DEFAULT_GRID_SIZE = 16;
 export const GRID_SIZES = [8, 16, 24, 32];
 export const MIN_GRID_SIZE = 4;
 export const MAX_GRID_SIZE = 64;
-/** Ceiling for a 'background'-type sprite's custom canvas size specifically - much higher than
- *  MAX_GRID_SIZE, matching useTank.ts's TANK_SIZE_MAX (the largest the tank itself can be), since a
- *  background gets stretched to fill the tank and artists sometimes want to paint it at up to that
- *  resolution directly rather than working small and accepting the upscale blur/blockiness. Kept as
- *  its own literal (not imported from useTank.ts) so lib/storage.ts doesn't take a dependency on a
- *  hook. */
-export const MAX_BACKGROUND_GRID_SIZE = { width: 1400, height: 900 };
-/** Floor for a 'background'-type sprite's canvas size specifically - much higher than MIN_GRID_SIZE,
- *  since a background stretched to fill the tank from a tiny canvas would look blocky at any zoom level
- *  a player would actually view the tank at, unlike a small fish/object sprite (also meant to be seen
- *  small). Enforced both in the size UI and inside setGridSize itself (see usePixelEditor.ts) so it
- *  can't be bypassed by a resize after switching a sprite's type to 'background'. */
-export const MIN_BACKGROUND_GRID_SIZE = 300;
+/** Ceiling for a 'background'-type sprite's custom canvas size specifically - a quarter of
+ *  useTank.ts's TANK_SIZE_MAX (the largest the tank itself can be), because drawBackground() paints
+ *  it back out at DISPLAY_SCALE (4x), same as every other sprite kind. Used to be a straight 1:1 with
+ *  TANK_SIZE_MAX so artists could paint at native tank resolution, but that meant a full-size
+ *  background got DISPLAY_SCALE'd on top of already being canvas-sized - a cache many times larger
+ *  than the tank itself, repainted in full on every drag during resize/scale. Kept as its own literal
+ *  (not imported from useTank.ts) so lib/storage.ts doesn't take a dependency on a hook. */
+export const MAX_BACKGROUND_GRID_SIZE = { width: 350, height: 225 };
+/** Floor for a 'background'-type sprite's canvas size specifically - still higher than MIN_GRID_SIZE
+ *  so a background stretched to fill the tank from a tiny canvas doesn't look too blocky, but capped
+ *  below MAX_BACKGROUND_GRID_SIZE.height (225) now that the ceiling itself is much smaller. Enforced
+ *  both in the size UI and inside setGridSize itself (see usePixelEditor.ts) so it can't be bypassed
+ *  by a resize after switching a sprite's type to 'background'. */
+export const MIN_BACKGROUND_GRID_SIZE = 150;
 export const LAYER_LIMIT = 12;
 export const DEFAULT_FRAME_MS = 350;
 export const MIN_FRAME_FPS = 1;
