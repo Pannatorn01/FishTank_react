@@ -17,8 +17,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { BRUSH_SIZE_TOOLS, MAX_BRUSH_SIZE, ZOOM_LEVELS } from '@/hooks/usePixelEditor';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
-import { GRID_SIZES, MAX_BACKGROUND_GRID_SIZE, MAX_GRID_SIZE, MIN_BACKGROUND_GRID_SIZE, MIN_GRID_SIZE } from '@/lib/storage';
-import type { CanvasBackground, SpriteType, SymmetryMode } from '@/lib/types';
+import { GRID_SIZES, MAX_BACKGROUND_GRID_SIZE, MAX_GRID_SIZE, MIN_BACKGROUND_GRID_SIZE, MIN_GRID_SIZE, RESIZE_ANCHOR_FRAC } from '@/lib/storage';
+import type { CanvasBackground, ResizeAnchor, ResizeMode, SpriteType, SymmetryMode } from '@/lib/types';
 
 const CUSTOM_SIZE_VALUE = 'custom';
 
@@ -27,7 +27,11 @@ const SYMMETRY_KEYS: Record<SymmetryMode, string> = {
   vertical: 'symmetry.vertical',
   horizontal: 'symmetry.horizontal',
   both: 'symmetry.both',
+  diagonal: 'symmetry.diagonal',
+  radial: 'symmetry.radial',
 };
+
+const RESIZE_ANCHORS = Object.keys(RESIZE_ANCHOR_FRAC) as ResizeAnchor[];
 
 const CANVAS_BG_KEYS: Record<CanvasBackground, string> = {
   'checker-dark': 'status.bgCheckerDark',
@@ -54,6 +58,8 @@ export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; t
   const [customOpen, setCustomOpen] = useState(false);
   const [customWidth, setCustomWidth] = useState('');
   const [customHeight, setCustomHeight] = useState('');
+  const [resizeMode, setResizeMode] = useState<ResizeMode>('stretch');
+  const [resizeAnchor, setResizeAnchor] = useState<ResizeAnchor>('middle-center');
   // Raw text of the zoom % field while it's being edited - null the rest of the time, when the field
   // just mirrors engine.zoomScale directly. Needed so an in-progress edit (e.g. typing "1" on the way
   // to "150") isn't clobbered by the engine's own value on every keystroke's re-render.
@@ -84,7 +90,7 @@ export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; t
       e?.preventDefault();
       return;
     }
-    engine.setGridSize(clampGridSize(w, minW, maxW), clampGridSize(h, minH, maxH), type);
+    engine.setGridSize(clampGridSize(w, minW, maxW), clampGridSize(h, minH, maxH), type, resizeMode, resizeAnchor);
     setCustomOpen(false);
   };
 
@@ -220,12 +226,51 @@ export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; t
               />
             </div>
           </div>
+          <div className="grid gap-1.5 mt-3">
+            <Label>{t('status.resizeMode')}</Label>
+            <div className="resize-mode-toggle">
+              <Button type="button" size="sm" variant={resizeMode === 'stretch' ? 'default' : 'secondary'} onClick={() => setResizeMode('stretch')}>
+                {t('status.resizeModeStretch')}
+              </Button>
+              <Button type="button" size="sm" variant={resizeMode === 'crop' ? 'default' : 'secondary'} onClick={() => setResizeMode('crop')}>
+                {t('status.resizeModeCrop')}
+              </Button>
+            </div>
+          </div>
+          {resizeMode === 'crop' && (
+            <div className="grid gap-1.5 mt-2">
+              <Label title={t('status.resizeAnchorTitle')}>{t('status.resizeAnchorTitle')}</Label>
+              <div className="resize-anchor-grid">
+                {RESIZE_ANCHORS.map((anchor) => (
+                  <button
+                    key={anchor}
+                    type="button"
+                    className={`resize-anchor-cell${resizeAnchor === anchor ? ' active' : ''}`}
+                    title={anchor}
+                    onClick={() => setResizeAnchor(anchor)}
+                  >
+                    <span className="resize-anchor-dot" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel>{t('status.gridCustomCancel')}</AlertDialogCancel>
             <AlertDialogAction onClick={confirmCustomSize}>{t('status.gridCustomConfirm')}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Button
+        type="button"
+        size="sm"
+        variant="secondary"
+        title={t('status.trimToContentTitle')}
+        onClick={() => engine.trimToContent()}
+      >
+        <i className="fa-solid fa-crop-simple" /> {t('status.trimToContent')}
+      </Button>
 
       <label className="mini-toggle">
         <Checkbox checked={engine.showGrid} onCheckedChange={(v) => engine.setShowGrid(!!v)} />
@@ -248,6 +293,41 @@ export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; t
           ))}
         </SelectContent>
       </Select>
+
+      {engine.tool === 'fill' && (
+        <div className="mini-toggle brush-size-control" title={t('status.fillToleranceTitle')}>
+          <Label htmlFor="fill-tolerance-range">{t('status.fillTolerance')}</Label>
+          <input
+            id="fill-tolerance-range"
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={engine.fillTolerance}
+            onChange={(e) => engine.setFillTolerance(Number(e.target.value))}
+            className="brush-size-slider"
+          />
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            value={engine.fillTolerance}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n)) engine.setFillTolerance(n);
+            }}
+            className="w-14 h-7 px-1.5 text-center text-xs"
+            aria-label={t('status.fillTolerance')}
+          />
+        </div>
+      )}
+
+      {(engine.tool === 'gradient' || showBrushOptions) && (
+        <label className="mini-toggle" title={t('status.ditherTitle')}>
+          <Checkbox checked={engine.ditherEnabled} onCheckedChange={(v) => engine.setDitherEnabled(!!v)} />
+          <Label>{t('status.dither')}</Label>
+        </label>
+      )}
 
       {(showShapeFilled || showBrushOptions) && <span className="toolbar-divider" aria-hidden="true" />}
 
@@ -301,6 +381,17 @@ export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; t
           ))}
         </SelectContent>
       </Select>
+      {engine.symmetry !== 'none' && (
+        <Button
+          type="button"
+          size="icon"
+          variant="secondary"
+          title={t('status.resetSymmetryAxis')}
+          onClick={() => engine.resetSymmetryAxis()}
+        >
+          <i className="fa-solid fa-crosshairs" />
+        </Button>
+      )}
 
       {selection && (
         <span className="selection-info" title={t('status.selectionHint')}>

@@ -1,4 +1,4 @@
-import type { BackgroundTransform, CanvasBackground, Frame, Instance, Layer, RoomInstance, Sprite, TankGroup, TankShape, UiTheme } from './types';
+import type { BackgroundTransform, CanvasBackground, Frame, Instance, Layer, ResizeAnchor, RoomInstance, Sprite, TankGroup, TankShape, UiTheme } from './types';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
@@ -13,6 +13,11 @@ const KEY_TANK_BACKGROUND_SPRITE_ID = 'fishtank.tankBackgroundSpriteId.v1';
 /** Free-transform (move/scale/rotate) placement of the background sprite - see BackgroundTransform. */
 const KEY_TANK_BACKGROUND_TRANSFORM = 'fishtank.tankBackgroundTransform.v2';
 const KEY_SAVED_COLORS = 'fishtank.savedColors.v1';
+/** Subset of KEY_SAVED_COLORS a user has pinned (see ColorPalette.tsx) - a separate key rather than a
+ *  shape change to the existing string[] savedColors array, so no migration is needed: an empty/missing
+ *  list here just means "nothing pinned yet", which is exactly right for data saved before this feature
+ *  existed. */
+const KEY_PINNED_COLORS = 'fishtank.pinnedColors.v1';
 const KEY_BRUSH_SIZES = 'fishtank.brushSizes.v1';
 const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
 const KEY_CANVAS_BG = 'fishtank.canvasBackground.v1';
@@ -238,6 +243,20 @@ export function saveSavedColors(colors: string[]): void {
   localStorage.setItem(KEY_SAVED_COLORS, JSON.stringify(colors));
 }
 
+export function loadPinnedColors(): string[] {
+  try {
+    const raw = localStorage.getItem(KEY_PINNED_COLORS);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    console.warn('loadPinnedColors failed', e);
+    return [];
+  }
+}
+
+export function savePinnedColors(colors: string[]): void {
+  localStorage.setItem(KEY_PINNED_COLORS, JSON.stringify(colors));
+}
+
 /** Brush size remembered per brush-like tool (pen/eraser/spray each paint a different kind of stroke,
  *  so a size picked for one shouldn't silently apply to the others). Keyed loosely by tool name rather
  *  than a fixed union so a future brush-like tool can start persisting its size without a migration. */
@@ -309,6 +328,40 @@ export function resampleFrame(frame: Frame, oldW: number, oldH: number, newW: nu
     for (let x = 0; x < newW; x++) {
       const srcX = Math.min(oldW - 1, Math.floor((x / newW) * oldW));
       out[y * newW + x] = frame[srcY * oldW + srcX];
+    }
+  }
+  return out;
+}
+
+/** Where each 9-point ResizeAnchor sits as a 0..1 fraction across the resize delta - see padFrame. */
+export const RESIZE_ANCHOR_FRAC: Record<ResizeAnchor, { x: number; y: number }> = {
+  'top-left': { x: 0, y: 0 },
+  'top-center': { x: 0.5, y: 0 },
+  'top-right': { x: 1, y: 0 },
+  'middle-left': { x: 0, y: 0.5 },
+  'middle-center': { x: 0.5, y: 0.5 },
+  'middle-right': { x: 1, y: 0.5 },
+  'bottom-left': { x: 0, y: 1 },
+  'bottom-center': { x: 0.5, y: 1 },
+  'bottom-right': { x: 1, y: 1 },
+};
+
+/**
+ * Crop/expand resize: places the old (oldW x oldH) frame's content at (offsetX, offsetY) inside a new
+ * (newW x newH) canvas, unlike resampleFrame's stretch - pixels outside the new canvas are dropped,
+ * and any newly-added area is left transparent. `offsetX`/`offsetY` are typically derived from
+ * RESIZE_ANCHOR_FRAC (see usePixelEditor.ts's setGridSize) or from a content bounding box (see
+ * usePixelEditor.ts's trimToContent, which crops with the exact offset needed to drop empty borders).
+ */
+export function padFrame(frame: Frame, oldW: number, oldH: number, newW: number, newH: number, offsetX: number, offsetY: number): Frame {
+  const out = emptyFrame(newW, newH);
+  for (let y = 0; y < oldH; y++) {
+    const ny = y + offsetY;
+    if (ny < 0 || ny >= newH) continue;
+    for (let x = 0; x < oldW; x++) {
+      const nx = x + offsetX;
+      if (nx < 0 || nx >= newW) continue;
+      out[ny * newW + nx] = frame[y * oldW + x];
     }
   }
   return out;

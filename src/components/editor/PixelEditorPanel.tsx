@@ -46,7 +46,15 @@ export function PixelEditorPanel({
         </div>
 
         <div className="canvas-column">
-          <CanvasMetaBar engine={engine} name={name} setName={setName} type={type} setType={setType} onError={onError} />
+          <CanvasMetaBar
+            engine={engine}
+            name={name}
+            setName={setName}
+            type={type}
+            setType={setType}
+            onError={onError}
+            onConfirmDiscard={confirmDiscard}
+          />
           <PixelCanvas engine={engine} />
           <CanvasStatusBar engine={engine} type={type} />
           <FrameStrip engine={engine} type={type} />
@@ -54,9 +62,9 @@ export function PixelEditorPanel({
         </div>
 
         <div className="side-panel">
-          <PreviewPanel engine={engine} />
+          <PreviewPanel engine={engine} type={type} />
           <TransformPanel engine={engine} />
-          <LayerPanel engine={engine} />        
+          <LayerPanel engine={engine} onError={onError} />
         </div>
       </div>
     </div>

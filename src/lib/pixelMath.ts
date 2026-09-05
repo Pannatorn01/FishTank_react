@@ -172,6 +172,85 @@ export function flipFrameV(frame: Frame, width: number, height: number): Frame {
   return out;
 }
 
+/** Cyclically shifts a frame's content by half its width/height (wrapping around the edges) - lets an
+ *  artist drawing a tileable 'background' sprite see the seam between repeats without leaving the
+ *  editor (see PreviewPanel.tsx's tiled 3x3 preview), then nudge pixels that land on the new seam. */
+export function wrapShiftFrame(frame: Frame, width: number, height: number): Frame {
+  const shiftX = Math.floor(width / 2);
+  const shiftY = Math.floor(height / 2);
+  const out: Frame = new Array(width * height).fill(null);
+  for (let y = 0; y < height; y++) {
+    const ny = (y + shiftY) % height;
+    for (let x = 0; x < width; x++) {
+      const nx = (x + shiftX) % width;
+      out[ny * width + nx] = frame[y * width + x];
+    }
+  }
+  return out;
+}
+
+/** Standard 4x4 ordered (Bayer) dither matrix, values 0-15 - see ditherColorAt. */
+const BAYER_4X4 = [
+  [0, 8, 2, 10],
+  [12, 4, 14, 6],
+  [3, 11, 1, 9],
+  [15, 7, 13, 5],
+];
+
+/** Picks colorA or colorB for cell (x, y) using a 4x4 ordered-dither threshold, so a 50/50 (or any
+ *  other) mix of the two colors reads as a stipple pattern instead of a flat blend - used by the
+ *  gradient tool's optional dither mode and the "dither brush" (see usePixelEditor.ts). `mix` is how
+ *  much of colorB should show, 0 (all colorA) to 1 (all colorB). */
+export function ditherColorAt(x: number, y: number, colorA: string, colorB: string, mix: number): string {
+  const threshold = (BAYER_4X4[y & 3][x & 3] + 0.5) / 16;
+  return mix > threshold ? colorB : colorA;
+}
+
+export interface Hsv {
+  h: number;
+  s: number;
+  v: number;
+}
+
+/** Moved here from ColorPicker.tsx so the Shade tool (see usePixelEditor.ts) can reuse the same
+ *  hex<->HSV conversion instead of duplicating it. */
+export function hsvToHex(h: number, s: number, v: number): string {
+  const c = v * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = v - c;
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const toHex = (n: number) => Math.round((n + m) * 255).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+export function hexToHsv(hex: string): Hsv {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  const s = max === 0 ? 0 : d / max;
+  const v = max;
+  return { h, s, v };
+}
+
 /** Rotating swaps the axes: a width×height frame becomes height×width. */
 export function rotateFrame(
   frame: Frame,

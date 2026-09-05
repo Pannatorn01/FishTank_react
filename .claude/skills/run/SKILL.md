@@ -41,13 +41,9 @@ npm run preview -- --port 5200 --strictPort   # serve the built dist/ to sanity-
 clean `npm run build` is a real correctness signal here, not just a bundle
 step.
 
-## After a UI/frontend change, prefer the tank-ui-tester agent
+## After a UI/frontend change, prefer agent
 
-For any change touching canvas redraw logic, brush strokes, shape tool previews, or
-undo/redo (usePixelEditor.ts, src/lib/pixelMath.ts and similar), dispatch the
-**draw-performance-auditor** agent as well — it measures actual frame time against a
-16ms budget per interaction path, which tank-ui-tester's functional pass/fail does not
-cover.
+
 
 ## Drive it manually (no chromium-cli in this sandbox - use local Playwright)
 

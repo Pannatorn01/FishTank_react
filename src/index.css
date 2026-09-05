@@ -719,6 +719,21 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   touch-action: none;
 }
 .pixel-select-rotate-handle:active { cursor: grabbing; }
+/* Draggable symmetry axis handle (see PixelSelectionOverlay.tsx) - same small-circle DOM-handle
+ * treatment as the rotate handle above, just centered on the axis point instead of offset above a
+ * selection box. */
+.pixel-symmetry-axis-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border-radius: 50%;
+  background: rgba(0, 229, 255, 0.85);
+  border: 1.5px solid #1c2436;
+  cursor: grab;
+  touch-action: none;
+}
+.pixel-symmetry-axis-handle:active { cursor: grabbing; }
 
 /*
  * Per-tool pixel-canvas cursors: a small black-on-white crosshair (the exact hotspot pixel, at SVG
@@ -802,6 +817,20 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .brush-size-control { gap: 6px; }
 .brush-size-slider { width: 5.5rem; accent-color: var(--pixel-accent); cursor: pointer; }
 .brush-size-unit { color: var(--pixel-muted); }
+.resize-mode-toggle { display: flex; gap: 6px; }
+.resize-anchor-grid { display: grid; grid-template-columns: repeat(3, 1.4rem); grid-template-rows: repeat(3, 1.4rem); gap: 3px; }
+.resize-anchor-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bevel-dark);
+  background: var(--pixel-field-bg);
+  cursor: pointer;
+  padding: 0;
+}
+.resize-anchor-cell.active { border-color: var(--pixel-highlight); background: rgba(255, 204, 0, 0.15); }
+.resize-anchor-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--pixel-muted); }
+.resize-anchor-cell.active .resize-anchor-dot { background: var(--pixel-highlight); }
 .canvas-meta-bar {
   display: flex;
   align-items: center;
@@ -941,7 +970,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   color: var(--pixel-muted);
 }
 .layer-opacity-btn.open, .layer-opacity-btn:hover { color: var(--pixel-text-strong); border-color: var(--pixel-text-strong) !important; }
-.layer-merge, .layer-dup, .layer-del { width: 1.1rem; height: 1.1rem; }
+.layer-merge, .layer-dup, .layer-del, .layer-copy-all-frames { width: 1.1rem; height: 1.1rem; }
 .layer-opacity-slider { width: 100%; height: 0.9rem; cursor: pointer; accent-color: var(--pixel-accent); }
 .preview-canvas {
   width: 160px; height: 160px;
@@ -1066,6 +1095,42 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   z-index: 2;
 }
 .color-swatch-wrap:hover .color-swatch-del { display: flex; }
+.color-swatch-pin {
+  position: absolute;
+  bottom: -3px; left: -3px;
+  width: 11px; height: 11px;
+  border: none;
+  background: var(--pixel-dark-1);
+  color: var(--pixel-muted);
+  font-size: 0.4rem;
+  line-height: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+  z-index: 2;
+}
+.color-swatch-wrap:hover .color-swatch-pin, .color-swatch-pin.pinned { display: flex; }
+.color-swatch-pin.pinned { color: var(--pixel-highlight); }
+.color-swatch-wrap.drag-over { outline: 2px dashed var(--pixel-highlight); outline-offset: 1px; }
+.palette.builtin-palette { flex: 0 0 auto; }
+.palette-presets { flex-shrink: 0; }
+.swatch-clear-unused {
+  grid-column: 1 / -1;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px dashed var(--pixel-muted);
+  background: transparent;
+  color: var(--pixel-muted);
+  font-size: 0.6rem;
+  padding: 3px 0;
+  cursor: pointer;
+}
+.swatch-clear-unused:hover { color: var(--pixel-text-strong); border-color: var(--pixel-text-strong); }
 .swatch-add {
   width: 100%;
   aspect-ratio: 1;
@@ -1110,6 +1175,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   cursor: pointer;
   font-size: 0.65rem;
 }
+.panel-title-actions { display: flex; align-items: center; gap: 4px; }
 .panel-title-add:hover:not(:disabled) { background: var(--pixel-accent); }
 .panel-title-add:disabled { opacity: 0.4; cursor: not-allowed; }
 .transform-panel .panel-title { font-size: 0.48rem; opacity: 0.7; }

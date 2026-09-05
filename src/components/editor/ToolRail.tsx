@@ -18,6 +18,8 @@ const TOOL_GROUPS: { labelKey: string; tools: { tool: ToolName; icon: string }[]
       { tool: 'eyedropper', icon: 'eye-dropper' },
       { tool: 'spray', icon: 'spray-can' },
       { tool: 'gradient', icon: 'circle-half-stroke' },
+      { tool: 'shade', icon: 'sliders' },
+      { tool: 'replace', icon: 'wand-magic-sparkles' },
     ],
   },
   {

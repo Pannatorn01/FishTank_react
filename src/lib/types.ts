@@ -52,9 +52,25 @@ export type ToolName =
   | 'gradient'
   | 'select'
   | 'lasso'
-  | 'move';
+  | 'move'
+  | 'shade'
+  | 'replace';
 
-export type SymmetryMode = 'none' | 'vertical' | 'horizontal' | 'both';
+/** 'diagonal' mirrors across both diagonals through the (draggable) symmetry axis point - good for
+ *  starfish/coral shapes; 'radial' rotates 90/180/270° around that same point instead of mirroring. */
+export type SymmetryMode = 'none' | 'vertical' | 'horizontal' | 'both' | 'diagonal' | 'radial';
+
+/** How setGridSize() maps old pixel content onto a new canvas size: 'stretch' resamples (the original,
+ *  only behavior), 'crop' keeps pixels at their original 1:1 position, anchored per ResizeAnchor, and
+ *  either crops or pads with transparency as needed. */
+export type ResizeMode = 'stretch' | 'crop';
+
+/** 9-point anchor for a 'crop' resize (see ResizeMode) - which corner/edge/center of the old content
+ *  stays put while the canvas grows/shrinks around it. */
+export type ResizeAnchor =
+  | 'top-left' | 'top-center' | 'top-right'
+  | 'middle-left' | 'middle-center' | 'middle-right'
+  | 'bottom-left' | 'bottom-center' | 'bottom-right';
 
 export type CanvasBackground = 'checker-dark' | 'checker-light' | 'white' | 'black' | 'gray';
 

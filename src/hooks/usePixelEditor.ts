@@ -2,9 +2,12 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
   bresenhamLine,
+  ditherColorAt,
   flipFrameH,
   flipFrameV,
+  hexToHsv,
   hexToRgb,
+  hsvToHex,
   inEllipseLocal,
   layersDiffRegion,
   normalizeBox,
@@ -12,10 +15,32 @@ import {
   rgbToHex,
   rotateFrame,
   shiftBox,
+  wrapShiftFrame,
 } from '@/lib/pixelMath';
 import { t } from '@/lib/i18n';
 import * as storage from '@/lib/storage';
-import type { CanvasBackground, Cell, Frame, Layer, SelectionBox, Sprite, SpriteType, SymmetryMode, ToolName } from '@/lib/types';
+import { pixelateImageFile } from '@/lib/imageImport';
+import type {
+  CanvasBackground,
+  Cell,
+  Frame,
+  Layer,
+  ResizeAnchor,
+  ResizeMode,
+  SelectionBox,
+  Sprite,
+  SpriteType,
+  SymmetryMode,
+  ToolName,
+} from '@/lib/types';
+
+/** A couple of built-in underwater-themed preset palettes for the top palette row (see
+ *  applyPresetPalette/ColorPalette.tsx) - a quick starting point distinct from a user's own saved
+ *  colors, not persisted themselves (only the result of applying one, via paletteColors, is). */
+export const PRESET_PALETTES: Record<string, string[]> = {
+  reef: ['#04293a', '#064663', '#158fad', '#41c9e2', '#78e08f', '#f6b93b', '#e58e26', '#e55039', '#fad390', '#f8c291'],
+  deepSea: ['#020409', '#04081a', '#0a2472', '#1450a3', '#247ba0', '#2ec4b6', '#70c1b3', '#b2dbbf', '#231651', '#f4f4f4'],
+};
 
 export const DEFAULT_PALETTE_COLORS = [
   '#1a1a1a', '#ffffff', '#e74c3c', '#ff7043', '#f5c518', '#8bc34a', '#1e88e5', '#5e35b1',
@@ -48,16 +73,18 @@ export const MAX_BRUSH_SIZE = 20;
  *  `brushSize` to thicken their outline (see computeShapeCells), and curve thickens its own path the
  *  same way (see quadraticBezierCells/thickenPath) - gradient and the selection tools have no
  *  comparable "stroke width" concept, so they're deliberately left out. */
-export const BRUSH_SIZE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'spray', 'line', 'rect', 'ellipse', 'curve']);
+export const BRUSH_SIZE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'spray', 'line', 'rect', 'ellipse', 'curve', 'shade', 'replace']);
 const SPRAY_INTERVAL_MS = 55;
+/** HSV value (0-1) nudged per Shade-tool stroke step - see applyShadeAt. */
+const SHADE_STEP = 0.08;
 const TOOL_KEYS: Record<string, ToolName> = {
   b: 'pen', e: 'eraser', f: 'fill', i: 'eyedropper', l: 'line', u: 'curve', r: 'rect', c: 'ellipse',
-  a: 'spray', k: 'gradient', m: 'select', v: 'move',
+  a: 'spray', k: 'gradient', m: 'select', v: 'move', d: 'shade', w: 'replace',
 };
 /** Tools where a right-click has an alternate meaning (erase, or reversed gradient) instead of opening the browser context menu. */
-const ERASABLE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient']);
+const ERASABLE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient', 'shade']);
 /** Tools where holding Alt temporarily samples a color instead of the tool's normal action. */
-const ALT_PICK_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient']);
+const ALT_PICK_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient', 'shade', 'replace']);
 /** Tools that create/edit a selection - rectangular marquee and freeform lasso are two ways to make
  *  the same kind of selection (see selectionMask/lassoPoints), so they share all of its chrome/rules. */
 const SELECTION_TOOLS = new Set<ToolName>(['select', 'lasso']);
@@ -130,6 +157,9 @@ class PixelEditorEngine {
    *  region's on-screen position has), so redoing that full paint on every single move was the actual
    *  cost that made dragging a selection on a large canvas (e.g. a 1400×900 background) visibly lag. */
   private gestureBaseBitmap: HTMLCanvasElement | null = null;
+  /** Scratch canvas reused by paintTintedOnion to tint one onion-skin frame at a time before blitting
+   *  it onto the real canvas - see paintOnionSkin. */
+  private onionBitmap: HTMLCanvasElement | null = null;
 
   sprites: Sprite[] = [];
   current: Sprite = blankSprite();
@@ -174,6 +204,30 @@ class PixelEditorEngine {
   moveDelta = { dx: 0, dy: 0 };
   clipboard: { w: number; h: number; rows: (string | null)[][] } | null = null;
   symmetry: SymmetryMode = 'none';
+  /** Draggable symmetry mirror/rotation axis, in cell-space (not persisted - recentered whenever the
+   *  canvas is resized or a different sprite loads, see centerSymmetryAxis). Defaults to the canvas
+   *  center, matching the old fixed-center behavior exactly (see mirrorCells's doc comment). */
+  symmetryAxisX = storage.DEFAULT_GRID_SIZE / 2;
+  symmetryAxisY = storage.DEFAULT_GRID_SIZE / 2;
+  private axisDragging = false;
+  /** 0-100: how far a fill can spread across similar-but-not-identical colors (see floodFill's
+   *  colorsMatch) - 0 keeps the original exact-match flood fill. */
+  fillTolerance = 0;
+  /** Ordered (Bayer 4x4) dither between `color` and `gradientColor` instead of a flat fill - for the
+   *  gradient tool (see gradientCellsPreview) and as a "dither brush" texture for pen/spray/shapes
+   *  (see applyBrushAt). */
+  ditherEnabled = false;
+  /** Colors a user has pinned in the saved-colors row (see ColorPalette.tsx) - survive
+   *  clearUnusedColors regardless of use. Persisted separately from savedColors (see storage.ts). */
+  pinnedColors: Set<string> = new Set();
+  /** How many frames in each direction real onion skin shows (see paintOnionSkin) - 1 or 2. */
+  onionSkinDepth = 1;
+  /** Shows the composited preview tiled 3x3 instead of once, to spot seams on a 'background'-type
+   *  sprite meant to repeat (see tickPreview/PreviewPanel.tsx). */
+  tiledPreview = false;
+  /** Sampled once at the start of a 'replace' tool stroke: only cells still exactly this color get
+   *  repainted as the stroke continues (see applyReplaceAt) - undefined the rest of the time. */
+  private replaceTarget: string | null | undefined = undefined;
   /** Per-tool brush size (pen/eraser/spray each remember their own - see brushSizeToolKey/BRUSH_SIZE_TOOLS),
    *  persisted so a size picked in one session survives a reload. */
   private brushSizes: Record<string, number> = {};
@@ -200,8 +254,11 @@ class PixelEditorEngine {
   gradientEnd: Cell | null = null;
   gradientPreview: MoveBufferCell[] | null = null;
   /** Continuous zoom factor (1 = 100%) - not locked to ZOOM_LEVELS's fixed steps, which remain only as
-   *  quick-pick presets in the status bar. Clamped to [minZoomScale(), maxZoomScale()] by setZoom,
-   *  the only place that ever changes it. */
+   *  quick-pick presets in the status bar. Clamped to [minZoomScale(), maxZoomScale()] by setZoom;
+   *  also set directly (via defaultZoomForSize) wherever the canvas's own width/height changes -
+   *  resize, trim, or loading/creating/importing a sprite - since a zoom level picked for one sprite's
+   *  dimensions can otherwise overflow .pixel-canvas-wrap for a differently-sized one it carries over
+   *  to, with no visible sign beyond a stray scrollbar (place-items:center hides the clipped edges). */
   zoomScale = 1;
   /** Manual correction (screen px) applied as a transform on .pixel-canvas-inner, on top of whatever
    *  CSS centering/native scroll already puts it at - see setZoom's doc comment for why cursor-anchored
@@ -218,6 +275,10 @@ class PixelEditorEngine {
   /** Last pointer position (client px) seen during a middle-pan drag, to derive each move's delta -
    *  null the rest of the time. */
   private middlePanLast: { x: number; y: number } | null = null;
+  /** True while the space bar is held (see onKeyDown/window keyup listener in init) - a primary-button
+   *  drag pans the view the same way a middle-click drag already does (see onPointerDown), the common
+   *  Paint/Photoshop/Pixilart "hold space to pan" convention. */
+  private spacePanActive = false;
   showGrid = true;
   canvasBackground: CanvasBackground = 'checker-dark';
   onionSkin = false;
@@ -262,8 +323,10 @@ class PixelEditorEngine {
     }
     this.paletteColors = storage.loadPaletteColors() ?? [...DEFAULT_PALETTE_COLORS];
     this.savedColors = storage.loadSavedColors();
+    this.pinnedColors = new Set(storage.loadPinnedColors());
     this.canvasBackground = storage.loadCanvasBackground() ?? 'checker-dark';
     this.brushSizes = storage.loadBrushSizes();
+    this.centerSymmetryAxis();
 
     this.restartPreviewTimer();
 
@@ -271,6 +334,8 @@ class PixelEditorEngine {
     const forceEndGesture = () => {
       this.middlePanActive = false;
       this.middlePanLast = null;
+      this.spacePanActive = false;
+      if (this.canvas) this.canvas.style.cursor = '';
       if (!this.painting) return;
       this.resetGestureState();
       this.refresh();
@@ -284,6 +349,7 @@ class PixelEditorEngine {
       e.returnValue = '';
     };
     const onKeyDownGlobal = (e: KeyboardEvent) => this.onKeyDown(e);
+    const onKeyUpGlobal = (e: KeyboardEvent) => this.onKeyUp(e);
 
     window.addEventListener('pointerup', endGesture);
     window.addEventListener('pointercancel', endGesture);
@@ -291,6 +357,7 @@ class PixelEditorEngine {
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('beforeunload', onBeforeUnload);
     document.addEventListener('keydown', onKeyDownGlobal);
+    document.addEventListener('keyup', onKeyUpGlobal);
 
     this.windowListeners = [
       () => window.removeEventListener('pointerup', endGesture),
@@ -299,6 +366,7 @@ class PixelEditorEngine {
       () => document.removeEventListener('visibilitychange', onVisibility),
       () => window.removeEventListener('beforeunload', onBeforeUnload),
       () => document.removeEventListener('keydown', onKeyDownGlobal),
+      () => document.removeEventListener('keyup', onKeyUpGlobal),
     ];
 
     this.reactNotify();
@@ -449,7 +517,60 @@ class PixelEditorEngine {
   removeSavedColor(color: string): void {
     if (!this.savedColors.includes(color)) return;
     this.savedColors = this.savedColors.filter((c) => c !== color);
+    if (this.pinnedColors.has(color)) {
+      const next = new Set(this.pinnedColors);
+      next.delete(color);
+      this.pinnedColors = next;
+      storage.savePinnedColors([...next]);
+    }
     storage.saveSavedColors(this.savedColors);
+    this.reactNotify();
+  }
+
+  isPinnedColor(color: string): boolean {
+    return this.pinnedColors.has(color);
+  }
+
+  togglePinColor(color: string): void {
+    const next = new Set(this.pinnedColors);
+    if (next.has(color)) next.delete(color);
+    else next.add(color);
+    this.pinnedColors = next;
+    storage.savePinnedColors([...next]);
+    this.reactNotify();
+  }
+
+  /** Drag-to-reorder for the saved-colors row (see ColorPalette.tsx) - same splice-and-reinsert shape
+   *  as moveLayer/moveFrame elsewhere in this file. */
+  reorderSavedColor(from: number, to: number): void {
+    if (from === to || from < 0 || to < 0 || from >= this.savedColors.length || to >= this.savedColors.length) return;
+    const next = [...this.savedColors];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    this.savedColors = next;
+    storage.saveSavedColors(this.savedColors);
+    this.reactNotify();
+  }
+
+  /** Drops every saved color that's neither pinned nor actually painted anywhere in the current
+   *  sprite - a one-click way to prune a savedColors list that otherwise only ever grows. */
+  clearUnusedColors(): void {
+    const used = new Set<string>();
+    this.current.frames.forEach((layers) => layers.forEach((layer) => layer.cells.forEach((c) => c && used.add(c))));
+    const next = this.savedColors.filter((c) => this.pinnedColors.has(c) || used.has(c));
+    if (next.length === this.savedColors.length) return;
+    this.savedColors = next;
+    storage.saveSavedColors(this.savedColors);
+    this.reactNotify();
+  }
+
+  /** Overwrites the top (fixed-position) palette row with one of PRESET_PALETTES - a quick underwater-
+   *  themed starting point, distinct from the user's own growing savedColors list. */
+  applyPresetPalette(name: string): void {
+    const preset = PRESET_PALETTES[name];
+    if (!preset) return;
+    this.paletteColors = [...preset];
+    storage.savePaletteColors(this.paletteColors);
     this.reactNotify();
   }
 
@@ -474,9 +595,82 @@ class PixelEditorEngine {
     this.refresh();
   }
 
+  setOnionSkinDepth(depth: number): void {
+    const clamped = Math.min(2, Math.max(1, Math.round(depth)));
+    if (clamped === this.onionSkinDepth) return;
+    this.onionSkinDepth = clamped;
+    this.refresh();
+  }
+
+  setTiledPreview(v: boolean): void {
+    this.tiledPreview = v;
+    // tickPreview(), not just reactNotify(): the preview canvas is painted imperatively on its own
+    // timer (see restartPreviewTimer), which only ever ticks once for a single-frame sprite - the
+    // common case for a 'background' (see FrameStrip.tsx), the only type this toggle is shown for.
+    // Without forcing a tick here, flipping this checkbox on a single-frame background would never
+    // actually repaint the preview until some other change happened to restart the timer.
+    this.tickPreview();
+    this.reactNotify();
+  }
+
+  setFillTolerance(v: number): void {
+    this.fillTolerance = Math.min(100, Math.max(0, Math.round(v)));
+    this.reactNotify();
+  }
+
+  setDitherEnabled(v: boolean): void {
+    this.ditherEnabled = v;
+    this.reactNotify();
+  }
+
+  /** Swaps the primary (`color`) and secondary (`gradientColor`) active colors - the "X" shortcut
+   *  (see onKeyDown) and the gradient panel's own swap button share this. */
+  swapColors(): void {
+    const c = this.color;
+    this.color = this.gradientColor;
+    this.gradientColor = c;
+    this.reactNotify();
+  }
+
   setSymmetry(mode: SymmetryMode): void {
     this.symmetry = mode;
     this.refresh();
+  }
+
+  /** Recenters the draggable symmetry axis on the current canvas - called whenever the canvas's own
+   *  size changes (setGridSize, trimToContent, a resizing transform, loading a different sprite) so a
+   *  stale axis position from a previous, differently-sized canvas doesn't carry over. */
+  private centerSymmetryAxis(): void {
+    this.symmetryAxisX = this.current.width / 2;
+    this.symmetryAxisY = this.current.height / 2;
+  }
+
+  /** Manual "put the axis back in the middle" action for the status bar, next to the symmetry picker. */
+  resetSymmetryAxis(): void {
+    this.centerSymmetryAxis();
+    this.refresh();
+  }
+
+  /** Starts dragging the symmetry axis handle - called from its own pointerdown (see
+   *  PixelSelectionOverlay.tsx), same "DOM handle drives an engine gesture" pattern as the selection's
+   *  resize/rotate handles. */
+  startAxisDrag(): void {
+    this.axisDragging = true;
+  }
+
+  updateAxisDrag(e: { clientX: number; clientY: number }): void {
+    if (!this.axisDragging) return;
+    const pt = this.pxFromEvent(e);
+    if (!pt) return;
+    const cellPx = this.effectiveCellPx();
+    const { width, height } = this.current;
+    this.symmetryAxisX = Math.min(width, Math.max(0, pt.px / cellPx));
+    this.symmetryAxisY = Math.min(height, Math.max(0, pt.py / cellPx));
+    this.refresh();
+  }
+
+  endAxisDrag(): void {
+    this.axisDragging = false;
   }
 
   /** Which brush-size slot the active tool reads/writes - tools outside BRUSH_SIZE_TOOLS (shapes,
@@ -710,16 +904,31 @@ class PixelEditorEngine {
    * floor unbypassable - this is the only place that ever actually changes width/height, confirmed via
    * a repo-wide search for other callers.
    */
-  setGridSize(newWidth: number, newHeight: number, type: SpriteType): void {
+  setGridSize(
+    newWidth: number,
+    newHeight: number,
+    type: SpriteType,
+    mode: ResizeMode = 'stretch',
+    anchor: ResizeAnchor = 'middle-center'
+  ): void {
     const minSize = type === 'background' ? storage.MIN_BACKGROUND_GRID_SIZE : storage.MIN_GRID_SIZE;
     const clampedWidth = Math.max(minSize, newWidth);
     const clampedHeight = Math.max(minSize, newHeight);
     if (clampedWidth === this.current.width && clampedHeight === this.current.height) return;
     this.pushUndo();
     const { width, height } = this.current;
-    this.current.frames = this.current.frames.map((layers) =>
-      layers.map((layer) => ({ ...layer, cells: storage.resampleFrame(layer.cells, width, height, clampedWidth, clampedHeight) }))
-    );
+    if (mode === 'crop') {
+      const frac = storage.RESIZE_ANCHOR_FRAC[anchor];
+      const offsetX = Math.round((clampedWidth - width) * frac.x);
+      const offsetY = Math.round((clampedHeight - height) * frac.y);
+      this.current.frames = this.current.frames.map((layers) =>
+        layers.map((layer) => ({ ...layer, cells: storage.padFrame(layer.cells, width, height, clampedWidth, clampedHeight, offsetX, offsetY) }))
+      );
+    } else {
+      this.current.frames = this.current.frames.map((layers) =>
+        layers.map((layer) => ({ ...layer, cells: storage.resampleFrame(layer.cells, width, height, clampedWidth, clampedHeight) }))
+      );
+    }
     this.current.width = clampedWidth;
     this.current.height = clampedHeight;
     this.zoomScale = this.defaultZoomForSize(Math.max(clampedWidth, clampedHeight));
@@ -729,8 +938,81 @@ class PixelEditorEngine {
     this.selection = null;
     this.lassoPoints = null;
     this.selectionMask = null;
+    this.centerSymmetryAxis();
     this.recomputeCanvasSize();
     this.refresh();
+  }
+
+  /** Auto-crops fully-transparent borders shared by every layer of every frame (a "content" pixel in
+   *  any frame/layer keeps that column/row for all of them, since every frame in a sprite must share
+   *  one size) - the one-click counterpart to a manual crop resize. No-op when there's no content at
+   *  all, or the content already fills the canvas exactly. */
+  trimToContent(): void {
+    const { width, height, frames } = this.current;
+    let x0 = width, y0 = height, x1 = -1, y1 = -1;
+    frames.forEach((layers) => {
+      layers.forEach((layer) => {
+        const cells = layer.cells;
+        for (let y = 0; y < height; y++) {
+          const rowStart = y * width;
+          for (let x = 0; x < width; x++) {
+            if (!cells[rowStart + x]) continue;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+          }
+        }
+      });
+    });
+    if (x1 < x0) return;
+    // Trimming only ever shrinks - never let it go below the type-appropriate floor that setGridSize
+    // itself enforces (300 for backgrounds, 4 otherwise), by growing the trim bounds back out (still
+    // within the original canvas, which is always >= that floor already) before applying them.
+    const minSize = this.current.type === 'background' ? storage.MIN_BACKGROUND_GRID_SIZE : storage.MIN_GRID_SIZE;
+    [x0, x1] = this.expandRangeToMin(x0, x1, width, minSize);
+    [y0, y1] = this.expandRangeToMin(y0, y1, height, minSize);
+    const newWidth = x1 - x0 + 1;
+    const newHeight = y1 - y0 + 1;
+    if (newWidth === width && newHeight === height && x0 === 0 && y0 === 0) return;
+    this.pushUndo();
+    this.current.frames = this.current.frames.map((layers) =>
+      layers.map((layer) => ({ ...layer, cells: storage.padFrame(layer.cells, width, height, newWidth, newHeight, -x0, -y0) }))
+    );
+    this.current.width = newWidth;
+    this.current.height = newHeight;
+    this.zoomScale = this.defaultZoomForSize(Math.max(newWidth, newHeight));
+    this.panX = 0;
+    this.panY = 0;
+    this.selection = null;
+    this.lassoPoints = null;
+    this.selectionMask = null;
+    this.centerSymmetryAxis();
+    this.recomputeCanvasSize();
+    this.refresh();
+  }
+
+  /** Grows a [lo, hi] range (inclusive) symmetrically, clamped to [0, total-1], until it's at least
+   *  `minLen` long - used by trimToContent to keep a trim from shrinking a sprite below its type's
+   *  minimum size. Assumes `total >= minLen` (true here since the untrimmed canvas already respects
+   *  the same floor, via setGridSize), so there's always room. */
+  private expandRangeToMin(lo: number, hi: number, total: number, minLen: number): [number, number] {
+    const deficit = minLen - (hi - lo + 1);
+    if (deficit <= 0) return [lo, hi];
+    const growLeft = Math.floor(deficit / 2);
+    const growRight = deficit - growLeft;
+    lo -= growLeft;
+    hi += growRight;
+    if (lo < 0) {
+      hi += -lo;
+      lo = 0;
+    }
+    if (hi > total - 1) {
+      lo -= hi - (total - 1);
+      hi = total - 1;
+    }
+    lo = Math.max(0, lo);
+    return [lo, hi];
   }
 
   // --- layers ---
@@ -754,6 +1036,23 @@ class PixelEditorEngine {
     const { width, height } = this.current;
     const layers = this.layers();
     layers.push(storage.makeLayer(storage.emptyFrame(width, height), `Layer ${layers.length + 1}`));
+    this.activeLayerIndex = layers.length - 1;
+    this.refresh();
+  }
+
+  /** Adds a new layer from an uploaded photo, resampled to the sprite's exact canvas size (unlike
+   *  pixelateImageFile's own aspect-preserving fit, which usually won't be exactly width x height) and
+   *  set to half opacity so it reads as a trace reference over existing art rather than opaque content. */
+  async importImageAsLayer(file: File): Promise<void> {
+    if (this.layers().length >= LAYER_LIMIT) return;
+    const { width, height } = this.current;
+    const result = await pixelateImageFile(file, width, height);
+    const cells = storage.resampleFrame(result.frame, result.width, result.height, width, height);
+    this.pushUndo();
+    const layers = this.layers();
+    const layer = storage.makeLayer(cells, `Reference ${layers.length + 1}`);
+    layer.opacity = 0.5;
+    layers.push(layer);
     this.activeLayerIndex = layers.length - 1;
     this.refresh();
   }
@@ -902,6 +1201,40 @@ class PixelEditorEngine {
     return this.current.frames.length >= FRAME_LIMIT;
   }
 
+  /** Cyclically shifts every layer of the current frame by half the canvas's width/height, so a seam
+   *  between tiled repeats of a 'background' sprite (see the tiled 3x3 preview toggle) lands in the
+   *  middle of the canvas where it's easy to see and paint over, instead of split across the four edges. */
+  applyWrapShift(): void {
+    this.pushUndo();
+    const { width, height } = this.current;
+    this.layers().forEach((layer) => {
+      layer.cells = wrapShiftFrame(layer.cells, width, height);
+    });
+    // tickPreview(), not just refresh(): seeing the effect in the tiled preview is the whole point of
+    // this action, and (see setTiledPreview's own comment) the preview canvas won't otherwise repaint
+    // on its own for a single-frame 'background' sprite.
+    this.tickPreview();
+    this.refresh();
+  }
+
+  /** Copies one layer (by index, in the *current* frame) onto every other frame - appended as a new
+   *  top layer there, skipped for any frame already at LAYER_LIMIT. This is deliberately the small
+   *  version of "linked layers": a one-shot copy, not a live-shared layer identity kept in sync across
+   *  frames (that would need a bigger data-model change - see project notes). */
+  copyLayerToAllFrames(index: number): void {
+    const layers = this.layers();
+    const source = layers[index];
+    if (!source || this.current.frames.length <= 1) return;
+    this.pushUndo();
+    this.current.frames.forEach((frameLayers, fi) => {
+      if (fi === this.frameIndex || frameLayers.length >= LAYER_LIMIT) return;
+      const cloned: Layer = structuredClone(source);
+      cloned.id = storage.uid('layer');
+      frameLayers.push(cloned);
+    });
+    this.refresh();
+  }
+
   // --- transform ---
 
   /**
@@ -935,6 +1268,7 @@ class PixelEditorEngine {
     this.selection = null;
     this.lassoPoints = null;
     this.selectionMask = null;
+    this.centerSymmetryAxis();
     this.recomputeCanvasSize();
     this.refresh();
   }
@@ -986,6 +1320,36 @@ class PixelEditorEngine {
       this.pasteClipboard();
       return;
     }
+    if ((e.ctrlKey || e.metaKey) && key === 'a') {
+      e.preventDefault();
+      this.selectAll();
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && key === 'x') {
+      e.preventDefault();
+      this.cutSelection();
+      return;
+    }
+    if ((key === 'delete' || key === 'backspace') && this.selection) {
+      e.preventDefault();
+      this.pushUndo();
+      this.clearFrameRegion(this.selection);
+      this.refresh();
+      return;
+    }
+    if (key === 'x') {
+      e.preventDefault();
+      this.swapColors();
+      return;
+    }
+    if (key === ' ') {
+      e.preventDefault();
+      if (!this.spacePanActive) {
+        this.spacePanActive = true;
+        if (this.canvas) this.canvas.style.cursor = 'grab';
+      }
+      return;
+    }
     if (key === 'escape') {
       if (this.curvePhase) {
         this.cancelCurve();
@@ -1000,8 +1364,9 @@ class PixelEditorEngine {
     }
     if (this.selection && (key === 'arrowup' || key === 'arrowdown' || key === 'arrowleft' || key === 'arrowright')) {
       e.preventDefault();
-      const dx = key === 'arrowleft' ? -1 : key === 'arrowright' ? 1 : 0;
-      const dy = key === 'arrowup' ? -1 : key === 'arrowdown' ? 1 : 0;
+      const step = e.shiftKey ? 10 : 1;
+      const dx = (key === 'arrowleft' ? -1 : key === 'arrowright' ? 1 : 0) * step;
+      const dy = (key === 'arrowup' ? -1 : key === 'arrowdown' ? 1 : 0) * step;
       this.nudgeSelection(dx, dy);
       return;
     }
@@ -1016,6 +1381,34 @@ class PixelEditorEngine {
     if (TOOL_KEYS[key]) {
       this.setTool(TOOL_KEYS[key]);
     }
+  }
+
+  private onKeyUp(e: KeyboardEvent): void {
+    if (e.key === ' ') {
+      this.spacePanActive = false;
+      if (!this.middlePanActive && this.canvas) this.canvas.style.cursor = '';
+    }
+  }
+
+  /** Ctrl+A: select the whole canvas - switches to the Select tool if a non-selection tool was active,
+   *  same as clicking it would, so the settled selection's border/handles actually show up. */
+  selectAll(): void {
+    const { width, height } = this.current;
+    this.selection = { x0: 0, y0: 0, x1: width - 1, y1: height - 1 };
+    this.lassoPoints = null;
+    this.selectionMask = null;
+    if (!SELECTION_TOOLS.has(this.tool)) this.tool = 'select';
+    this.reactNotify();
+  }
+
+  /** Ctrl+X: copy the selection then clear it in place - copySelection reads pixels first, so order
+   *  with the clear below doesn't matter, but pushUndo has to happen before the mutation either way. */
+  cutSelection(): void {
+    if (!SELECTION_TOOLS.has(this.tool) || !this.selection) return;
+    this.copySelection();
+    this.pushUndo();
+    this.clearFrameRegion(this.selection);
+    this.refresh();
   }
 
   // --- pointer / drawing gesture ---
@@ -1088,6 +1481,7 @@ class PixelEditorEngine {
     this.eraseOverride = false;
     this.strokeSnapshot = null;
     this.strokePoints = [];
+    this.replaceTarget = undefined;
     if (this.curvePhase === 'drag-end' || this.curveDraggingControl) {
       this.curveStart = null;
       this.curveEnd = null;
@@ -1651,10 +2045,11 @@ class PixelEditorEngine {
     // independent of `painting`/tool-specific state entirely, so it can't trigger a draw action and
     // doesn't care what a concurrent primary-button gesture is doing. preventDefault suppresses the
     // browser's own middle-click autoscroll mode, which would otherwise also arm on this same event.
-    if (e.button === 1) {
+    if (e.button === 1 || (e.button === 0 && this.spacePanActive)) {
       e.preventDefault();
       this.middlePanActive = true;
       this.middlePanLast = { x: e.clientX, y: e.clientY };
+      if (this.canvas) this.canvas.style.cursor = 'grabbing';
       this.canvas?.setPointerCapture(e.pointerId);
       return;
     }
@@ -1740,9 +2135,16 @@ class PixelEditorEngine {
       const frame = this.activeCells();
       const { width, height } = this.current;
       const fillColor = this.eraseOverride ? null : this.color;
-      this.mirrorCells(cell.x, cell.y).forEach((m) => {
-        this.floodFill(frame, width, height, m.x, m.y, frame[m.y * width + m.x], fillColor);
-      });
+      if (e.shiftKey) {
+        // Shift+click = global replace: every pixel in the layer matching the clicked color (within
+        // tolerance), not just the contiguous region a plain click would flood-fill.
+        const target = frame[cell.y * width + cell.x];
+        this.globalReplace(frame, target, fillColor, this.fillTolerance);
+      } else {
+        this.mirrorCells(cell.x, cell.y).forEach((m) => {
+          this.floodFill(frame, width, height, m.x, m.y, frame[m.y * width + m.x], fillColor, this.fillTolerance);
+        });
+      }
       if (fillColor) this.addSavedColor(fillColor);
       this.refresh();
     } else if (this.tool === 'spray') {
@@ -1756,6 +2158,10 @@ class PixelEditorEngine {
     } else {
       this.lastPaintCell = null;
       this.beginStroke();
+      if (this.tool === 'replace') {
+        const { width } = this.current;
+        this.replaceTarget = this.activeCells()[cell.y * width + cell.x];
+      }
       this.paintCell(cell.x, cell.y);
     }
   }
@@ -1766,10 +2172,17 @@ class PixelEditorEngine {
       const dx = e.clientX - this.middlePanLast.x;
       const dy = e.clientY - this.middlePanLast.y;
       this.middlePanLast = { x: e.clientX, y: e.clientY };
-      const wrap = this.canvas?.parentElement?.parentElement as HTMLElement | null;
-      if (wrap) {
-        wrap.scrollLeft -= dx;
-        wrap.scrollTop -= dy;
+      const inner = this.canvas?.parentElement as HTMLElement | null;
+      if (inner) {
+        // Always the transform, never native scroll: a Photoshop-style hand-drag moves 1:1 with the
+        // mouse for as long as it's held, with no clamp at the canvas's own edge (unlike scrollLeft/Top,
+        // which self-clamp to [0, scrollWidth-clientWidth] and would otherwise hard-stop the drag right
+        // at the last visible pixel). Written directly to the DOM rather than through reactNotify() for
+        // the same reason absorbPanCorrection does - one drag can fire many pointermoves between
+        // renders, and there's nothing else on screen that needs to react to panX/panY moving.
+        this.panX += dx;
+        this.panY += dy;
+        inner.style.transform = `translate(${this.panX}px, ${this.panY}px)`;
       }
       return;
     }
@@ -1854,7 +2267,7 @@ class PixelEditorEngine {
     if (this.shapeStart) {
       const end = e.shiftKey ? this.constrainShapeEnd(this.shapeStart, cell) : cell;
       this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(this.shapeStart, end)));
-    } else if (this.tool === 'pen' || this.tool === 'eraser') {
+    } else if (this.tool === 'pen' || this.tool === 'eraser' || this.tool === 'shade' || this.tool === 'replace') {
       this.paintCell(cell.x, cell.y, true);
     }
   }
@@ -1863,6 +2276,7 @@ class PixelEditorEngine {
     if (this.middlePanActive) {
       this.middlePanActive = false;
       this.middlePanLast = null;
+      if (this.canvas) this.canvas.style.cursor = this.spacePanActive ? 'grab' : '';
       return;
     }
     if (!this.painting) return;
@@ -1983,6 +2397,7 @@ class PixelEditorEngine {
     this.strokeSnapshot = null;
     this.strokePoints = [];
     this.eraseOverride = false;
+    this.replaceTarget = undefined;
     this.reactNotify();
   }
 
@@ -2122,7 +2537,9 @@ class PixelEditorEngine {
           t = ((x + 0.5 - start.x) * dx + (y + 0.5 - start.y) * dy) / lenSq;
           t = Math.min(1, Math.max(0, t));
         }
-        const color = rgbToHex(sr + (er - sr) * t, sg + (eg - sg) * t, sb + (eb - sb) * t);
+        const color = this.ditherEnabled
+          ? ditherColorAt(x, y, startColor, endColor, t)
+          : rgbToHex(sr + (er - sr) * t, sg + (eg - sg) * t, sb + (eb - sb) * t);
         out.push({ x, y, color });
       }
     }
@@ -2149,6 +2566,11 @@ class PixelEditorEngine {
    * points beyond the start/end axis natively - the one case it doesn't match is a zero-length axis
    * (start === end, e.g. right on mousedown before any drag), which paints nothing at all rather than a
    * solid color, so that case is special-cased to match gradientCellsPreview's own `t = 0.5` default.
+   *
+   * When dither mode is on, the smooth native gradient above would be a lie - the actual commit (see
+   * gradientCellsPreview, called from onPointerUp) is a per-cell Bayer-dithered stipple, not a blend, so
+   * this falls back to painting per-cell with the same ditherColorAt() call instead, trading the native
+   * gradient's speed for a preview that matches what dragging actually produces.
    */
   private drawGradientPreviewOverlay(): void {
     if (!this.ctx || !this.gradientStart || !this.gradientEnd) return;
@@ -2165,10 +2587,24 @@ class PixelEditorEngine {
     ctx.clip();
     const dx = this.gradientEnd.x - this.gradientStart.x;
     const dy = this.gradientEnd.y - this.gradientStart.y;
-    if (dx === 0 && dy === 0) {
+    if (this.ditherEnabled) {
+      const lenSq = dx * dx + dy * dy;
+      for (let y = box.y0; y <= box.y1; y++) {
+        for (let x = box.x0; x <= box.x1; x++) {
+          let t = 0.5;
+          if (lenSq > 0) {
+            t = ((x + 0.5 - this.gradientStart.x) * dx + (y + 0.5 - this.gradientStart.y) * dy) / lenSq;
+            t = Math.min(1, Math.max(0, t));
+          }
+          ctx.fillStyle = ditherColorAt(x, y, startColor, endColor, t);
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+    } else if (dx === 0 && dy === 0) {
       const [sr, sg, sb] = hexToRgb(startColor);
       const [er, eg, eb] = hexToRgb(endColor);
       ctx.fillStyle = rgbToHex((sr + er) / 2, (sg + eg) / 2, (sb + eb) / 2);
+      ctx.fillRect(box.x0, box.y0, w, h);
     } else {
       const gradient = ctx.createLinearGradient(
         this.gradientStart.x + 0.5,
@@ -2179,8 +2615,8 @@ class PixelEditorEngine {
       gradient.addColorStop(0, startColor);
       gradient.addColorStop(1, endColor);
       ctx.fillStyle = gradient;
+      ctx.fillRect(box.x0, box.y0, w, h);
     }
-    ctx.fillRect(box.x0, box.y0, w, h);
     ctx.restore();
     this.reactNotify();
   }
@@ -2242,21 +2678,69 @@ class PixelEditorEngine {
       const x = Math.round(this.sprayPointerCell.x + Math.cos(angle) * r);
       const y = Math.round(this.sprayPointerCell.y + Math.sin(angle) * r);
       this.mirrorCells(x, y).forEach((m) => {
-        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height) frame[m.y * width + m.x] = color;
+        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height) {
+          frame[m.y * width + m.x] = this.ditherEnabled && color ? ditherColorAt(m.x, m.y, color, this.gradientColor, 0.5) : color;
+        }
       });
     }
     if (color) this.addSavedColor(color);
     this.refresh();
   }
 
+  /**
+   * The reflection/rotation(s) to apply around the symmetry axis, expressed as transforms on a point's
+   * position *relative* to the axis (relX, relY) - so every mode shares one final "map relative back to
+   * absolute" step in mirrorCells below, instead of each mode hand-rolling its own absolute-coordinate
+   * formula. 'vertical'/'horizontal'/'both' match the old fixed-center-only behavior exactly when
+   * symmetryAxisX/Y sit at the canvas center (see mirrorCells's own doc comment). 'diagonal' reflects
+   * across both diagonals through the axis point (good for coral/starfish silhouettes); 'radial' rotates
+   * 90°/180°/270° around it instead of mirroring.
+   */
+  private symmetryTransforms(): ((relX: number, relY: number) => { rx: number; ry: number })[] {
+    switch (this.symmetry) {
+      case 'vertical':
+        return [(rx, ry) => ({ rx: -rx, ry })];
+      case 'horizontal':
+        return [(rx, ry) => ({ rx, ry: -ry })];
+      case 'both':
+        return [
+          (rx, ry) => ({ rx: -rx, ry }),
+          (rx, ry) => ({ rx, ry: -ry }),
+          (rx, ry) => ({ rx: -rx, ry: -ry }),
+        ];
+      case 'diagonal':
+        return [
+          (rx, ry) => ({ rx: ry, ry: rx }),
+          (rx, ry) => ({ rx: -ry, ry: -rx }),
+          (rx, ry) => ({ rx: -rx, ry: -ry }),
+        ];
+      case 'radial':
+        return [
+          (rx, ry) => ({ rx: -ry, ry: rx }),
+          (rx, ry) => ({ rx: -rx, ry: -ry }),
+          (rx, ry) => ({ rx: ry, ry: -rx }),
+        ];
+      default:
+        return [];
+    }
+  }
+
+  /** `x`/`y` in, plus one mirrored/rotated cell per symmetryTransforms() entry - draggable-axis-aware
+   *  (see symmetryAxisX/Y), not just a fixed canvas-center reflection. Cell centers are used for the
+   *  relative-position math (x + 0.5 - axis) so the default axis (canvas center) reproduces the old
+   *  `width - 1 - x` formula exactly, cell-for-cell, for 'vertical'/'horizontal'/'both'. */
   private mirrorCells(x: number, y: number): Cell[] {
-    const { width, height } = this.current;
     const pts: Cell[] = [{ x, y }];
-    const mirrorX = width - 1 - x;
-    const mirrorY = height - 1 - y;
-    if (this.symmetry === 'vertical' || this.symmetry === 'both') pts.push({ x: mirrorX, y });
-    if (this.symmetry === 'horizontal' || this.symmetry === 'both') pts.push({ x, y: mirrorY });
-    if (this.symmetry === 'both') pts.push({ x: mirrorX, y: mirrorY });
+    const transforms = this.symmetryTransforms();
+    if (!transforms.length) return pts;
+    const ax = this.symmetryAxisX;
+    const ay = this.symmetryAxisY;
+    const relX = x + 0.5 - ax;
+    const relY = y + 0.5 - ay;
+    transforms.forEach((fn) => {
+      const { rx, ry } = fn(relX, relY);
+      pts.push({ x: Math.round(ax + rx - 0.5), y: Math.round(ay + ry - 0.5) });
+    });
     return pts;
   }
 
@@ -2296,9 +2780,14 @@ class PixelEditorEngine {
   private applyBrushAt(x: number, y: number, color: string | null): void {
     const { width, height } = this.current;
     const frame = this.activeCells();
+    // "Dither brush": a fixed 50/50 Bayer stipple between the two active colors instead of a flat fill
+    // - only meaningful when actually painting a color (not erasing, where `color` is already null).
+    const dither = this.ditherEnabled && color !== null;
     this.brushCellsAt(x, y).forEach((cell) => {
       this.mirrorCells(cell.x, cell.y).forEach((m) => {
-        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height) frame[m.y * width + m.x] = color;
+        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height) {
+          frame[m.y * width + m.x] = dither ? ditherColorAt(m.x, m.y, color!, this.gradientColor, 0.5) : color;
+        }
       });
     });
   }
@@ -2335,7 +2824,57 @@ class PixelEditorEngine {
     this.strokePoints.splice(n - 2, 1);
   }
 
+  /** Shade tool: nudges existing pixels' HSV value up (lighten) or down (darken) instead of replacing
+   *  their color outright - `darken` comes from eraseOverride (a right-click drag darkens). Transparent
+   *  cells are left alone; there's nothing to "shade" there. */
+  private applyShadeAt(x: number, y: number, darken: boolean): void {
+    const { width, height } = this.current;
+    const frame = this.activeCells();
+    const delta = darken ? -SHADE_STEP : SHADE_STEP;
+    this.brushCellsAt(x, y).forEach((cell) => {
+      this.mirrorCells(cell.x, cell.y).forEach((m) => {
+        if (m.x < 0 || m.y < 0 || m.x >= width || m.y >= height) return;
+        const idx = m.y * width + m.x;
+        const existing = frame[idx];
+        if (!existing) return;
+        const hsv = hexToHsv(existing);
+        frame[idx] = hsvToHex(hsv.h, hsv.s, Math.min(1, Math.max(0, hsv.v + delta)));
+      });
+    });
+  }
+
+  /** Replace Color tool: only repaints cells that still exactly match the color sampled at stroke start
+   *  (see replaceTarget/onPointerDown) - so dragging over the canvas recolors every pixel of that one
+   *  color it touches, leaving everything else untouched, like a targeted find-and-replace. Unlike
+   *  Shade, Replace has no right-click ("erase") behavior (see tool.replace.desc/ERASABLE_TOOLS) - it
+   *  always paints `this.color`. */
+  private applyReplaceAt(x: number, y: number): void {
+    if (this.replaceTarget === undefined) return;
+    const { width, height } = this.current;
+    const frame = this.activeCells();
+    const newColor = this.color;
+    const target = this.replaceTarget;
+    this.brushCellsAt(x, y).forEach((cell) => {
+      this.mirrorCells(cell.x, cell.y).forEach((m) => {
+        if (m.x < 0 || m.y < 0 || m.x >= width || m.y >= height) return;
+        const idx = m.y * width + m.x;
+        if (frame[idx] === target) frame[idx] = newColor;
+      });
+    });
+  }
+
   private strokeStep(x: number, y: number): void {
+    if (this.tool === 'shade') {
+      this.applyShadeAt(x, y, this.eraseOverride);
+      this.lastPaintCell = { x, y };
+      return;
+    }
+    if (this.tool === 'replace') {
+      this.applyReplaceAt(x, y);
+      this.lastPaintCell = { x, y };
+      if (this.color) this.addSavedColor(this.color);
+      return;
+    }
     const color = this.currentPaintColor();
     this.applyBrushAt(x, y, color);
     if (this.brushSize === 1) {
@@ -2375,16 +2914,47 @@ class PixelEditorEngine {
     y1 = Math.min(height - 1, y1);
     if (x1 < x0 || y1 < y0) return [];
     const rects: SelectionBox[] = [{ x0, y0, x1, y1 }];
+    // 'vertical'/'horizontal'/'both' still mirror a rectangle to a same-shaped rectangle (just at the
+    // draggable axis's own position instead of a fixed one), so they keep the cheap dirty-rect path.
+    // 'diagonal'/'radial' can swap width/height extents unpredictably, so they fall back to marking the
+    // whole canvas dirty instead - correct either way, just not as tightly scoped a repaint (acceptable:
+    // both are new, deliberately not hot-path-optimized the way the original two modes already were).
     if (this.symmetry === 'vertical' || this.symmetry === 'both') {
-      rects.push({ x0: width - 1 - x1, x1: width - 1 - x0, y0, y1 });
+      rects.push(this.reflectRectAxis({ x0, y0, x1, y1 }, 'x'));
     }
     if (this.symmetry === 'horizontal' || this.symmetry === 'both') {
-      rects.push({ x0, x1, y0: height - 1 - y1, y1: height - 1 - y0 });
+      rects.push(this.reflectRectAxis({ x0, y0, x1, y1 }, 'y'));
     }
     if (this.symmetry === 'both') {
-      rects.push({ x0: width - 1 - x1, x1: width - 1 - x0, y0: height - 1 - y1, y1: height - 1 - y0 });
+      rects.push(this.reflectRectAxis(this.reflectRectAxis({ x0, y0, x1, y1 }, 'x'), 'y'));
     }
-    return rects;
+    if (this.symmetry === 'diagonal' || this.symmetry === 'radial') {
+      rects.push({ x0: 0, y0: 0, x1: width - 1, y1: height - 1 });
+    }
+    return rects.map((r) => this.clampRect(r)).filter((r) => r.x1 >= r.x0 && r.y1 >= r.y0);
+  }
+
+  /** Reflects a rect around the draggable symmetry axis on one axis (see mirrorCells's doc comment for
+   *  the same relative-position math at the single-cell level) - used by strokeDirtyRects only. */
+  private reflectRectAxis(r: SelectionBox, axis: 'x' | 'y'): SelectionBox {
+    if (axis === 'x') {
+      const mx0 = Math.round(2 * this.symmetryAxisX - r.x1 - 1);
+      const mx1 = Math.round(2 * this.symmetryAxisX - r.x0 - 1);
+      return { x0: mx0, x1: mx1, y0: r.y0, y1: r.y1 };
+    }
+    const my0 = Math.round(2 * this.symmetryAxisY - r.y1 - 1);
+    const my1 = Math.round(2 * this.symmetryAxisY - r.y0 - 1);
+    return { x0: r.x0, x1: r.x1, y0: my0, y1: my1 };
+  }
+
+  private clampRect(r: SelectionBox): SelectionBox {
+    const { width, height } = this.current;
+    return {
+      x0: Math.max(0, Math.min(width - 1, r.x0)),
+      x1: Math.max(0, Math.min(width - 1, r.x1)),
+      y0: Math.max(0, Math.min(height - 1, r.y0)),
+      y1: Math.max(0, Math.min(height - 1, r.y1)),
+    };
   }
 
   /**
@@ -2412,10 +2982,7 @@ class PixelEditorEngine {
     const ctx = this.ctx;
     rects.forEach((r) => {
       ctx.clearRect(r.x0, r.y0, r.x1 - r.x0 + 1, r.y1 - r.y0 + 1);
-      if (this.onionSkin && this.current.frames.length > 1) {
-        const prevIdx = (this.frameIndex - 1 + this.current.frames.length) % this.current.frames.length;
-        paintLayers(ctx, this.current.frames[prevIdx], width, height, 1, 0.3, r);
-      }
+      this.paintOnionSkin(ctx, r);
       paintLayers(ctx, this.current.frames[this.frameIndex], width, height, 1, 1, r);
     });
     if (overlay) {
@@ -2508,23 +3075,76 @@ class PixelEditorEngine {
     }
   }
 
-  private floodFill(frame: Frame, width: number, height: number, x: number, y: number, target: string | null, fillColor: string | null): void {
-    if (target === fillColor) return;
+  /** Whether two cell colors are "the same" for fill purposes: exact match always counts (including
+   *  null===null, i.e. both transparent), and above 0 tolerance, an RGB-distance-based fuzzy match also
+   *  counts (only between two actual colors - transparent never fuzzy-matches a real color, or a fill
+   *  could leak across a fully-transparent gap). `tolerance` is 0-100, scaled against the maximum
+   *  possible RGB distance so it reads as a percentage regardless of which two colors are compared. */
+  private colorsMatch(a: string | null, b: string | null, tolerance: number): boolean {
+    if (a === b) return true;
+    if (tolerance <= 0 || a === null || b === null) return false;
+    const [ar, ag, ab] = hexToRgb(a);
+    const [br, bg, bb] = hexToRgb(b);
+    const dist = Math.sqrt((ar - br) ** 2 + (ag - bg) ** 2 + (ab - bb) ** 2);
+    const maxDist = Math.sqrt(255 * 255 * 3);
+    return (dist / maxDist) * 100 <= tolerance;
+  }
+
+  /**
+   * Flood fill with an optional color-distance tolerance (see colorsMatch) - a fuzzy match still needs
+   * a `reference` snapshot taken once up front, not the live (being-mutated) `frame`: once a cell is
+   * repainted to `fillColor`, a live re-check against `target` could keep matching indefinitely if
+   * `fillColor` itself happens to sit within tolerance of `target` (fillColor never changes across the
+   * scan), which would loop forever re-queueing already-filled neighbors. Snapshotting up front and
+   * tracking `visited` separately sidesteps that entirely, and is pixel-identical to the old exact-match
+   * algorithm when tolerance is 0.
+   */
+  private floodFill(
+    frame: Frame,
+    width: number,
+    height: number,
+    x: number,
+    y: number,
+    target: string | null,
+    fillColor: string | null,
+    tolerance = 0
+  ): void {
+    if (this.colorsMatch(target, fillColor, tolerance)) return;
+    const reference = tolerance > 0 ? frame.slice() : frame;
+    const visited = tolerance > 0 ? new Uint8Array(width * height) : null;
     // Packed 1D indices on a plain number[] stack, not [number, number] tuples - avoids allocating
     // a small array object per visited cell (up to width*height of them on a large canvas), which
     // mattered once a background-sized fill made this the dominant cost of the fill tool. Bounds are
     // checked before pushing (not after popping), so an out-of-range neighbor never round-trips
     // through the stack at all.
     const stack: number[] = [y * width + x];
+    if (visited) visited[y * width + x] = 1;
     while (stack.length) {
       const idx = stack.pop()!;
-      if (frame[idx] !== target) continue;
+      if (!this.colorsMatch(reference[idx], target, tolerance)) continue;
       frame[idx] = fillColor;
       const cx = idx % width;
-      if (cx + 1 < width) stack.push(idx + 1);
-      if (cx - 1 >= 0) stack.push(idx - 1);
-      if (idx + width < width * height) stack.push(idx + width);
-      if (idx - width >= 0) stack.push(idx - width);
+      const tryPush = (idx2: number) => {
+        if (!visited) {
+          stack.push(idx2);
+        } else if (!visited[idx2]) {
+          visited[idx2] = 1;
+          stack.push(idx2);
+        }
+      };
+      if (cx + 1 < width) tryPush(idx + 1);
+      if (cx - 1 >= 0) tryPush(idx - 1);
+      if (idx + width < width * height) tryPush(idx + width);
+      if (idx - width >= 0) tryPush(idx - width);
+    }
+  }
+
+  /** Shift+click on the fill tool: replaces every pixel in the layer matching `target` (within
+   *  tolerance), not just the contiguous region floodFill would reach - a global find-and-replace. */
+  private globalReplace(frame: Frame, target: string | null, fillColor: string | null, tolerance: number): void {
+    const reference = frame.slice();
+    for (let i = 0; i < reference.length; i++) {
+      if (this.colorsMatch(reference[i], target, tolerance)) frame[i] = fillColor;
     }
   }
 
@@ -2555,6 +3175,68 @@ class PixelEditorEngine {
    *  overlay now (PixelSelectionOverlay.tsx), which also means their live updates during a drag now
    *  need a reactNotify()/refresh() to reach that overlay - see the pointer handlers that touch
    *  selectionDraft/curveControl for where that was added. */
+  /** Tints a composited frame red-ish or blue-ish (via 'source-atop', which only recolors already-
+   *  opaque pixels, leaving transparent ones transparent) onto the reused onionBitmap scratch canvas,
+   *  then blits it onto `targetCtx` at `alpha` - one tinted onion-skin frame per call, see
+   *  paintOnionSkin. `region` (canvas cell coords) restricts the blit to that sub-rectangle, same as
+   *  paintLayers' own `region` param, for redrawRegions' scoped repaints. */
+  private paintTintedOnion(
+    targetCtx: CanvasRenderingContext2D,
+    layers: Layer[],
+    width: number,
+    height: number,
+    alpha: number,
+    tintColor: string,
+    region?: SelectionBox
+  ): void {
+    if (!this.onionBitmap) this.onionBitmap = document.createElement('canvas');
+    const bmp = this.onionBitmap;
+    if (bmp.width !== width || bmp.height !== height) {
+      bmp.width = width;
+      bmp.height = height;
+    }
+    const bctx = bmp.getContext('2d')!;
+    bctx.clearRect(0, 0, width, height);
+    paintLayers(bctx, layers, width, height, 1);
+    bctx.globalCompositeOperation = 'source-atop';
+    bctx.fillStyle = tintColor;
+    bctx.fillRect(0, 0, width, height);
+    bctx.globalCompositeOperation = 'source-over';
+    targetCtx.save();
+    targetCtx.globalAlpha = alpha;
+    if (region) {
+      const w = region.x1 - region.x0 + 1;
+      const h = region.y1 - region.y0 + 1;
+      targetCtx.drawImage(bmp, region.x0, region.y0, w, h, region.x0, region.y0, w, h);
+    } else {
+      targetCtx.drawImage(bmp, 0, 0);
+    }
+    targetCtx.restore();
+  }
+
+  /**
+   * Real onion skin: up to onionSkinDepth frames before (tinted red-ish) and after (tinted blue-ish)
+   * the active one, each one step fainter than the last (alpha 0.3, 0.15, ...) - unlike the old fixed
+   * "previous frame only, flat 0.3 alpha" version. Skipped entirely when onionSkin is off or there's
+   * only one frame to begin with. `region` threads through to redrawRegions' scoped repaints the same
+   * way paintLayers' own `region` param does.
+   */
+  private paintOnionSkin(ctx: CanvasRenderingContext2D, region?: SelectionBox): void {
+    if (!this.onionSkin || this.current.frames.length <= 1) return;
+    const { width, height } = this.current;
+    const total = this.current.frames.length;
+    for (let d = 1; d <= this.onionSkinDepth; d++) {
+      const idx = ((this.frameIndex - d) % total + total) % total;
+      if (idx === this.frameIndex) continue;
+      this.paintTintedOnion(ctx, this.current.frames[idx], width, height, 0.3 / d, '#ff4d4d', region);
+    }
+    for (let d = 1; d <= this.onionSkinDepth; d++) {
+      const idx = (this.frameIndex + d) % total;
+      if (idx === this.frameIndex) continue;
+      this.paintTintedOnion(ctx, this.current.frames[idx], width, height, 0.3 / d, '#4d94ff', region);
+    }
+  }
+
   drawGrid(overlayCells?: Cell[]): void {
     if (!this.canvas || !this.ctx) return;
     const { width, height } = this.current;
@@ -2562,10 +3244,7 @@ class PixelEditorEngine {
     const ctx = this.ctx;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    if (this.onionSkin && this.current.frames.length > 1) {
-      const prevIdx = (this.frameIndex - 1 + this.current.frames.length) % this.current.frames.length;
-      paintLayers(ctx, this.current.frames[prevIdx], width, height, 1, 0.3);
-    }
+    this.paintOnionSkin(ctx);
 
     // During a move/resize/rotate drag, the base scene (everything but the dragged region, which is
     // drawn separately below at its live offset) hasn't changed since the gesture started - only its
@@ -2665,6 +3344,19 @@ class PixelEditorEngine {
     ctx.clearRect(0, 0, this.previewCanvas.width, this.previewCanvas.height);
     ctx.imageSmoothingEnabled = false;
     const bmp = this.compositeToBitmap(frames[this.previewFrame], width, height);
+    if (this.tiledPreview) {
+      const tileCellPx = cellPx / 3;
+      const tileW = width * tileCellPx;
+      const tileH = height * tileCellPx;
+      for (let ty = -1; ty <= 1; ty++) {
+        for (let tx = -1; tx <= 1; tx++) {
+          const dx = this.previewCanvas.width / 2 + tx * tileW - tileW / 2;
+          const dy = this.previewCanvas.height / 2 + ty * tileH - tileH / 2;
+          ctx.drawImage(bmp, 0, 0, width, height, dx, dy, tileW, tileH);
+        }
+      }
+      return;
+    }
     const dx = (this.previewCanvas.width - width * cellPx) / 2;
     const dy = (this.previewCanvas.height - height * cellPx) / 2;
     ctx.drawImage(bmp, 0, 0, width, height, dx, dy, width * cellPx, height * cellPx);
@@ -2802,6 +3494,60 @@ class PixelEditorEngine {
     off.toBlob((blob) => this.downloadBlob(blob, `${name}_sheet.png`));
   }
 
+  /** Exports the current sprite as a standalone .json file (not PNG) - lets an artist back up or share
+   *  a sprite's actual editable data, not just a flattened image. GIF export was considered but
+   *  intentionally skipped (would need a new dependency, out of scope for this pass). */
+  exportSpriteJson(): void {
+    const blob = new Blob([JSON.stringify(this.current, null, 2)], { type: 'application/json' });
+    const name = (this.current.name || 'sprite').trim() || 'sprite';
+    this.downloadBlob(blob, `${name}.json`);
+  }
+
+  /** Reads a .json file exported by exportSpriteJson (or hand-edited/older-format equivalent) and loads
+   *  it as the current, unsaved sprite - always through storage.normalizeSprite so a differently-shaped
+   *  or older-schema file gets the same width/height/layers backfill a sprite loaded from local storage
+   *  would. Treated as brand new (id cleared) rather than silently overwriting whatever library entry
+   *  the file's own id might collide with. */
+  importSpriteFromFile(file: File, confirmDiscard: () => boolean, onError: (msg: string) => void): void {
+    if (this.dirty && !confirmDiscard()) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const parsed = JSON.parse(String(reader.result));
+        const normalized = storage.normalizeSprite(parsed);
+        if (!normalized || !Array.isArray(normalized.frames) || !normalized.frames.length || typeof normalized.width !== 'number' || typeof normalized.height !== 'number') {
+          throw new Error('invalid sprite file');
+        }
+        normalized.id = null;
+        this.current = normalized;
+        this.frameIndex = 0;
+        this.activeLayerIndex = 0;
+        this.previewFrame = 0;
+        this.selection = null;
+        this.lassoPoints = null;
+        this.selectionMask = null;
+        this.moveBuffer = null;
+        this.panX = 0;
+        this.panY = 0;
+        this.zoomScale = this.defaultZoomForSize(Math.max(normalized.width, normalized.height));
+        this.clearCurveState();
+        this.undoStack = [];
+        this.redoStack = [];
+        this.dirty = true;
+        this.loadToken += 1;
+        this.centerSymmetryAxis();
+        this.recomputeCanvasSize();
+        this.restartPreviewTimer();
+        this.refresh();
+      } catch (err) {
+        console.error('importSpriteFromFile failed', err);
+        onError(t('error.importFailed'));
+      }
+    };
+    reader.onerror = () => onError(t('error.importFailed'));
+    reader.readAsText(file);
+  }
+
   // --- sprite library ---
 
   newSprite(confirmDiscard: () => boolean): void {
@@ -2815,11 +3561,13 @@ class PixelEditorEngine {
     this.moveBuffer = null;
     this.panX = 0;
     this.panY = 0;
+    this.zoomScale = this.defaultZoomForSize(Math.max(this.current.width, this.current.height));
     this.clearCurveState();
     this.undoStack = [];
     this.redoStack = [];
     this.dirty = false;
     this.loadToken += 1;
+    this.centerSymmetryAxis();
     this.recomputeCanvasSize();
     this.restartPreviewTimer();
     this.refresh();
@@ -2872,11 +3620,13 @@ class PixelEditorEngine {
     this.moveBuffer = null;
     this.panX = 0;
     this.panY = 0;
+    this.zoomScale = this.defaultZoomForSize(Math.max(this.current.width, this.current.height));
     this.clearCurveState();
     this.undoStack = [];
     this.redoStack = [];
     this.dirty = false;
     this.loadToken += 1;
+    this.centerSymmetryAxis();
     this.recomputeCanvasSize();
     this.restartPreviewTimer();
     this.refresh();
@@ -2905,6 +3655,7 @@ class PixelEditorEngine {
       this.panY = 0;
       this.clearCurveState();
       this.loadToken += 1;
+      this.centerSymmetryAxis();
       this.recomputeCanvasSize();
       this.restartPreviewTimer();
       this.refresh();

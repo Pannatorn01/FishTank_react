@@ -4,6 +4,10 @@ import { useLanguage } from '@/lib/i18n';
 import { paintFrameCells } from '@/lib/pixelMath';
 import type { Layer } from '@/lib/types';
 
+/** File extensions accepted by the "Import image as layer" input - matches what pixelateImageFile
+ *  (lib/imageImport.ts) can decode via the browser's own <img> element. */
+const IMPORT_IMAGE_ACCEPT = 'image/*';
+
 const THUMB_PX = 26;
 
 function LayerThumb({ layer, width, height }: { layer: Layer; width: number; height: number }) {
@@ -23,7 +27,7 @@ function LayerThumb({ layer, width, height }: { layer: Layer; width: number; hei
   return <canvas ref={ref} width={THUMB_PX} height={THUMB_PX} className="layer-thumb pixelated" />;
 }
 
-export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
+export function LayerPanel({ engine, onError }: { engine: PixelEditorEngine; onError: (msg: string) => void }) {
   const { t } = useLanguage();
   const { width, height } = engine.current;
   const layers = engine.current.frames[engine.frameIndex];
@@ -34,6 +38,7 @@ export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
   const grabbedHandleRef = useRef(false);
+  const importImageInputRef = useRef<HTMLInputElement>(null);
 
   const endDrag = () => {
     setDragIndex(null);
@@ -51,15 +56,42 @@ export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
     <div className="layer-panel flex-1">
       <div className="panel-title">
         {t('layer.title')}
-        <button
-          type="button"
-          className="panel-title-add"
-          title={t('layer.add')}
-          disabled={limitReached}
-          onClick={() => engine.addLayer()}
-        >
-          <i className="fa-solid fa-plus" />
-        </button>
+        <span className="panel-title-actions">
+          <button
+            type="button"
+            className="panel-title-add"
+            title={t('layer.importImageTitle')}
+            disabled={limitReached}
+            onClick={() => importImageInputRef.current?.click()}
+          >
+            <i className="fa-solid fa-file-import" />
+          </button>
+          <input
+            ref={importImageInputRef}
+            type="file"
+            accept={IMPORT_IMAGE_ACCEPT}
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = '';
+              if (file) {
+                engine.importImageAsLayer(file).catch((err) => {
+                  console.error('importImageAsLayer failed', err);
+                  onError(t('error.importFailed'));
+                });
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="panel-title-add"
+            title={t('layer.add')}
+            disabled={limitReached}
+            onClick={() => engine.addLayer()}
+          >
+            <i className="fa-solid fa-plus" />
+          </button>
+        </span>
       </div>
       <div className="layer-list">
         {rows.map(({ layer, index }) => (
@@ -150,6 +182,18 @@ export function LayerPanel({ engine }: { engine: PixelEditorEngine }) {
                 }}
               >
                 {Math.round(layer.opacity * 100)}%
+              </button>
+              <button
+                type="button"
+                className="layer-copy-all-frames"
+                title={t('layer.copyToAllFrames')}
+                disabled={engine.current.frames.length <= 1}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  engine.copyLayerToAllFrames(index);
+                }}
+              >
+                <i className="fa-solid fa-copy" />
               </button>
               <button
                 type="button"

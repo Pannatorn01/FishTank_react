@@ -1,4 +1,5 @@
 import { HANDLE_CURSORS, HANDLE_SIZE, ROTATE_HANDLE_RADIUS, type PixelEditorEngine } from '@/hooks/usePixelEditor';
+import { t } from '@/lib/i18n';
 
 /** Everything drawn "on top of" the pixel editor's <canvas> that isn't sprite content itself - the
  *  select tool's border/resize handles/rotate handle, the in-progress marquee while dragging one out,
@@ -48,14 +49,62 @@ export function PixelSelectionOverlay({ engine }: { engine: PixelEditorEngine })
         />
       )}
       {engine.symmetry !== 'none' && (
-        <svg className="pixel-select-stalk-svg" width={width * cellPx} height={height * cellPx}>
-          {(engine.symmetry === 'vertical' || engine.symmetry === 'both') && (
-            <line x1={(width * cellPx) / 2} y1={0} x2={(width * cellPx) / 2} y2={height * cellPx} stroke="rgba(0,229,255,0.6)" strokeWidth={1} strokeDasharray="3 3" />
-          )}
-          {(engine.symmetry === 'horizontal' || engine.symmetry === 'both') && (
-            <line x1={0} y1={(height * cellPx) / 2} x2={width * cellPx} y2={(height * cellPx) / 2} stroke="rgba(0,229,255,0.6)" strokeWidth={1} strokeDasharray="3 3" />
-          )}
-        </svg>
+        <>
+          <svg className="pixel-select-stalk-svg" width={width * cellPx} height={height * cellPx}>
+            {(engine.symmetry === 'vertical' || engine.symmetry === 'both') && (
+              <line x1={engine.symmetryAxisX * cellPx} y1={0} x2={engine.symmetryAxisX * cellPx} y2={height * cellPx} stroke="rgba(0,229,255,0.6)" strokeWidth={1} strokeDasharray="3 3" />
+            )}
+            {(engine.symmetry === 'horizontal' || engine.symmetry === 'both') && (
+              <line x1={0} y1={engine.symmetryAxisY * cellPx} x2={width * cellPx} y2={engine.symmetryAxisY * cellPx} stroke="rgba(0,229,255,0.6)" strokeWidth={1} strokeDasharray="3 3" />
+            )}
+            {engine.symmetry === 'diagonal' && (
+              <>
+                <line
+                  x1={engine.symmetryAxisX * cellPx - 2000}
+                  y1={engine.symmetryAxisY * cellPx - 2000}
+                  x2={engine.symmetryAxisX * cellPx + 2000}
+                  y2={engine.symmetryAxisY * cellPx + 2000}
+                  stroke="rgba(0,229,255,0.6)"
+                  strokeWidth={1}
+                  strokeDasharray="3 3"
+                />
+                <line
+                  x1={engine.symmetryAxisX * cellPx - 2000}
+                  y1={engine.symmetryAxisY * cellPx + 2000}
+                  x2={engine.symmetryAxisX * cellPx + 2000}
+                  y2={engine.symmetryAxisY * cellPx - 2000}
+                  stroke="rgba(0,229,255,0.6)"
+                  strokeWidth={1}
+                  strokeDasharray="3 3"
+                />
+              </>
+            )}
+            {engine.symmetry === 'radial' && (
+              <circle
+                cx={engine.symmetryAxisX * cellPx}
+                cy={engine.symmetryAxisY * cellPx}
+                r={18}
+                fill="none"
+                stroke="rgba(0,229,255,0.6)"
+                strokeWidth={1}
+                strokeDasharray="3 3"
+              />
+            )}
+          </svg>
+          <div
+            className="pixel-symmetry-axis-handle"
+            title={t('status.symmetryAxisHandle')}
+            style={{ left: engine.symmetryAxisX * cellPx, top: engine.symmetryAxisY * cellPx }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              engine.startAxisDrag();
+              e.currentTarget.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => engine.updateAxisDrag(e)}
+            onPointerUp={() => engine.endAxisDrag()}
+            onPointerCancel={() => engine.endAxisDrag()}
+          />
+        </>
       )}
       {draft && (
         <div
