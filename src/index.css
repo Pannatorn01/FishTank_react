@@ -384,7 +384,7 @@ button.pixel-raised:not(:disabled):active {
 .pixel-scrollbar,
 * {
   scrollbar-width: auto;
-  scrollbar-color: var(--pixel-panel-hover) var(--pixel-bg-deep);
+  scrollbar-color: var(--pixel-dark-3) var(--pixel-bg-deep);
 }
 ::-webkit-scrollbar { width: 14px; height: 14px; }
 ::-webkit-scrollbar-track { background: var(--pixel-bg-deep); }
@@ -565,6 +565,14 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .editor-shell { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; }
 
 .left-rail { flex: 0 0 190px; min-width: 165px; display: flex; flex-direction: column; gap: 5px; overflow-y: auto; overflow-x: hidden; }
+.tool-group { display: flex; flex-direction: column; gap: 3px; }
+.tool-group-label {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--pixel-muted);
+  padding-left: 2px;
+}
 .tool-grid {
   display: grid;
   grid-template-columns: repeat(4, 1.75rem);
@@ -575,6 +583,21 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   box-shadow: 4px 4px 0 var(--bevel-dark);
   padding: 8px;
 }
+/* The active tool needs a much clearer signal than the accent-color background swap alone gives it on
+ * its own - some themes' accent color reads as low-contrast against the surrounding secondary buttons.
+ * Reuses .pixel-raised's own :active look (see its definition) held permanently rather than only while
+ * the mouse is down, plus a bright ring that doesn't depend on the theme accent's own contrast - so the
+ * selected tool reads as "pressed in" and outlined regardless of hue. data-variant is set by the Button
+ * component itself (see button.tsx), so this needs no extra class from ToolRail.tsx. */
+.tool-grid button[data-variant="default"] {
+  border-top-color: var(--bevel-dark);
+  border-left-color: var(--bevel-dark);
+  border-bottom-color: var(--bevel-light);
+  border-right-color: var(--bevel-light);
+  transform: translate(1px, 1px);
+  box-shadow: 0 0 0 2px var(--pixel-highlight, #fff8dc);
+}
+.tool-grid button[data-variant="default"]:hover { transform: translate(1px, 1px); }
 .tool-actions { display: flex; gap: 3px; }
 .tool-actions > * { flex: 1; }
 
@@ -596,6 +619,106 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   touch-action: none;
   flex-shrink: 0;
 }
+
+/* Wraps just the <canvas> (not the padded scroll area around it) so it shrinks to exactly the
+ * canvas's own on-screen size, still centered in .pixel-canvas-wrap by that element's own
+ * place-items:center. Gives PixelSelectionOverlay.tsx a positioning root that shares the canvas's
+ * exact coordinate origin, so its handle can be placed with the same math already used to draw
+ * everything else on the canvas, without separately measuring/subtracting any centering offset. */
+.pixel-canvas-inner { position: relative; }
+/* Grid-line overlay (PixelSelectionOverlay.tsx, toggled by showGrid) - two layered repeating
+ * gradients (vertical lines, horizontal lines) rather than canvas-drawn hairlines: the canvas is
+ * native-resolution now (1px per cell), which leaves no room to draw a line *between* cells there.
+ * width/height/backgroundImage (the cellPx-dependent spacing) come from the component. */
+.pixel-grid-overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+/* The settled selection's dashed border, and the in-progress marquee while dragging one out
+ * (selectionDraft) - both a DOM box rather than canvas-drawn, so the settled one stays visible even
+ * when the selection is moved/resized fully outside the canvas's own bitmap (Paint-style floating
+ * selection). pointer-events: none so drags on the body still land on the <canvas> beneath it, which
+ * still owns the move gesture. */
+/* "Marching ants": animated dashes, not a static dashed border - built from 4 small repeating
+ * gradients (one pair per axis, offset to opposite edges) instead of the `border` property, which has
+ * no way to animate its own dash phase. background-position is shifted by exactly one dash+gap per
+ * animation cycle so the pattern loops seamlessly. */
+.pixel-select-border {
+  position: absolute;
+  pointer-events: none;
+  background-image:
+    linear-gradient(90deg, #ffeb3b 50%, transparent 50%),
+    linear-gradient(90deg, #ffeb3b 50%, transparent 50%),
+    linear-gradient(0deg, #ffeb3b 50%, transparent 50%),
+    linear-gradient(0deg, #ffeb3b 50%, transparent 50%);
+  background-repeat: repeat-x, repeat-x, repeat-y, repeat-y;
+  background-size: 8px 2px, 8px 2px, 2px 8px, 2px 8px;
+  background-position: 0 0, 0 100%, 0 0, 100% 0;
+  animation: marching-ants 0.5s linear infinite;
+}
+@keyframes marching-ants {
+  to { background-position: 8px 0, -8px 100%, 0 -8px, 100% 8px; }
+}
+/* The lasso's own outline (an SVG <polygon>, not a rectangle - see selectionLassoOutline in
+ * usePixelEditor.ts) gets the same marching-ants effect via stroke-dashoffset instead, since a CSS
+ * background can't follow an arbitrary path the way it can a rectangular div. */
+.pixel-select-lasso-outline {
+  fill: none;
+  stroke: #ffeb3b;
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  animation: marching-ants-stroke 0.5s linear infinite;
+}
+@keyframes marching-ants-stroke {
+  to { stroke-dashoffset: -10; }
+}
+/* Brush-size footprint preview (pen/eraser/spray) - a DOM box tracking the last hovered cell
+ * (brushPreviewRect in usePixelEditor.ts), not a cursor image: a custom cursor is capped at a small
+ * pixel size by the browser (Chromium silently falls back to the default cursor past ~128px), which a
+ * large brush at a high zoom level would blow right through. left/top/width/height come from the
+ * component; the two offset outlines (light fill under, dark stroke over) keep it visible against any
+ * canvas background preset. */
+.brush-preview-outline {
+  position: absolute;
+  outline: 1.5px solid rgba(0, 0, 0, 0.85);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.12);
+  pointer-events: none;
+  box-sizing: border-box;
+}
+/* The curve tool's control-point handle glyph (shown for the whole 'bend' phase, dragging included -
+ * matches the pre-DOM-overlay canvas-drawn behavior). Hit-testing for dragging it stays on the canvas
+ * itself (isNearCurveControl, in usePixelEditor.ts) - this is purely the visible glyph, so unlike the
+ * resize/rotate handles it needs no pointer handlers of its own. */
+.pixel-curve-handle {
+  position: absolute;
+  background: #ffcc00;
+  border: 1px solid #1a1a1a;
+  pointer-events: none;
+}
+/* Resize handle squares - left/top/width/height/margin come from the component (computed from the
+ * live selection box), same DOM-overlay treatment as the border and rotate handle above. */
+.pixel-select-resize-handle {
+  position: absolute;
+  background: #ffeb3b;
+  border: 1px solid #1c2436;
+  touch-action: none;
+}
+/* width/height (from the component, matching the canvas's own CSS box) plus overflow:visible turns
+ * the <svg> into a plain absolute coordinate surface anchored at the canvas's own (0,0) - simplest
+ * way to draw the rotate handle's arbitrary-angle dashed stalk (which can extend above that box, up
+ * to the handle) or a full-span symmetry guide line, without precomputing a bounding box for either.
+ * Reused for both. A 0×0-sized SVG here (relying on overflow:visible alone) does NOT reliably paint
+ * its content in Chromium - it needs a real, non-zero intrinsic box. */
+.pixel-select-stalk-svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+/* left/top/width/height/margin all come from the component as inline styles (the handle's on-canvas
+ * position and radius are both computed there) - this only fixes its look and interaction. */
+.pixel-select-rotate-handle {
+  position: absolute;
+  background: #ffeb3b;
+  border: 1.5px solid #1c2436;
+  border-radius: 50%;
+  cursor: grab;
+  touch-action: none;
+}
+.pixel-select-rotate-handle:active { cursor: grabbing; }
 
 /*
  * Per-tool pixel-canvas cursors: a small black-on-white crosshair (the exact hotspot pixel, at SVG
@@ -674,31 +797,11 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .mini-toggle { display: flex; align-items: center; gap: 5px; }
 .zoom-controls { display: flex; align-items: center; gap: 4px; }
 #zoom-label { min-width: 32px; text-align: center; font-family: "VT323", monospace; font-size: 0.95rem; }
+.zoom-unit { margin-left: -2px; color: var(--pixel-muted); font-size: 0.8rem; }
 .toolbar-divider { width: 1px; align-self: stretch; background: var(--pixel-panel-hover); margin: 2px 0; }
-.brush-size-group { display: flex; align-items: center; gap: 3px; }
-.brush-size-btn {
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--pixel-panel-hover);
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
-  padding: 0;
-  cursor: pointer;
-  box-sizing: border-box;
-  transition: transform 80ms steps(1);
-}
-.brush-size-btn.active {
-  border-color: var(--bevel-dark);
-  border-bottom-color: var(--bevel-light);
-  border-right-color: var(--bevel-light);
-  background: var(--pixel-accent);
-  transform: translate(1px, 1px);
-}
-.brush-size-dot { display: block; background: currentColor; color: var(--pixel-text-strong); }
+.brush-size-control { gap: 6px; }
+.brush-size-slider { width: 5.5rem; accent-color: var(--pixel-accent); cursor: pointer; }
+.brush-size-unit { color: var(--pixel-muted); }
 .canvas-meta-bar {
   display: flex;
   align-items: center;
@@ -1167,12 +1270,13 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
    * tank chrome is the canvas's own clip + outline stroke (see TankEngine.draw's shapePath/stroke),
    * so a non-rectangular shape (rounded/oval) never shows a leftover rectangular box behind it. */
   overflow: hidden;
+  /* `resize` (the native drag-corner handle) is on at every zoom level, not just 100% - below that
+   * the frame is drawn smaller than its logical size, so a screen-px drag maps to a larger
+   * logical-px change (see the pointerup handler in TankCanvas dividing the measured rect by
+   * displayScale), but users still expect to grab the corner and grow the tank while zoomed out to
+   * see more of it at once, rather than having to zoom to 100% first. */
+  resize: both;
 }
-/* `resize` (the native drag-corner handle) only turns on at 100% zoom - see TankCanvas - since below
- * that the frame is drawn smaller than its logical size and a drag would feel disconnected from the
- * cursor. The W/H inputs in the action bar always work regardless of zoom, so resizing is never
- * blocked, just the corner grip specifically. */
-.tank-frame.resizable { resize: both; }
 .tank-wrap {
   position: relative;
   flex: 1;

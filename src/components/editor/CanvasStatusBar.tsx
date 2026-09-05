@@ -14,14 +14,13 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { MAX_BRUSH_SIZE, ZOOM_LEVELS } from '@/hooks/usePixelEditor';
+import { BRUSH_SIZE_TOOLS, MAX_BRUSH_SIZE, ZOOM_LEVELS } from '@/hooks/usePixelEditor';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
-import { GRID_SIZES, MAX_GRID_SIZE, MIN_GRID_SIZE } from '@/lib/storage';
-import type { CanvasBackground, SymmetryMode } from '@/lib/types';
+import { GRID_SIZES, MAX_BACKGROUND_GRID_SIZE, MAX_GRID_SIZE, MIN_BACKGROUND_GRID_SIZE, MIN_GRID_SIZE } from '@/lib/storage';
+import type { CanvasBackground, SpriteType, SymmetryMode } from '@/lib/types';
 
 const CUSTOM_SIZE_VALUE = 'custom';
-const BRUSH_SIZES = Array.from({ length: MAX_BRUSH_SIZE }, (_, i) => i + 1);
 
 const SYMMETRY_KEYS: Record<SymmetryMode, string> = {
   none: 'symmetry.none',
@@ -38,19 +37,45 @@ const CANVAS_BG_KEYS: Record<CanvasBackground, string> = {
   gray: 'status.bgGray',
 };
 
-function clampGridSize(n: number): number {
-  return Math.min(MAX_GRID_SIZE, Math.max(MIN_GRID_SIZE, Math.round(n)));
+function clampGridSize(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.round(n)));
 }
 
-export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
+export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; type: SpriteType }) {
   const { t } = useLanguage();
   const showShapeFilled = engine.tool === 'rect' || engine.tool === 'ellipse';
-  const showBrushOptions = engine.tool === 'pen' || engine.tool === 'eraser' || engine.tool === 'spray';
+  // Single source of truth (BRUSH_SIZE_TOOLS) shared with the engine's own brushSizeToolKey()/
+  // brushPreviewRect() gating - this used to be its own hardcoded tool list here, which silently fell
+  // out of sync with the engine's list when line/rect/ellipse were added to it (the UI kept hiding the
+  // control for tools that could otherwise use it).
+  const showBrushOptions = BRUSH_SIZE_TOOLS.has(engine.tool);
   const selection = engine.selection;
   const { width, height } = engine.current;
   const [customOpen, setCustomOpen] = useState(false);
   const [customWidth, setCustomWidth] = useState('');
   const [customHeight, setCustomHeight] = useState('');
+  // Raw text of the zoom % field while it's being edited - null the rest of the time, when the field
+  // just mirrors engine.zoomScale directly. Needed so an in-progress edit (e.g. typing "1" on the way
+  // to "150") isn't clobbered by the engine's own value on every keystroke's re-render.
+  const [zoomInput, setZoomInput] = useState<string | null>(null);
+
+  const applyZoomInput = (raw: string) => {
+    const n = Number(raw);
+    if (raw.trim() && Number.isFinite(n) && n > 0) engine.setZoom(n / 100);
+    setZoomInput(null);
+  };
+
+  // A background is stretched to fill the whole tank, so it's allowed a much bigger custom canvas than
+  // any other sprite kind (up to the tank's own max size - see MAX_BACKGROUND_GRID_SIZE) and, unlike
+  // any other kind, has a floor too (see MIN_BACKGROUND_GRID_SIZE): a background stretched up from a
+  // tiny canvas would look blocky at any zoom level a player would actually view the tank at. `type` is
+  // this dropdown's own live value (see the doc comment on engine.setGridSize for why that's not
+  // necessarily engine.current.type), so switching it to "Background" applies the floor immediately,
+  // before ever saving.
+  const minW = type === 'background' ? MIN_BACKGROUND_GRID_SIZE : MIN_GRID_SIZE;
+  const minH = minW;
+  const maxW = type === 'background' ? MAX_BACKGROUND_GRID_SIZE.width : MAX_GRID_SIZE;
+  const maxH = type === 'background' ? MAX_BACKGROUND_GRID_SIZE.height : MAX_GRID_SIZE;
 
   const confirmCustomSize = (e?: { preventDefault: () => void }) => {
     const w = Number(customWidth);
@@ -59,7 +84,7 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
       e?.preventDefault();
       return;
     }
-    engine.setGridSize(clampGridSize(w), clampGridSize(h));
+    engine.setGridSize(clampGridSize(w, minW, maxW), clampGridSize(h, minH, maxH), type);
     setCustomOpen(false);
   };
 
@@ -74,22 +99,53 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
           size="icon"
           variant="secondary"
           title={t('status.zoomOut')}
-          disabled={engine.zoomIndex === 0}
+          disabled={engine.zoomScale <= engine.minZoomScale()}
           onClick={() => engine.zoomOut()}
         >
           <i className="fa-solid fa-magnifying-glass-minus" />
         </Button>
-        <span id="zoom-label">{engine.zoomLabel()}</span>
+        <Input
+          type="number"
+          min={Math.round(engine.minZoomScale() * 100)}
+          max={Math.round(engine.maxZoomScale() * 100)}
+          value={zoomInput ?? String(Math.round(engine.zoomScale * 100))}
+          onChange={(e) => setZoomInput(e.target.value)}
+          onBlur={(e) => applyZoomInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') applyZoomInput(e.currentTarget.value);
+            if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur();
+          }}
+          className="w-14 h-7 px-1 text-center text-xs"
+          id="zoom-label"
+          title={t('status.zoomTypeHint')}
+          aria-label={t('status.zoomTypeHint')}
+        />
+        <span className="zoom-unit" aria-hidden="true">%</span>
         <Button
           type="button"
           size="icon"
           variant="secondary"
           title={t('status.zoomIn')}
-          disabled={engine.zoomIndex === ZOOM_LEVELS.length - 1}
+          disabled={engine.zoomScale >= engine.maxZoomScale()}
           onClick={() => engine.zoomIn()}
         >
           <i className="fa-solid fa-magnifying-glass-plus" />
         </Button>
+        <Button type="button" size="icon" variant="secondary" title={t('status.zoomFit')} onClick={() => engine.zoomToFit()}>
+          <i className="fa-solid fa-expand" />
+        </Button>
+        <Select onValueChange={(v) => engine.setZoom(Number(v))}>
+          <SelectTrigger className="w-7 px-1" title={t('status.zoomPresetsTitle')}>
+            <i className="fa-solid fa-list" />
+          </SelectTrigger>
+          <SelectContent>
+            {ZOOM_LEVELS.map((level) => (
+              <SelectItem key={level} value={String(level)}>
+                {Math.round(level * 100)}%
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <Select
@@ -102,14 +158,14 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
             return;
           }
           const [w, h] = v.split('x').map(Number);
-          engine.setGridSize(w, h);
+          engine.setGridSize(w, h, type);
         }}
       >
-        <SelectTrigger className="w-28 text-xs">
+        <SelectTrigger className="w-28 text-xs" title={t('status.gridSizeTitle')}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          {GRID_SIZES.map((size) => (
+          {GRID_SIZES.filter((size) => size >= minW).map((size) => (
             <SelectItem key={size} value={`${size}x${size}`}>
               {size}×{size}
             </SelectItem>
@@ -128,7 +184,9 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
           <AlertDialogHeader>
             <AlertDialogTitle>{t('status.gridCustomTitle')}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t('status.gridCustomDesc', { min: MIN_GRID_SIZE, max: MAX_GRID_SIZE })}
+              {type === 'background'
+                ? t('status.gridCustomDescBackground', { min: minW, maxW, maxH })
+                : t('status.gridCustomDesc', { min: minW, max: maxW })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid grid-cols-2 gap-3">
@@ -137,8 +195,8 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
               <Input
                 id="custom-grid-width"
                 type="number"
-                min={MIN_GRID_SIZE}
-                max={MAX_GRID_SIZE}
+                min={minW}
+                max={maxW}
                 value={customWidth}
                 onChange={(e) => setCustomWidth(e.target.value)}
                 onKeyDown={(e) => {
@@ -152,8 +210,8 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
               <Input
                 id="custom-grid-height"
                 type="number"
-                min={MIN_GRID_SIZE}
-                max={MAX_GRID_SIZE}
+                min={minH}
+                max={maxH}
                 value={customHeight}
                 onChange={(e) => setCustomHeight(e.target.value)}
                 onKeyDown={(e) => {
@@ -201,21 +259,31 @@ export function CanvasStatusBar({ engine }: { engine: PixelEditorEngine }) {
       )}
 
       {showBrushOptions && (
-        <div className="mini-toggle" title={t('status.brushSizeTitle')}>
-          <Label>{t('status.brushSize')}</Label>
-          <div className="brush-size-group">
-            {BRUSH_SIZES.map((n) => (
-              <button
-                key={n}
-                type="button"
-                className={`brush-size-btn${engine.brushSize === n ? ' active' : ''}`}
-                title={t('status.brushSizeValue', { n })}
-                onClick={() => engine.setBrushSize(n)}
-              >
-                <span className="brush-size-dot" style={{ width: n * 3 + 2, height: n * 3 + 2 }} />
-              </button>
-            ))}
-          </div>
+        <div className="mini-toggle brush-size-control" title={t('status.brushSizeTitle')}>
+          <Label htmlFor="brush-size-range">{t('status.brushSize')}</Label>
+          <input
+            id="brush-size-range"
+            type="range"
+            min={1}
+            max={MAX_BRUSH_SIZE}
+            step={1}
+            value={engine.brushSize}
+            onChange={(e) => engine.setBrushSize(Number(e.target.value))}
+            className="brush-size-slider"
+          />
+          <Input
+            type="number"
+            min={1}
+            max={MAX_BRUSH_SIZE}
+            value={engine.brushSize}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n)) engine.setBrushSize(n);
+            }}
+            className="w-14 h-7 px-1.5 text-center text-xs"
+            aria-label={t('status.brushSize')}
+          />
+          <span className="brush-size-unit">{t('status.brushSizeUnit')}</span>
         </div>
       )}
 

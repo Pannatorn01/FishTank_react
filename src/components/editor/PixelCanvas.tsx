@@ -1,44 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
-
-/** Minimum time between wheel-triggered zoom steps, so a single trackpad pinch/scroll gesture (which fires
- *  many small wheel events) doesn't blow through several zoom levels at once - a time gate is used instead
- *  of a delta-magnitude threshold because deltaY's scale varies by device and by WheelEvent.deltaMode. */
-const WHEEL_ZOOM_COOLDOWN_MS = 80;
-
-/** Tools that paint with the brush-size stepper (see CanvasStatusBar's `showBrushOptions`) - these get a
- *  cursor sized to the actual brush footprint instead of the static per-tool icon from index.css. */
-const BRUSH_TOOLS = new Set(['pen', 'eraser', 'spray']);
-
-/** Tools with no brush-size control - line/curve always draw a 1px stroke - but that still benefit from
- *  the same zoom-scaled footprint cursor (a single-cell square) instead of the fixed-size static icon,
- *  so the cursor's outline actually matches the cell it'll paint at any zoom level. */
-const SINGLE_CELL_CURSOR_TOOLS = new Set(['line', 'curve']);
-
-/**
- * Builds a `cursor: url(...)` value showing the brush's actual on-screen footprint: a square outline
- * `brushSize` cells wide, sized in real screen pixels at the current zoom (so it grows/shrinks live as
- * either changes) and centered on the pointer. A static CSS cursor (as used for every other tool, see
- * index.css) can't do this since it can't read `brushSize`/zoom - only inline `style` can update per
- * render. The square is centered on the pointer rather than snapped to `brushCells()`'s exact top-left
- * anchoring, since the cursor image can't know the canvas's scroll offset anyway - close enough to show
- * "how big" without pretending to be pixel-exact about "which cells."
- */
-function buildBrushCursor(brushSize: number, cellPx: number): string {
-  const size = brushSize * cellPx;
-  const pad = 6;
-  const dim = Math.round(size + pad * 2);
-  const c = dim / 2;
-  const half = size / 2;
-  const svg =
-    `<svg xmlns='http://www.w3.org/2000/svg' width='${dim}' height='${dim}' viewBox='0 0 ${dim} ${dim}'>` +
-    `<rect x='${c - half}' y='${c - half}' width='${size}' height='${size}' fill='none' stroke='white' stroke-width='4'/>` +
-    `<rect x='${c - half}' y='${c - half}' width='${size}' height='${size}' fill='none' stroke='black' stroke-width='1.5'/>` +
-    `<line x1='${c}' y1='${c - 3}' x2='${c}' y2='${c + 3}' stroke='black' stroke-width='1'/>` +
-    `<line x1='${c - 3}' y1='${c}' x2='${c + 3}' y2='${c}' stroke='black' stroke-width='1'/>` +
-    `</svg>`;
-  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") ${c} ${c}, crosshair`;
-}
+import { PixelSelectionOverlay } from './PixelSelectionOverlay';
 
 export function PixelCanvas({ engine }: { engine: PixelEditorEngine }) {
   // A stable ref callback matters here: an inline `(el) => ...` is a new function every render, and
@@ -49,13 +11,15 @@ export function PixelCanvas({ engine }: { engine: PixelEditorEngine }) {
   const attachCanvas = useCallback((el: HTMLCanvasElement | null) => engine.attachCanvas(el), [engine]);
 
   const wrapRef = useRef<HTMLDivElement>(null);
-  const lastWheelZoom = useRef(0);
-
-  const brushCursor = useMemo(() => {
-    if (BRUSH_TOOLS.has(engine.tool)) return buildBrushCursor(engine.brushSize, engine.effectiveCellPx());
-    if (SINGLE_CELL_CURSOR_TOOLS.has(engine.tool)) return buildBrushCursor(1, engine.effectiveCellPx());
-    return undefined;
-  }, [engine.tool, engine.brushSize, engine.zoomIndex]);
+  // Accumulates same-frame wheel deltas into one target scale+anchor, applied at most once per
+  // animation frame (see onWheel below) - setZoom measures the canvas's actual on-screen position for
+  // the zoom-to-cursor math (see its own doc comment), and calling that on every single wheel event (a
+  // fast trackpad pinch can fire dozens between two browser paints) would both be wasted work and risk
+  // layout thrashing (write a style, then read layout geometry, repeated). The zoom % still tracks the
+  // gesture essentially in real time since rAF runs every ~16ms - well under what's perceptible as lag
+  // - it just never redoes the work more than once per displayed frame.
+  const pendingZoom = useRef<{ scale: number; clientX: number; clientY: number } | null>(null);
+  const zoomRafId = useRef<number | null>(null);
 
   useEffect(() => {
     const el = wrapRef.current;
@@ -63,16 +27,33 @@ export function PixelCanvas({ engine }: { engine: PixelEditorEngine }) {
     // React 17+ registers wheel listeners as passive at the root, so a synthetic onWheel prop can't
     // preventDefault() the browser's own ctrl+wheel page zoom - a native, non-passive listener can.
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
+      // Ctrl/Cmd+wheel = zoom (browsers also report a trackpad pinch gesture as wheel+ctrlKey,
+      // regardless of whether Ctrl is actually held, so this covers pinch-to-zoom too); plain wheel is
+      // left alone entirely so it keeps panning the canvas via the wrap's native overflow:auto scroll.
+      if (!e.ctrlKey && !e.metaKey) return;
       e.preventDefault();
-      const now = performance.now();
-      if (now - lastWheelZoom.current < WHEEL_ZOOM_COOLDOWN_MS) return;
-      lastWheelZoom.current = now;
-      if (e.deltaY < 0) engine.zoomIn();
-      else if (e.deltaY > 0) engine.zoomOut();
+      // Multiplicative and continuous, not a fixed per-tick amount: exp(-deltaY * k) means a regular
+      // mouse wheel's much larger per-notch deltaY (~100) zooms in bigger, snappier steps while a
+      // trackpad's much smaller per-event deltaY yields smooth, fine-grained zooming - both from the
+      // same formula, and either way proportionate to the current zoom rather than a fixed +/- amount.
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      const base = pendingZoom.current?.scale ?? engine.zoomScale;
+      pendingZoom.current = { scale: base * factor, clientX: e.clientX, clientY: e.clientY };
+      if (zoomRafId.current === null) {
+        zoomRafId.current = requestAnimationFrame(() => {
+          zoomRafId.current = null;
+          if (pendingZoom.current) {
+            engine.setZoom(pendingZoom.current.scale, pendingZoom.current);
+            pendingZoom.current = null;
+          }
+        });
+      }
     };
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      if (zoomRafId.current !== null) cancelAnimationFrame(zoomRafId.current);
+    };
   }, [engine]);
 
   return (
@@ -80,21 +61,28 @@ export function PixelCanvas({ engine }: { engine: PixelEditorEngine }) {
       ref={wrapRef}
       className="pixel-canvas-wrap"
       data-tool={engine.tool}
-      style={brushCursor ? { cursor: brushCursor } : undefined}
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) engine.deselect();
       }}
+      onPointerMove={(e) => engine.updateHoverPointer(e)}
+      onPointerLeave={() => engine.clearHoverPointer()}
     >
-      <canvas
-        ref={attachCanvas}
-        className="pixel-canvas pixelated"
-        data-bg={engine.canvasBackground}
-        onContextMenu={(e) => e.preventDefault()}
-        onPointerDown={(e) => engine.onPointerDown(e)}
-        onPointerMove={(e) => engine.onPointerMove(e)}
-        onPointerUp={() => engine.onPointerUp()}
-        onPointerCancel={() => engine.onPointerUp()}
-      />
+      <div
+        className="pixel-canvas-inner"
+        style={engine.panX || engine.panY ? { transform: `translate(${engine.panX}px, ${engine.panY}px)` } : undefined}
+      >
+        <canvas
+          ref={attachCanvas}
+          className="pixel-canvas pixelated"
+          data-bg={engine.canvasBackground}
+          onContextMenu={(e) => e.preventDefault()}
+          onPointerDown={(e) => engine.onPointerDown(e)}
+          onPointerMove={(e) => engine.onPointerMove(e)}
+          onPointerUp={() => engine.onPointerUp()}
+          onPointerCancel={() => engine.onPointerUp()}
+        />
+        <PixelSelectionOverlay engine={engine} />
+      </div>
     </div>
   );
 }

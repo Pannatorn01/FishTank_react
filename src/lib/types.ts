@@ -51,6 +51,7 @@ export type ToolName =
   | 'spray'
   | 'gradient'
   | 'select'
+  | 'lasso'
   | 'move';
 
 export type SymmetryMode = 'none' | 'vertical' | 'horizontal' | 'both';

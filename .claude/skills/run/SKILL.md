@@ -43,24 +43,11 @@ step.
 
 ## After a UI/frontend change, prefer the tank-ui-tester agent
 
-For any change under `src/components/tank/`, `src/components/editor/`,
-`src/hooks/usePixelEditor.ts`, `src/hooks/useTank.ts`, `src/lib/*`, or
-`src/index.css`, dispatch the **tank-ui-tester** agent instead of
-hand-rolling a Playwright script - it already knows how to boot the dev
-server, drive the editor/tank panels, and report PASS/FAIL with
-screenshots and console errors. Reach for the manual steps below only when
-driving the app yourself outside that agent (e.g. one-off exploration).
-
-For a change focused on layout, labels, or interaction flow (not correctness),
-also dispatch **ux-ui-reviewer** for a design-quality pass with screenshots.
-For feature/content brainstorming (new fish, decor, mechanics), dispatch
-**game-design-ideator** instead of answering ad hoc - it checks the current
-engine first so ideas fit `useTank`/`usePixelEditor` as they exist today.
-Before merging any non-trivial code change, dispatch **code-reviewer** for a
-quality pass (hook cleanup, dependency arrays, error paths). If the change
-touches the shape of anything persisted by `usePixelEditor.ts` or
-`useTank.ts`, dispatch **storage-migration-guardian** as well - see the
-storage note under "Project layout" below for why this matters.
+For any change touching canvas redraw logic, brush strokes, shape tool previews, or
+undo/redo (usePixelEditor.ts, src/lib/pixelMath.ts and similar), dispatch the
+**draw-performance-auditor** agent as well — it measures actual frame time against a
+16ms budget per interaction path, which tank-ui-tester's functional pass/fail does not
+cover.
 
 ## Drive it manually (no chromium-cli in this sandbox - use local Playwright)
 

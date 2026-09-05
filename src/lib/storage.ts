@@ -13,6 +13,7 @@ const KEY_TANK_BACKGROUND_SPRITE_ID = 'fishtank.tankBackgroundSpriteId.v1';
 /** Free-transform (move/scale/rotate) placement of the background sprite - see BackgroundTransform. */
 const KEY_TANK_BACKGROUND_TRANSFORM = 'fishtank.tankBackgroundTransform.v2';
 const KEY_SAVED_COLORS = 'fishtank.savedColors.v1';
+const KEY_BRUSH_SIZES = 'fishtank.brushSizes.v1';
 const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
 const KEY_CANVAS_BG = 'fishtank.canvasBackground.v1';
 const CANVAS_BACKGROUNDS: CanvasBackground[] = ['checker-dark', 'checker-light', 'white', 'black', 'gray'];
@@ -33,6 +34,19 @@ export const DEFAULT_GRID_SIZE = 16;
 export const GRID_SIZES = [8, 16, 24, 32];
 export const MIN_GRID_SIZE = 4;
 export const MAX_GRID_SIZE = 64;
+/** Ceiling for a 'background'-type sprite's custom canvas size specifically - much higher than
+ *  MAX_GRID_SIZE, matching useTank.ts's TANK_SIZE_MAX (the largest the tank itself can be), since a
+ *  background gets stretched to fill the tank and artists sometimes want to paint it at up to that
+ *  resolution directly rather than working small and accepting the upscale blur/blockiness. Kept as
+ *  its own literal (not imported from useTank.ts) so lib/storage.ts doesn't take a dependency on a
+ *  hook. */
+export const MAX_BACKGROUND_GRID_SIZE = { width: 1400, height: 900 };
+/** Floor for a 'background'-type sprite's canvas size specifically - much higher than MIN_GRID_SIZE,
+ *  since a background stretched to fill the tank from a tiny canvas would look blocky at any zoom level
+ *  a player would actually view the tank at, unlike a small fish/object sprite (also meant to be seen
+ *  small). Enforced both in the size UI and inside setGridSize itself (see usePixelEditor.ts) so it
+ *  can't be bypassed by a resize after switching a sprite's type to 'background'. */
+export const MIN_BACKGROUND_GRID_SIZE = 300;
 export const LAYER_LIMIT = 12;
 export const DEFAULT_FRAME_MS = 350;
 export const MIN_FRAME_FPS = 1;
@@ -221,6 +235,23 @@ export function loadSavedColors(): string[] {
 
 export function saveSavedColors(colors: string[]): void {
   localStorage.setItem(KEY_SAVED_COLORS, JSON.stringify(colors));
+}
+
+/** Brush size remembered per brush-like tool (pen/eraser/spray each paint a different kind of stroke,
+ *  so a size picked for one shouldn't silently apply to the others). Keyed loosely by tool name rather
+ *  than a fixed union so a future brush-like tool can start persisting its size without a migration. */
+export function loadBrushSizes(): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(KEY_BRUSH_SIZES);
+    return raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    console.warn('loadBrushSizes failed', e);
+    return {};
+  }
+}
+
+export function saveBrushSizes(sizes: Record<string, number>): void {
+  localStorage.setItem(KEY_BRUSH_SIZES, JSON.stringify(sizes));
 }
 
 export function loadPaletteColors(): string[] | null {

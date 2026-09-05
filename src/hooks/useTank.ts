@@ -1,5 +1,7 @@
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
+import { t } from '@/lib/i18n';
+import { pixelateImageFile } from '@/lib/imageImport';
 import { paintLayers } from '@/lib/pixelMath';
 import * as storage from '@/lib/storage';
 import type { BackgroundTransform, Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape } from '@/lib/types';
@@ -591,6 +593,29 @@ class TankEngine {
   refreshPalette(): void {
     this.sprites = storage.loadSprites() || [];
     this.reactNotify();
+  }
+
+  /** Alternative to hand-drawing a background in the pixel editor: downsamples an uploaded photo
+   *  into a new 'background'-type sprite (see pixelateImageFile) so it reads as pixel art rather
+   *  than a pasted-in photo, saves it to the shared sprite library immediately (like the editor's own
+   *  "Save to library"), and selects it as the tank's active background. Errors (a corrupt/
+   *  unreadable file) are surfaced to the caller rather than swallowed, since this runs from a file
+   *  picker with no other feedback path. */
+  async addBackgroundFromImage(file: File): Promise<void> {
+    const { width, height, frame } = await pixelateImageFile(file, storage.MAX_BACKGROUND_GRID_SIZE.width, storage.MAX_BACKGROUND_GRID_SIZE.height);
+    const sprite: Sprite = {
+      id: storage.uid('sprite'),
+      name: file.name.replace(/\.[^./\\]+$/, '') || t('sprite.defaultBackgroundName'),
+      type: 'background',
+      width,
+      height,
+      frames: [[storage.makeLayer(frame)]],
+      frameMs: storage.DEFAULT_FRAME_MS,
+    };
+    const all = [...(storage.loadSprites() || []), sprite];
+    storage.saveSprites(all);
+    this.sprites = all;
+    this.setTankBackgroundSprite(sprite.id);
   }
 
   /** Selects a 'background'-type sprite by id to paint behind the fish, or null for the default

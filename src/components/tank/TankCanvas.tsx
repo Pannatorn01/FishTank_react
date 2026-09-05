@@ -207,7 +207,7 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
         }}
         onPointerDown={() => engine.selectRoomInstance(null)}
       >
-        <div className={`tank-frame${effectiveScale >= fitScale ? ' resizable' : ''}`} style={frameStyle} ref={frameElRef}>
+        <div className="tank-frame" style={frameStyle} ref={frameElRef}>
           <div className="tank-wrap" style={wrapShapeStyle} ref={(el) => engine.attachWrap(el)}>
             <canvas
               ref={(el) => {

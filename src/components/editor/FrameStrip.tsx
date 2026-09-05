@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import { paintLayers } from '@/lib/pixelMath';
-import type { Layer } from '@/lib/types';
+import type { Layer, SpriteType } from '@/lib/types';
 
 const THUMB_PX = 52;
 
@@ -40,9 +40,13 @@ function FrameThumb({
   );
 }
 
-export function FrameStrip({ engine }: { engine: PixelEditorEngine }) {
+export function FrameStrip({ engine, type }: { engine: PixelEditorEngine; type: SpriteType }) {
   const { t } = useLanguage();
-  const limitReached = engine.frameLimitReached();
+  // A background is a single static image, never animated (see TankEngine's background paint,
+  // which always draws frame 0) - so adding/duplicating frames is disabled for it rather than
+  // letting the artist build a multi-frame background that the tank would never actually cycle.
+  const isBackground = type === 'background';
+  const limitReached = engine.frameLimitReached() || isBackground;
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [overIndex, setOverIndex] = useState<number | null>(null);
 

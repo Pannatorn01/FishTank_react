@@ -4,20 +4,24 @@ const en: Dict = {
   'tab.editor': 'Draw Fish/Decor',
   'tab.tank': 'Fish Tank',
 
+  'tool.group.draw': 'Draw',
+  'tool.group.shapes': 'Shapes',
+  'tool.group.selection': 'Selection',
   'tool.pen.desc': 'Pen — draw pixels one at a time (B) • hold Alt to pick a color • right-click to erase',
   'tool.line.desc': 'Line — drag to draw a straight line (L) • hold Shift to snap to 0/45/90° • hold Alt to pick a color • right-click to erase',
   'tool.curve.desc': 'Curve — drag to draw the initial line (U), then drag the yellow handle to bend it • click elsewhere or press Enter to confirm, Esc to cancel • hold Alt to pick a color • right-click to erase',
-  'tool.fill.desc': 'Fill — flood-fill a connected area (G) • hold Alt to pick a color • right-click to clear the area',
+  'tool.fill.desc': 'Fill — flood-fill a connected area (F) • hold Alt to pick a color • right-click to clear the area',
   'tool.eyedropper.desc': 'Eyedropper — click to pick a color from a pixel (I)',
   'tool.eraser.desc': 'Eraser — erase pixels (E) • hold Alt to pick a color',
   'tool.spray.desc': 'Spray — hold and drag to airbrush a scatter of pixels (A) • uses the Brush size below • hold Alt to pick a color • right-click to erase-spray',
   'tool.gradient.desc': 'Gradient — drag to blend the start/end colors across the selection (or whole canvas) along that line (K) • hold Shift to snap the axis to 0/45/90° • hold Alt to pick a color • right-click to reverse the gradient',
   'tool.rect.desc': 'Rectangle — drag to draw a rectangle (R) • hold Shift for a perfect square • hold Alt to pick a color • right-click to erase',
   'tool.ellipse.desc': 'Ellipse — drag to draw an ellipse (C) • hold Shift for a perfect circle • hold Alt to pick a color • right-click to erase',
-  'tool.select.desc': 'Select — drag to select a rectangular area (S) • drag inside to move it, drag a yellow corner/edge handle to resize (scales the artwork inside), drag the handle above to rotate freely',
-  'tool.move.desc': 'Move — drag to move pixels inside the selection (M)',
+  'tool.select.desc': 'Select — drag to select a rectangular area (M) • drag inside to move it, drag a yellow corner/edge handle to resize (scales the artwork inside), drag the handle above to rotate freely • arrow keys nudge by 1px • Esc or click outside to deselect',
+  'tool.lasso.desc': 'Lasso — drag to trace a freeform selection • drag inside to move it, drag the handle above to rotate freely • arrow keys nudge by 1px • Esc or click outside to deselect',
+  'tool.move.desc': 'Move — drag to move pixels inside the selection (V) • arrow keys nudge by 1px',
   'action.undo': 'Undo (Ctrl+Z)',
-  'action.redo': 'Redo (Ctrl+Y)',
+  'action.redo': 'Redo (Ctrl+Y or Ctrl+Shift+Z)',
 
   'transform.title': 'Transform',
   'transform.flipH': 'Flip horizontal',
@@ -28,6 +32,9 @@ const en: Dict = {
 
   'status.zoomOut': 'Zoom out',
   'status.zoomIn': 'Zoom in',
+  'status.zoomFit': 'Zoom to fit - shows the whole canvas at once, even one too large for the smallest zoom step',
+  'status.zoomTypeHint': 'Zoom % - type a value, or scroll/pinch the canvas (hold Ctrl/Cmd) to zoom toward the cursor',
+  'status.zoomPresetsTitle': 'Zoom presets',
   'status.showGrid': 'Grid lines',
   'status.canvasBgTitle': 'Canvas background',
   'status.bgCheckerDark': 'Checkered (dark)',
@@ -36,14 +43,16 @@ const en: Dict = {
   'status.bgBlack': 'Black',
   'status.bgGray': 'Gray',
   'status.fillShape': 'Fill shape',
-  'status.brushSize': 'Brush',
-  'status.brushSizeTitle': 'Brush size, in pixels ([ / ] to resize)',
-  'status.brushSizeValue': '{n}px brush',
-  'status.symmetryTitle': 'Symmetry drawing (V)',
+  'status.brushSize': 'Size',
+  'status.brushSizeTitle': 'Brush/stroke size, in pixels, 1–20 ([ / ] to resize) - remembered separately per tool',
+  'status.brushSizeUnit': 'px',
+  'status.symmetryTitle': 'Symmetry drawing',
   'status.selectionSize': 'Selection {w}×{h}',
+  'status.gridSizeTitle': 'Canvas size (width×height, in pixels) - not zoom; see the zoom % field to the left for that',
   'status.gridCustom': 'Custom...',
   'status.gridCustomTitle': 'Custom grid size',
   'status.gridCustomDesc': 'Enter a width and height (cells) from {min} to {max} per side - they do not need to match',
+  'status.gridCustomDescBackground': 'Enter a width (cells) from {min} to {maxW} and a height from {min} to {maxH} - a background can go much larger, up to the tank’s own max size',
   'status.gridWidthLabel': 'Width',
   'status.gridHeightLabel': 'Height',
   'status.gridCustomConfirm': 'OK',
@@ -160,15 +169,18 @@ const en: Dict = {
   'tank.tabBackground': 'Background',
   'tank.backgroundDefault': 'Default',
   'tank.backgroundHint':
-    'Draw a background in the editor (type "Background"), then pick it here - drag it in the tank to move, drag a corner to resize, drag the top handle to rotate',
-  'tank.backgroundEmpty': 'No backgrounds drawn yet - go to Draw Fish/Decor and save a sprite as type "Background"',
+    'Upload a photo (pixelated to fit the art style) or draw one in the editor (type "Background"), then pick it here - drag it in the tank to move, drag a corner to resize, drag the top handle to rotate',
+  'tank.backgroundEmpty': 'No backgrounds yet - upload a photo above, or go to Draw Fish/Decor and save a sprite as type "Background"',
+  'tank.backgroundUpload': 'Upload image',
+  'tank.backgroundUploading': 'Uploading…',
+  'tank.backgroundUploadError': 'Could not read that image - try a different file.',
 };
 
 export function t(key: string, vars?: Record<string, string | number>): string {
   let str = en[key] ?? key;
   if (vars) {
     Object.entries(vars).forEach(([k, v]) => {
-      str = str.replace(`{${k}}`, String(v));
+      str = str.replaceAll(`{${k}}`, String(v));
     });
   }
   return str;

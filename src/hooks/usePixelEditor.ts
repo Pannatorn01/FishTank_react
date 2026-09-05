@@ -6,6 +6,7 @@ import {
   flipFrameV,
   hexToRgb,
   inEllipseLocal,
+  layersDiffRegion,
   normalizeBox,
   paintLayers,
   rgbToHex,
@@ -14,7 +15,7 @@ import {
 } from '@/lib/pixelMath';
 import { t } from '@/lib/i18n';
 import * as storage from '@/lib/storage';
-import type { CanvasBackground, Cell, Frame, Layer, SelectionBox, Sprite, SymmetryMode, ToolName } from '@/lib/types';
+import type { CanvasBackground, Cell, Frame, Layer, SelectionBox, Sprite, SpriteType, SymmetryMode, ToolName } from '@/lib/types';
 
 export const DEFAULT_PALETTE_COLORS = [
   '#1a1a1a', '#ffffff', '#e74c3c', '#ff7043', '#f5c518', '#8bc34a', '#1e88e5', '#5e35b1',
@@ -23,31 +24,64 @@ export const DEFAULT_PALETTE_COLORS = [
 const FRAME_LIMIT = 5;
 const LAYER_LIMIT = storage.LAYER_LIMIT;
 const BASE_CELL_PX = 16;
-export const ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2, 3];
+/** Quick-pick presets for the zoom field's dropdown - purely UI shortcuts now, not the internal
+ *  representation of zoom (see zoomScale/setZoom): zoom is a continuous float that can land anywhere,
+ *  including values none of these name. */
+export const ZOOM_LEVELS = [0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 8];
+export const MIN_ZOOM_SCALE = 0.05;
+export const MAX_ZOOM_SCALE = 32;
+/** Caps a zoomed-in canvas's on-screen (CSS) size, regardless of the sprite's own dimensions - see
+ *  maxZoomScale. Large enough to let a small sprite zoom in a lot, small enough that scrolling a
+ *  zoomed-in huge canvas doesn't hand the browser an absurdly large layout box. */
+const MAX_RENDERED_CANVAS_PX = 8000;
+/** Multiplicative step for the zoom +/- buttons and the base of the scroll-wheel zoom curve (see
+ *  PixelCanvas.tsx) - a ratio, not a fixed amount, so a step feels proportionate at any zoom level
+ *  (50%→60% and 400%→480% are both "one click") instead of mattering a lot at low zoom and nothing at
+ *  high zoom the way a fixed +0.1 would. */
+export const ZOOM_BUTTON_STEP = 1.2;
 const PREVIEW_CELL_PX_BASE = 96;
 const UNDO_LIMIT = 50;
-export const MAX_BRUSH_SIZE = 4;
+export const MAX_BRUSH_SIZE = 20;
+/** Tools that share the brush-size stepper (see CanvasStatusBar's `showBrushOptions` / PixelCanvas's
+ *  brush-footprint preview) - each remembers its own size (see brushSizes/brushSizeToolKey) since a
+ *  size picked for one shouldn't silently carry over to another. Line/rect/ellipse read the same
+ *  `brushSize` to thicken their outline (see computeShapeCells), and curve thickens its own path the
+ *  same way (see quadraticBezierCells/thickenPath) - gradient and the selection tools have no
+ *  comparable "stroke width" concept, so they're deliberately left out. */
+export const BRUSH_SIZE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'spray', 'line', 'rect', 'ellipse', 'curve']);
 const SPRAY_INTERVAL_MS = 55;
 const TOOL_KEYS: Record<string, ToolName> = {
-  b: 'pen', e: 'eraser', g: 'fill', i: 'eyedropper', l: 'line', u: 'curve', r: 'rect', c: 'ellipse',
-  a: 'spray', k: 'gradient', s: 'select', m: 'move',
+  b: 'pen', e: 'eraser', f: 'fill', i: 'eyedropper', l: 'line', u: 'curve', r: 'rect', c: 'ellipse',
+  a: 'spray', k: 'gradient', m: 'select', v: 'move',
 };
 /** Tools where a right-click has an alternate meaning (erase, or reversed gradient) instead of opening the browser context menu. */
 const ERASABLE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient']);
 /** Tools where holding Alt temporarily samples a color instead of the tool's normal action. */
 const ALT_PICK_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient']);
+/** Tools that create/edit a selection - rectangular marquee and freeform lasso are two ways to make
+ *  the same kind of selection (see selectionMask/lassoPoints), so they share all of its chrome/rules. */
+const SELECTION_TOOLS = new Set<ToolName>(['select', 'lasso']);
+/** SELECTION_TOOLS plus 'move' - the selection border (marching ants) and its move-cursor hint stay
+ *  visible/active while the Move tool is selected too, not just while actively editing the selection
+ *  shape, so switching to Move to drag a selection doesn't make it look like nothing is selected. */
+const SELECTION_AWARE_TOOLS = new Set<ToolName>(['select', 'lasso', 'move']);
 
-type HandleName = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e';
-const HANDLE_HIT_TOLERANCE = 7;
-const HANDLE_SIZE = 6;
-const HANDLE_CURSORS: Record<HandleName, string> = {
+export type HandleName = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e';
+/** Size (px) of a resize handle's square - exported for PixelSelectionOverlay.tsx, which draws the
+ *  settled selection's handles as DOM elements rather than on this <canvas> (see selectionOverlayBox). */
+export const HANDLE_SIZE = 6;
+/** Cursor per resize handle - exported for PixelSelectionOverlay.tsx, which sets it on the DOM
+ *  handle elements directly (CSS) rather than via canvas pointermove hit-testing. */
+export const HANDLE_CURSORS: Record<HandleName, string> = {
   nw: 'nwse-resize', se: 'nwse-resize',
   ne: 'nesw-resize', sw: 'nesw-resize',
   n: 'ns-resize', s: 'ns-resize',
   w: 'ew-resize', e: 'ew-resize',
 };
 const ROTATE_HANDLE_OFFSET = 24;
-const ROTATE_HANDLE_RADIUS = 7;
+/** Radius of the rotate handle's drawn circle - exported for PixelSelectionOverlay.tsx, which draws
+ *  the handle as a DOM element rather than on this <canvas> (see rotateHandlePos/selectionRotateHandle). */
+export const ROTATE_HANDLE_RADIUS = 7;
 const ROTATE_HIT_RADIUS = 11;
 
 function blankSprite(): Sprite {
@@ -64,7 +98,7 @@ function blankSprite(): Sprite {
 }
 
 function cloneSprite(sprite: Sprite): Sprite {
-  return JSON.parse(JSON.stringify(sprite));
+  return structuredClone(sprite);
 }
 
 interface MoveBufferCell extends Cell {
@@ -85,6 +119,17 @@ class PixelEditorEngine {
   ctx: CanvasRenderingContext2D | null = null;
   previewCanvas: HTMLCanvasElement | null = null;
   previewCtx: CanvasRenderingContext2D | null = null;
+  /** Scratch off-screen canvas for compositeToBitmap - reused (resized in place) across calls rather
+   *  than allocated fresh each time, since drawGrid() calls it on every pointer move while painting. */
+  private spriteBitmap: HTMLCanvasElement | null = null;
+  /** Snapshot of everything except the in-flight move/resize/rotate preview, taken once when that
+   *  gesture starts (see cacheGestureBaseBitmap) - a separate canvas from spriteBitmap above, which
+   *  tickPreview() also writes to on its own timer and would otherwise race with a gesture in progress.
+   *  drawGrid() blits this with one drawImage() on every pointer move during the gesture instead of
+   *  re-running paintLayers() over every layer - the base scene hasn't changed (only the dragged
+   *  region's on-screen position has), so redoing that full paint on every single move was the actual
+   *  cost that made dragging a selection on a large canvas (e.g. a 1400×900 background) visibly lag. */
+  private gestureBaseBitmap: HTMLCanvasElement | null = null;
 
   sprites: Sprite[] = [];
   current: Sprite = blankSprite();
@@ -102,6 +147,19 @@ class PixelEditorEngine {
   selection: SelectionBox | null = null;
   selectStart: Cell | null = null;
   selectionDraft: SelectionBox | null = null;
+  /** Freeform outline for a lasso-made selection (closed polygon, canvas cell coords) - null for a
+   *  plain rectangular marquee selection, where the whole `selection` box counts as selected. Kept in
+   *  sync with `selection`/`selectionMask` by every op that moves/shifts a selection. */
+  lassoPoints: Cell[] | null = null;
+  /** In-progress freeform path while dragging out a new lasso selection - promoted to `lassoPoints`
+   *  (and used to derive selectionMask) on release; null the rest of the time. */
+  lassoDraftPoints: Cell[] | null = null;
+  /** Which cells inside `selection`'s bounding box are actually selected - null means "all of them"
+   *  (a rectangular marquee selection). Sparse (`"x,y"` keys) rather than a full width×height grid
+   *  since a selection is typically a small fraction of a large canvas. Centralizes freeform-selection
+   *  awareness in captureSelectionPixels/clearFrameRegion/startMoveGesture/nudgeSelection, so move,
+   *  resize, rotate, and copy all naturally respect a lasso's actual shape instead of its bounding box. */
+  selectionMask: Set<string> | null = null;
   resizeHandle: HandleName | null = null;
   resizeOrigin: SelectionBox | null = null;
   resizeSource: (string | null)[][] | null = null;
@@ -116,7 +174,14 @@ class PixelEditorEngine {
   moveDelta = { dx: 0, dy: 0 };
   clipboard: { w: number; h: number; rows: (string | null)[][] } | null = null;
   symmetry: SymmetryMode = 'none';
-  brushSize = 1;
+  /** Per-tool brush size (pen/eraser/spray each remember their own - see brushSizeToolKey/BRUSH_SIZE_TOOLS),
+   *  persisted so a size picked in one session survives a reload. */
+  private brushSizes: Record<string, number> = {};
+  /** Last-known pointer position over the canvas, in on-screen px relative to .pixel-canvas-inner -
+   *  drives the brush-footprint preview outline (see brushPreviewRect) via a DOM overlay rather than a
+   *  cursor image, so the outline isn't capped by the browser's max custom-cursor size at large brush
+   *  sizes/zoom. Cleared on pointer leave/up so the preview disappears when the cursor isn't over the canvas. */
+  hoverPointerPx: { px: number; py: number } | null = null;
   /** Set for the duration of a right-click gesture: paints/fills/erases with the eraser instead of the active color. */
   eraseOverride = false;
   /** Snapshot of the active layer taken at freehand-stroke start, so Pixel Perfect can restore a trimmed corner pixel. */
@@ -134,7 +199,25 @@ class PixelEditorEngine {
   gradientStart: Cell | null = null;
   gradientEnd: Cell | null = null;
   gradientPreview: MoveBufferCell[] | null = null;
-  zoomIndex = 2;
+  /** Continuous zoom factor (1 = 100%) - not locked to ZOOM_LEVELS's fixed steps, which remain only as
+   *  quick-pick presets in the status bar. Clamped to [minZoomScale(), maxZoomScale()] by setZoom,
+   *  the only place that ever changes it. */
+  zoomScale = 1;
+  /** Manual correction (screen px) applied as a transform on .pixel-canvas-inner, on top of whatever
+   *  CSS centering/native scroll already puts it at - see setZoom's doc comment for why cursor-anchored
+   *  zoom needs this instead of just adjusting the wrap's scrollLeft/scrollTop. Reset to 0 wherever the
+   *  view should snap back to a plain default (zoomToFit, a resized canvas, a different sprite) rather
+   *  than carry over a stale correction from whatever was on screen before. */
+  panX = 0;
+  panY = 0;
+  /** True for the duration of a middle-mouse-button drag, panning the view via the wrap's native scroll
+   *  regardless of the active tool - see onPointerDown/Move/Up. Deliberately doesn't reuse `painting`
+   *  (and isn't itself gated by it): this needs to work mid-stroke, mid-shape-drag, etc. without
+   *  disturbing whatever the primary button is doing, the same way it works in Paint/Photoshop/Pixilart. */
+  private middlePanActive = false;
+  /** Last pointer position (client px) seen during a middle-pan drag, to derive each move's delta -
+   *  null the rest of the time. */
+  private middlePanLast: { x: number; y: number } | null = null;
   showGrid = true;
   canvasBackground: CanvasBackground = 'checker-dark';
   onionSkin = false;
@@ -149,10 +232,27 @@ class PixelEditorEngine {
 
   private previewTimer: ReturnType<typeof setInterval> | null = null;
   private reactNotify: () => void = () => {};
+  private notifyRafId: number | null = null;
   private windowListeners: Array<() => void> = [];
 
   init(notify: () => void): void {
-    this.reactNotify = notify;
+    // rAF-coalesced, not a direct call to `notify` - a fast pointer (pen/spray tools especially,
+    // see paintCell/sprayTick) can call reactNotify() many times between two browser paints, and
+    // every one of those was forcing a full React re-render (the whole editor panel: layer/frame
+    // thumbnails, sprite library, etc.), most of which the browser would just throw away unseen at
+    // the next paint anyway. Collapsing bursts to at most once per frame doesn't change what any
+    // caller reads (state is always read live off this engine's own fields at render time, never a
+    // snapshotted arg), only how many times React redoes that read - it's a pure waste cut, not a
+    // behavior change. The canvas itself is unaffected: drawGrid() is still called synchronously,
+    // immediately, everywhere it already was - only the React-rendered side panels/DOM overlays defer
+    // to the next frame, which is invisible since they can't paint faster than that anyway.
+    this.reactNotify = () => {
+      if (this.notifyRafId !== null) return;
+      this.notifyRafId = requestAnimationFrame(() => {
+        this.notifyRafId = null;
+        notify();
+      });
+    };
     const loaded = storage.loadSprites();
     if (loaded === null) {
       this.sprites = storage.buildDefaultSprites();
@@ -163,11 +263,14 @@ class PixelEditorEngine {
     this.paletteColors = storage.loadPaletteColors() ?? [...DEFAULT_PALETTE_COLORS];
     this.savedColors = storage.loadSavedColors();
     this.canvasBackground = storage.loadCanvasBackground() ?? 'checker-dark';
+    this.brushSizes = storage.loadBrushSizes();
 
     this.restartPreviewTimer();
 
     const endGesture = () => this.onPointerUp();
     const forceEndGesture = () => {
+      this.middlePanActive = false;
+      this.middlePanLast = null;
       if (!this.painting) return;
       this.resetGestureState();
       this.refresh();
@@ -204,6 +307,15 @@ class PixelEditorEngine {
   destroy(): void {
     if (this.previewTimer) clearInterval(this.previewTimer);
     if (this.sprayTimer) clearInterval(this.sprayTimer);
+    // Reset to null, not just cancelled - React 18 StrictMode's dev-mode double-invoke (mount →
+    // cleanup → mount again) means a fresh init() can follow this destroy() in the same tick. Its
+    // new reactNotify closure still reads this same instance field, so leaving a stale (cancelled,
+    // never-firing) id here would make every reactNotify() call after that second init() see "a
+    // notify is already pending" and permanently no-op - the exact bug that motivated this comment.
+    if (this.notifyRafId !== null) {
+      cancelAnimationFrame(this.notifyRafId);
+      this.notifyRafId = null;
+    }
     this.windowListeners.forEach((off) => off());
     this.windowListeners = [];
   }
@@ -237,20 +349,62 @@ class PixelEditorEngine {
   }
 
   effectiveCellPx(): number {
-    return BASE_CELL_PX * ZOOM_LEVELS[this.zoomIndex];
+    return BASE_CELL_PX * this.zoomScale;
+  }
+
+  /** A canvas's max zoom scales down as its own dimensions grow, so the on-screen size (width×cellPx)
+   *  never blows past a sane pixel count regardless of how large the sprite is - a tiny sprite can
+   *  zoom in much further (up to MAX_ZOOM_SCALE) than a background-sized one. Never below 4x even for
+   *  a canvas at MAX_BACKGROUND_GRID_SIZE, so "zoom in" is never fully dead on a huge canvas. */
+  maxZoomScale(): number {
+    const maxDim = Math.max(this.current.width, this.current.height);
+    return Math.max(4, Math.min(MAX_ZOOM_SCALE, MAX_RENDERED_CANVAS_PX / (maxDim * BASE_CELL_PX)));
+  }
+
+  minZoomScale(): number {
+    return MIN_ZOOM_SCALE;
   }
 
   recomputeCanvasSize(): void {
     if (!this.canvas) return;
     const { width, height } = this.current;
+    // The canvas's own bitmap is native resolution - exactly 1 pixel per cell (e.g. 1400×900, not
+    // 1400×900 *cellPx*) - with CSS doing the zoom (updateCanvasCssSize, plus .pixelated's
+    // image-rendering: pixelated for a crisp, un-blurred scale-up). Zooming or scrolling a huge
+    // canvas is then a free GPU compositor operation, not a JS re-render: the old approach (bitmap
+    // sized to width*cellPx) meant a background-sized canvas at typical zoom was allocating tens of
+    // millions of physical pixels, all of which had to be re-cleared and re-blitted on every single
+    // pointer move while painting - that's what made painting on a large canvas visibly lag. Grid
+    // lines, symmetry guides, the selection-draft marquee, and the curve control handle all moved to
+    // a DOM overlay (PixelSelectionOverlay.tsx) as a consequence: at 1px-per-cell there's no room to
+    // draw a hairline *between* cells, or a fixed-size (e.g. 6px) handle glyph, on this canvas itself.
+    // Skipped when the sprite's own dimensions haven't changed (see setZoom) - assigning canvas.width/
+    // height always resets the bitmap to transparent regardless of whether the value actually differs,
+    // so doing it on every zoom tick would force a full repaint for a change that never touches a
+    // single pixel of actual content, only the CSS scale.
+    if (this.canvas.width !== width || this.canvas.height !== height) {
+      this.canvas.width = width;
+      this.canvas.height = height;
+      // Resizing width/height (above) resets all context state, including this - must be re-applied
+      // every time, not just once at creation.
+      if (this.ctx) this.ctx.imageSmoothingEnabled = false;
+    }
+    this.updateCanvasCssSize();
+  }
+
+  /** Just the on-screen (CSS) size - the half of recomputeCanvasSize that a pure zoom change (sprite
+   *  dimensions unchanged) actually needs, without also touching (and clearing) the canvas bitmap. */
+  private updateCanvasCssSize(): void {
+    if (!this.canvas) return;
+    const { width, height } = this.current;
     const cellPx = this.effectiveCellPx();
-    this.canvas.width = width * cellPx;
-    this.canvas.height = height * cellPx;
+    this.canvas.style.width = `${width * cellPx}px`;
+    this.canvas.style.height = `${height * cellPx}px`;
     this.canvas.style.backgroundSize = `${cellPx * 2}px ${cellPx * 2}px`;
   }
 
   zoomLabel(): string {
-    return `${Math.round(ZOOM_LEVELS[this.zoomIndex] * 100)}%`;
+    return `${Math.round(this.zoomScale * 100)}%`;
   }
 
   canUndo(): boolean {
@@ -268,7 +422,7 @@ class PixelEditorEngine {
     if (this.tool === 'curve' && this.curvePhase) this.commitCurve();
     if (this.tool === 'spray') this.stopSprayTimer();
     this.tool = tool;
-    if (this.canvas && tool !== 'select') this.canvas.style.cursor = '';
+    if (this.canvas && !SELECTION_AWARE_TOOLS.has(tool)) this.canvas.style.cursor = '';
     this.reactNotify();
   }
 
@@ -325,9 +479,57 @@ class PixelEditorEngine {
     this.refresh();
   }
 
+  /** Which brush-size slot the active tool reads/writes - tools outside BRUSH_SIZE_TOOLS (shapes,
+   *  fill, etc.) fall back to the pen's size since they never read `brushSize` in the first place. */
+  private brushSizeToolKey(): string {
+    return BRUSH_SIZE_TOOLS.has(this.tool) ? this.tool : 'pen';
+  }
+
+  get brushSize(): number {
+    return this.brushSizes[this.brushSizeToolKey()] ?? 1;
+  }
+
   setBrushSize(size: number): void {
-    this.brushSize = Math.min(MAX_BRUSH_SIZE, Math.max(1, Math.round(size)));
+    const clamped = Math.min(MAX_BRUSH_SIZE, Math.max(1, Math.round(size)));
+    if (clamped === this.brushSize) return;
+    this.brushSizes = { ...this.brushSizes, [this.brushSizeToolKey()]: clamped };
+    storage.saveBrushSizes(this.brushSizes);
     this.reactNotify();
+  }
+
+  /** Tracks the pointer for the brush-footprint preview outline (see brushPreviewRect) - called on
+   *  every pointer move over the canvas regardless of tool/painting state, not just while a brush tool
+   *  is active, so switching tools while the pointer is already over the canvas shows the outline
+   *  immediately instead of only after the next move. */
+  updateHoverPointer(e: { clientX: number; clientY: number }): void {
+    const pt = this.pxFromEvent(e);
+    if (!pt) return;
+    this.hoverPointerPx = pt;
+    if (BRUSH_SIZE_TOOLS.has(this.tool)) this.reactNotify();
+  }
+
+  clearHoverPointer(): void {
+    if (!this.hoverPointerPx) return;
+    this.hoverPointerPx = null;
+    this.reactNotify();
+  }
+
+  /** Where PixelSelectionOverlay.tsx should draw the brush-footprint preview outline: a `brushSize`
+   *  cells-wide square, snapped to the same top-left-anchored cell grid brushCellsAt paints (see its
+   *  doc comment) - so the outline shows exactly which cells a click would paint, not just an
+   *  approximate box centered on the raw pointer position. Null when there's nothing to show (pointer
+   *  not over the canvas, or the active tool doesn't use a brush size). */
+  brushPreviewRect(): { left: number; top: number; size: number } | null {
+    if (!this.hoverPointerPx || !BRUSH_SIZE_TOOLS.has(this.tool)) return null;
+    const cellPx = this.effectiveCellPx();
+    const cellX = Math.floor(this.hoverPointerPx.px / cellPx);
+    const cellY = Math.floor(this.hoverPointerPx.py / cellPx);
+    const off = Math.floor((this.brushSize - 1) / 2);
+    return {
+      left: (cellX - off) * cellPx,
+      top: (cellY - off) * cellPx,
+      size: this.brushSize * cellPx,
+    };
   }
 
   setGradientColor(color: string): void {
@@ -340,35 +542,193 @@ class PixelEditorEngine {
     this.reactNotify();
   }
 
+  /**
+   * Sets a new continuous zoom scale, clamped to [minZoomScale(), maxZoomScale()] - the single place
+   * that ever changes zoomScale. When `anchor` (client coords, e.g. the cursor position) is given, the
+   * content point under it is kept at the same screen position ("zoom to cursor") by measuring where
+   * that point actually rendered before and after the resize, then correcting the gap (see
+   * absorbPanCorrection) via the wrap's native scrollLeft/scrollTop wherever there's room for it, and
+   * only the leftover via panX/panY - a small transform applied to .pixel-canvas-inner (see
+   * PixelCanvas.tsx). panX/panY exists at all because .pixel-canvas-wrap centers its content via CSS
+   * grid `place-items: center` whenever the canvas is smaller than the wrap (the common case for most
+   * sprites at ordinary zoom levels), and in that regime scrollLeft/scrollTop are pinned at 0 with no
+   * scrollable slack to adjust - writing to them is silently a no-op, so that case has to be corrected
+   * some other way. Measuring the canvas's actual rendered rect sidesteps needing to know which regime
+   * applies: it's correct whether the current position comes from centering, native scroll, a prior
+   * panX/panY, or any mix of the three, since getBoundingClientRect() always reports the final on-screen
+   * result of all of them together.
+   *
+   * Deliberately does NOT call recomputeCanvasSize()/drawGrid(): a zoom change never touches the
+   * sprite's own dimensions or pixel content, only how large it's drawn on screen and where the DOM
+   * selection/grid overlay (which reads effectiveCellPx() at React render time) sits - so only the CSS
+   * size, the pan correction, and a reactNotify() are needed, not a full canvas-bitmap reset and repaint.
+   * That distinction is what keeps continuous scroll-zoom smooth: see PixelCanvas.tsx's wheel handler,
+   * the only caller that can invoke this many times in a single animation frame.
+   */
+  setZoom(scale: number, anchor?: { clientX: number; clientY: number }): void {
+    const clamped = Math.min(this.maxZoomScale(), Math.max(this.minZoomScale(), scale));
+    if (clamped === this.zoomScale) return;
+    const rectBefore = anchor && this.canvas ? this.canvas.getBoundingClientRect() : null;
+    this.zoomScale = clamped;
+    this.updateCanvasCssSize();
+    if (rectBefore && anchor && this.canvas && rectBefore.width > 0 && rectBefore.height > 0) {
+      // Where the cursor sits as a fraction across the canvas's old on-screen box - fraction, not an
+      // absolute cell/px position, so it's meaningful before and after the size actually changes.
+      const fracX = (anchor.clientX - rectBefore.left) / rectBefore.width;
+      const fracY = (anchor.clientY - rectBefore.top) / rectBefore.height;
+      const rectAfter = this.canvas.getBoundingClientRect();
+      const naturalX = rectAfter.left + fracX * rectAfter.width;
+      const naturalY = rectAfter.top + fracY * rectAfter.height;
+      // That same fraction now naturally renders at (naturalX, naturalY) - wherever CSS centering/
+      // scroll/the previous panX,panY happened to land it - which has drifted from the cursor by
+      // exactly (naturalX - anchor.clientX, naturalY - anchor.clientY); absorbPanCorrection closes that
+      // gap. rectAfter's own width/height (the canvas's true CSS size, set moments ago by
+      // updateCanvasCssSize() and unaffected by any transform on its ancestor - translate doesn't
+      // resize anything) go with it, not read fresh from the DOM again there - see that method's doc
+      // comment for why re-deriving "does this overflow" from the wrap itself is the wrong check.
+      this.absorbPanCorrection(naturalX - anchor.clientX, naturalY - anchor.clientY, rectAfter.width, rectAfter.height);
+    }
+    this.reactNotify();
+  }
+
+  /**
+   * Applies a (dx, dy) screen-px correction - "content needs to shift left/up by this much to bring the
+   * zoom anchor back under the cursor" - through the wrap's native scroll whenever the canvas's own true
+   * size (`canvasWidth`/`canvasHeight`, from the caller's already-measured rect) exceeds the wrap's
+   * client size on that axis, draining any pan already sitting in the transform back into scroll at the
+   * same time (see `oldPanX`/`oldPanY` below) instead of just adding to it. Falls back to the panX/panY
+   * transform only when the canvas genuinely fits (CSS grid `place-items: center` has scrollLeft/Top
+   * pinned at 0 there - the one case a transform is unavoidable).
+   *
+   * Deliberately does NOT ask the wrap "do you currently have scrollable overflow" (e.g.
+   * `scrollWidth > clientWidth`) to decide this - scrollWidth includes the *transformed* position of a
+   * nonzero panX/panY, so a large enough pan alone can make scrollWidth exceed clientWidth even while
+   * the canvas's own untransformed size still fits: confirmed by reproducing exactly that (zooming into
+   * a small sprite, where after a couple of steps panX had grown just large enough to flip that check
+   * true a step early, at which point the untransformed canvas still didn't actually overflow, scroll
+   * couldn't do anything useful with the "room" that check saw, and the cursor anchor drifted ~15% of
+   * the canvas's width on the next step and stayed drifted). Comparing the canvas's own transform-
+   * independent size against the wrap's clientWidth/Height sidesteps that feedback loop entirely.
+   *
+   * Separately, a transform and native scroll both contribute to a scroll container's overflow area,
+   * but independently, and the browser doesn't reconcile them: once panX/panY holds a large offset *and*
+   * the canvas is also large enough to genuinely overflow the wrap, scrollWidth/scrollHeight balloon to
+   * cover both the untransformed and transformed positions, and neither scrollLeft=0, scrollLeft=max,
+   * nor the midpoint between them still means "left/right/center edge of the visible canvas" - confirmed
+   * by reproducing that too (zoom out from 100% while anchored off-center down to the 5% minimum left
+   * panX/panY at several thousand px, at which point even scrolling to the wrap's own scrollWidth/2
+   * landed the canvas over a thousand px from the wrap's center). Draining into scroll whenever the
+   * canvas genuinely overflows avoids this the same way it avoids the other feedback loop above.
+   *
+   * Whenever scroll applies, this deliberately lets the browser's own clamping (scrollLeft/Top always
+   * self-clamp to [0, scrollWidth-clientWidth]) have the final say and discards anything the clamp
+   * couldn't satisfy, rather than pushing the shortfall into panX/panY to preserve the anchor exactly.
+   * That shortfall is only ever nonzero when perfectly honoring the anchor would mean scrolling past the
+   * canvas's own edge - content that doesn't exist - so the trade is a marginal, edge-only loss of
+   * cursor-anchor precision (confirmed: same order of magnitude whether reached in one zoom step or many
+   * small ones, i.e. a real geometric floor, not accumulated drift) in exchange for scrollLeft/Top always
+   * meaning exactly what they say, which is what the reported bug actually needs guaranteed.
+   */
+  private absorbPanCorrection(dx: number, dy: number, canvasWidth: number, canvasHeight: number): void {
+    const inner = this.canvas?.parentElement as HTMLElement | null;
+    const wrap = inner?.parentElement as HTMLElement | null;
+    if (!wrap || !inner) {
+      this.panX -= dx;
+      this.panY -= dy;
+      return;
+    }
+    const oldPanX = this.panX;
+    const oldPanY = this.panY;
+    const useScrollX = canvasWidth > wrap.clientWidth;
+    const useScrollY = canvasHeight > wrap.clientHeight;
+    this.panX = useScrollX ? 0 : oldPanX - dx;
+    this.panY = useScrollY ? 0 : oldPanY - dy;
+    // Written to the DOM directly here, synchronously, rather than left for React's next render:
+    // scrollLeft/Top's assignments just below auto-clamp against the wrap's *current* scrollWidth/
+    // Height, which still include whatever transform is actually on the element right now - if that's
+    // still last render's (larger) panX/panY because React hasn't re-rendered yet, the clamp would use a
+    // stale, inflated bound, and the value actually assigned would only turn out wrong once React's own
+    // render later swaps in the smaller/zero transform computed above and the browser re-clamps against
+    // the now-current (smaller) scrollWidth. React reads this same panX/panY on its own next render and
+    // writes the identical style, so this isn't a fight with it, just staying in sync one tick sooner
+    // than a render would - the same reasoning as this method reading getBoundingClientRect() directly
+    // instead of waiting on a render.
+    inner.style.transform = this.panX || this.panY ? `translate(${this.panX}px, ${this.panY}px)` : '';
+    if (useScrollX) wrap.scrollLeft += dx - oldPanX;
+    if (useScrollY) wrap.scrollTop += dy - oldPanY;
+  }
+
+  /** Multiplicative zoom-button step (see ZOOM_BUTTON_STEP), anchored at the wrap's own visible center
+   *  so the view stays centered on whatever's already on screen instead of jumping toward the origin. */
+  private zoomAtViewportCenter(scale: number): void {
+    const wrap = this.canvas?.parentElement?.parentElement as HTMLElement | null;
+    if (!wrap) {
+      this.setZoom(scale);
+      return;
+    }
+    const rect = wrap.getBoundingClientRect();
+    this.setZoom(scale, { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+  }
+
   zoomIn(): void {
-    this.zoomIndex = Math.min(ZOOM_LEVELS.length - 1, this.zoomIndex + 1);
-    this.recomputeCanvasSize();
-    this.refresh();
+    this.zoomAtViewportCenter(this.zoomScale * ZOOM_BUTTON_STEP);
   }
 
   zoomOut(): void {
-    this.zoomIndex = Math.max(0, this.zoomIndex - 1);
-    this.recomputeCanvasSize();
-    this.refresh();
+    this.zoomAtViewportCenter(this.zoomScale / ZOOM_BUTTON_STEP);
   }
 
-  private defaultZoomIndexForSize(maxDim: number): number {
-    if (maxDim >= 32) return ZOOM_LEVELS.indexOf(0.75);
-    return 2;
+  /** Sets a continuous zoom scale that shows the whole canvas inside .pixel-canvas-wrap without
+   *  scrolling - unlike ZOOM_LEVELS' largest preset step, which still isn't nearly small enough for a
+   *  large canvas (e.g. a 1400×900 background). Reads the wrap element's current size straight from
+   *  the DOM (via this.canvas's own parents) rather than needing a ResizeObserver plumbed in from the
+   *  component - this is a one-shot fit-right-now action, not an ambient always-fit mode, so there's
+   *  nothing to keep in sync between clicks. */
+  zoomToFit(): void {
+    const wrap = this.canvas?.parentElement?.parentElement;
+    if (!wrap) return;
+    const cs = getComputedStyle(wrap);
+    const availW = wrap.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const availH = wrap.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    if (availW <= 0 || availH <= 0) return;
+    const { width, height } = this.current;
+    const scale = Math.min(availW / (width * BASE_CELL_PX), availH / (height * BASE_CELL_PX));
+    this.panX = 0;
+    this.panY = 0;
+    this.setZoom(scale);
   }
 
-  setGridSize(newWidth: number, newHeight: number): void {
-    if (newWidth === this.current.width && newHeight === this.current.height) return;
+  private defaultZoomForSize(maxDim: number): number {
+    return Math.min(this.maxZoomScale(), maxDim >= 32 ? 0.75 : 1);
+  }
+
+  /**
+   * `type` is the sprite-type dropdown's own live (possibly unsaved) value, not necessarily
+   * this.current.type - CanvasMetaBar.tsx keeps a sprite's name/type as a draft in React state until
+   * "Save to library", so a user can switch the dropdown to 'background' and try to resize before ever
+   * saving. Clamping here (not just in the UI that calls this) is what makes the 300x300 background
+   * floor unbypassable - this is the only place that ever actually changes width/height, confirmed via
+   * a repo-wide search for other callers.
+   */
+  setGridSize(newWidth: number, newHeight: number, type: SpriteType): void {
+    const minSize = type === 'background' ? storage.MIN_BACKGROUND_GRID_SIZE : storage.MIN_GRID_SIZE;
+    const clampedWidth = Math.max(minSize, newWidth);
+    const clampedHeight = Math.max(minSize, newHeight);
+    if (clampedWidth === this.current.width && clampedHeight === this.current.height) return;
     this.pushUndo();
     const { width, height } = this.current;
     this.current.frames = this.current.frames.map((layers) =>
-      layers.map((layer) => ({ ...layer, cells: storage.resampleFrame(layer.cells, width, height, newWidth, newHeight) }))
+      layers.map((layer) => ({ ...layer, cells: storage.resampleFrame(layer.cells, width, height, clampedWidth, clampedHeight) }))
     );
-    this.current.width = newWidth;
-    this.current.height = newHeight;
-    this.zoomIndex = this.defaultZoomIndexForSize(Math.max(newWidth, newHeight));
+    this.current.width = clampedWidth;
+    this.current.height = clampedHeight;
+    this.zoomScale = this.defaultZoomForSize(Math.max(clampedWidth, clampedHeight));
+    this.panX = 0;
+    this.panY = 0;
     this.frameIndex = Math.min(this.frameIndex, this.current.frames.length - 1);
     this.selection = null;
+    this.lassoPoints = null;
+    this.selectionMask = null;
     this.recomputeCanvasSize();
     this.refresh();
   }
@@ -402,7 +762,7 @@ class PixelEditorEngine {
     if (this.layers().length >= LAYER_LIMIT) return;
     this.pushUndo();
     const layers = this.layers();
-    const cloned: Layer = JSON.parse(JSON.stringify(layers[index]));
+    const cloned: Layer = structuredClone(layers[index]);
     cloned.id = storage.uid('layer');
     cloned.name = `${layers[index].name} copy`;
     layers.splice(index + 1, 0, cloned);
@@ -478,7 +838,9 @@ class PixelEditorEngine {
   deselect(): void {
     if (!this.selection) return;
     this.selection = null;
-    this.refresh();
+    this.lassoPoints = null;
+    this.selectionMask = null;
+    this.reactNotify();
   }
 
   // --- frames ---
@@ -503,7 +865,7 @@ class PixelEditorEngine {
   dupFrame(): void {
     if (this.current.frames.length >= FRAME_LIMIT) return;
     this.pushUndo();
-    const cloned: Layer[] = JSON.parse(JSON.stringify(this.current.frames[this.frameIndex]));
+    const cloned: Layer[] = structuredClone(this.current.frames[this.frameIndex]);
     cloned.forEach((layer) => (layer.id = storage.uid('layer')));
     this.current.frames.splice(this.frameIndex + 1, 0, cloned);
     this.frameIndex += 1;
@@ -571,6 +933,8 @@ class PixelEditorEngine {
     this.current.width = newWidth;
     this.current.height = newHeight;
     this.selection = null;
+    this.lassoPoints = null;
+    this.selectionMask = null;
     this.recomputeCanvasSize();
     this.refresh();
   }
@@ -634,8 +998,11 @@ class PixelEditorEngine {
       this.commitCurve();
       return;
     }
-    if (key === 'v') {
-      this.setSymmetry(this.symmetry === 'vertical' ? 'none' : 'vertical');
+    if (this.selection && (key === 'arrowup' || key === 'arrowdown' || key === 'arrowleft' || key === 'arrowright')) {
+      e.preventDefault();
+      const dx = key === 'arrowleft' ? -1 : key === 'arrowright' ? 1 : 0;
+      const dy = key === 'arrowup' ? -1 : key === 'arrowdown' ? 1 : 0;
+      this.nudgeSelection(dx, dy);
       return;
     }
     if (key === '[') {
@@ -675,9 +1042,14 @@ class PixelEditorEngine {
       if (nx >= 0 && ny >= 0 && nx < width && ny < height) frame[ny * width + nx] = c.color;
     });
     if (this.selection) this.selection = shiftBox(this.selection, this.moveDelta);
+    if (this.lassoPoints) {
+      this.lassoPoints = this.lassoPoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+      this.selectionMask = this.polygonMask(this.lassoPoints);
+    }
     this.moveBuffer = null;
     this.moveStartCell = null;
     this.moveDelta = { dx: 0, dy: 0 };
+    this.gestureBaseBitmap = null;
     this.refresh();
   }
 
@@ -692,9 +1064,15 @@ class PixelEditorEngine {
     this.painting = false;
     this.lastPaintCell = null;
     this.shapeStart = null;
-    this.shapePreviewCells = null;
+    // redrawShapePreview(null), not a bare field assignment - an interrupted shape/curve drag can
+    // leave a preview actually painted on the canvas (see redrawShapePreview's dirty-rect repaint),
+    // and unlike the old full-canvas drawGrid() (which erased it as a side effect of repainting
+    // everything), a targeted repaint needs telling to actually erase that region. A no-op, at the
+    // cost of one bounding-box check, when there was nothing being previewed.
+    this.redrawShapePreview(null);
     this.selectStart = null;
     this.selectionDraft = null;
+    this.lassoDraftPoints = null;
     this.moveBuffer = null;
     this.moveStartCell = null;
     this.moveDelta = { dx: 0, dy: 0 };
@@ -706,6 +1084,7 @@ class PixelEditorEngine {
     this.rotateSource = null;
     this.rotatePreview = null;
     this.rotateAngle = 0;
+    this.gestureBaseBitmap = null;
     this.eraseOverride = false;
     this.strokeSnapshot = null;
     this.strokePoints = [];
@@ -715,6 +1094,13 @@ class PixelEditorEngine {
       this.curveControl = null;
       this.curvePhase = null;
       this.curveDraggingControl = false;
+    }
+    if (this.gradientStart) {
+      // Same reasoning as redrawShapePreview(null) above: drawGradientPreviewOverlay() paints straight
+      // onto the canvas bitmap without a preceding clear (see its own doc comment), so an interrupted
+      // gradient drag needs an explicit repaint of the box it covered, not just clearing the state that
+      // used to describe it.
+      this.redrawRegions([this.selection ?? { x0: 0, y0: 0, x1: this.current.width - 1, y1: this.current.height - 1 }]);
     }
     this.gradientStart = null;
     this.gradientEnd = null;
@@ -726,35 +1112,6 @@ class PixelEditorEngine {
     if (!this.canvas) return null;
     const rect = this.canvas.getBoundingClientRect();
     return { px: e.clientX - rect.left, py: e.clientY - rect.top };
-  }
-
-  private hitTestHandle(e: { clientX: number; clientY: number }): HandleName | null {
-    if (!this.selection) return null;
-    const pt = this.pxFromEvent(e);
-    if (!pt) return null;
-    const cellPx = this.effectiveCellPx();
-    const box = this.selection;
-    const x0 = box.x0 * cellPx;
-    const y0 = box.y0 * cellPx;
-    const x1 = (box.x1 + 1) * cellPx;
-    const y1 = (box.y1 + 1) * cellPx;
-    const tol = HANDLE_HIT_TOLERANCE;
-    const { px, py } = pt;
-    const nearLeft = Math.abs(px - x0) <= tol;
-    const nearRight = Math.abs(px - x1) <= tol;
-    const nearTop = Math.abs(py - y0) <= tol;
-    const nearBottom = Math.abs(py - y1) <= tol;
-    const withinX = px >= x0 - tol && px <= x1 + tol;
-    const withinY = py >= y0 - tol && py <= y1 + tol;
-    if (nearLeft && nearTop) return 'nw';
-    if (nearRight && nearTop) return 'ne';
-    if (nearLeft && nearBottom) return 'sw';
-    if (nearRight && nearBottom) return 'se';
-    if (nearTop && withinX) return 'n';
-    if (nearBottom && withinX) return 's';
-    if (nearLeft && withinY) return 'w';
-    if (nearRight && withinY) return 'e';
-    return null;
   }
 
   private selectionCenterPx(box: SelectionBox, cellPx: number): { cx: number; cy: number } {
@@ -770,31 +1127,16 @@ class PixelEditorEngine {
     return ((box.y1 - box.y0 + 1) * cellPx) / 2 + ROTATE_HANDLE_OFFSET;
   }
 
-  /**
-   * Clamped to stay inside the canvas bitmap: a handle beyond those bounds would be both
-   * invisible (canvas clips its own drawing) and unreachable (pointer events land on the
-   * wrapper div instead, which deselects) - most noticeable with a selection flush against
-   * an edge, e.g. selecting the whole sprite.
-   */
+  /** Unclamped - the rotate handle is a DOM element (see PixelSelectionOverlay.tsx), not drawn on
+   *  this <canvas>, specifically so it stays visible/grabbable above the selection even when that
+   *  puts it outside the canvas's own bitmap (e.g. a selection flush against the top edge) - it's
+   *  only ever clipped by .pixel-canvas-wrap now, same "beyond the frame, into the surrounding
+   *  chrome" treatment as the tank's own background rotate handle. */
   private rotateHandlePos(box: SelectionBox, cellPx: number): { hx: number; hy: number } {
     const { cx, cy } = this.selectionCenterPx(box, cellPx);
     const r = this.rotateHandleRadius(box, cellPx);
     const ang = -Math.PI / 2 + this.rotateAngle;
-    const pad = ROTATE_HANDLE_RADIUS + 2;
-    const maxW = this.canvas?.width ?? Infinity;
-    const maxH = this.canvas?.height ?? Infinity;
-    const hx = Math.min(Math.max(cx + r * Math.cos(ang), pad), Math.max(pad, maxW - pad));
-    const hy = Math.min(Math.max(cy + r * Math.sin(ang), pad), Math.max(pad, maxH - pad));
-    return { hx, hy };
-  }
-
-  private hitTestRotateHandle(e: { clientX: number; clientY: number }): boolean {
-    if (!this.selection) return false;
-    const pt = this.pxFromEvent(e);
-    if (!pt) return false;
-    const cellPx = this.effectiveCellPx();
-    const { hx, hy } = this.rotateHandlePos(this.selection, cellPx);
-    return Math.hypot(pt.px - hx, pt.py - hy) <= ROTATE_HIT_RADIUS;
+    return { hx: cx + r * Math.cos(ang), hy: cy + r * Math.sin(ang) };
   }
 
   /** Whether a click is close enough to the curve's control-point handle to grab it, rather than committing the curve. */
@@ -809,19 +1151,25 @@ class PixelEditorEngine {
     return Math.hypot(pt.px - hx, pt.py - hy) <= tol;
   }
 
-  private cellFromEventClamped(e: { clientX: number; clientY: number }): Cell {
+  /** Unclamped - unlike cellFromEvent/cellFromEventClamped, never returns null and never pins the
+   *  result to [0,width)x[0,height): move and resize drags (see updateResizeDrag, the moveBuffer
+   *  branch of onPointerMove) need to keep tracking the pointer past the canvas's own edge, so the
+   *  selection box can be dragged/stretched fully outside the sprite - same free-form floating
+   *  selection Microsoft Paint allows, rather than pinning the box to the visible bitmap. */
+  private cellFromEventUnclamped(e: { clientX: number; clientY: number }): Cell {
     const rect = this.canvas!.getBoundingClientRect();
     const cellPx = this.effectiveCellPx();
-    const { width, height } = this.current;
-    const x = Math.min(width - 1, Math.max(0, Math.floor((e.clientX - rect.left) / cellPx)));
-    const y = Math.min(height - 1, Math.max(0, Math.floor((e.clientY - rect.top) / cellPx)));
+    const x = Math.floor((e.clientX - rect.left) / cellPx);
+    const y = Math.floor((e.clientY - rect.top) / cellPx);
     return { x, y };
   }
 
   private isInsideSelection(cell: Cell): boolean {
     if (!this.selection) return false;
     const box = this.selection;
-    return cell.x >= box.x0 && cell.x <= box.x1 && cell.y >= box.y0 && cell.y <= box.y1;
+    if (cell.x < box.x0 || cell.x > box.x1 || cell.y < box.y0 || cell.y > box.y1) return false;
+    if (this.selectionMask) return this.selectionMask.has(`${cell.x},${cell.y}`);
+    return true;
   }
 
   private startMoveGesture(cell: Cell): void {
@@ -833,6 +1181,7 @@ class PixelEditorEngine {
     const cells: MoveBufferCell[] = [];
     for (let y = box.y0; y <= box.y1; y++) {
       for (let x = box.x0; x <= box.x1; x++) {
+        if (this.selectionMask && !this.selectionMask.has(`${x},${y}`)) continue;
         const c = frame[y * width + x];
         if (c) cells.push({ x, y, color: c });
         frame[y * width + x] = null;
@@ -841,9 +1190,29 @@ class PixelEditorEngine {
     this.moveBuffer = { cells };
     this.moveStartCell = cell;
     this.moveDelta = { dx: 0, dy: 0 };
+    this.cacheGestureBaseBitmap();
     this.refresh();
   }
 
+  /** Snapshots everything except the moving layer's cleared-out source region onto gestureBaseBitmap,
+   *  so drawGrid() can blit it with one drawImage() per move/resize/rotate frame instead of re-running
+   *  paintLayers() over every layer on every pointer move - see gestureBaseBitmap's own doc comment. */
+  private cacheGestureBaseBitmap(): void {
+    const { width, height } = this.current;
+    if (!this.gestureBaseBitmap) this.gestureBaseBitmap = document.createElement('canvas');
+    const bmp = this.gestureBaseBitmap;
+    if (bmp.width !== width || bmp.height !== height) {
+      bmp.width = width;
+      bmp.height = height;
+    }
+    const bctx = bmp.getContext('2d')!;
+    bctx.clearRect(0, 0, width, height);
+    paintLayers(bctx, this.layers(), width, height, 1);
+  }
+
+  /** Masked-out cells (outside a lasso's actual shape but inside its bounding box) read as null/
+   *  transparent regardless of what's really painted there, so move/resize/rotate/copy all naturally
+   *  carry only the lassoed pixels instead of the whole bounding rectangle. */
   private captureSelectionPixels(box: SelectionBox): (string | null)[][] {
     const frame = this.activeCells();
     const width = this.current.width;
@@ -851,7 +1220,7 @@ class PixelEditorEngine {
     for (let y = box.y0; y <= box.y1; y++) {
       const row: (string | null)[] = [];
       for (let x = box.x0; x <= box.x1; x++) {
-        row.push(frame[y * width + x]);
+        row.push(this.selectionMask && !this.selectionMask.has(`${x},${y}`) ? null : frame[y * width + x]);
       }
       rows.push(row);
     }
@@ -859,7 +1228,7 @@ class PixelEditorEngine {
   }
 
   copySelection(): void {
-    if (this.tool !== 'select' || !this.selection) return;
+    if (!SELECTION_TOOLS.has(this.tool) || !this.selection) return;
     const box = this.selection;
     this.clipboard = {
       w: box.x1 - box.x0 + 1,
@@ -891,6 +1260,8 @@ class PixelEditorEngine {
     }
     this.tool = 'select';
     this.selection = { x0, y0, x1: x0 + w - 1, y1: y0 + h - 1 };
+    this.lassoPoints = null;
+    this.selectionMask = null;
     this.refresh();
   }
 
@@ -898,8 +1269,81 @@ class PixelEditorEngine {
     const frame = this.activeCells();
     const width = this.current.width;
     for (let y = box.y0; y <= box.y1; y++) {
-      for (let x = box.x0; x <= box.x1; x++) frame[y * width + x] = null;
+      for (let x = box.x0; x <= box.x1; x++) {
+        if (this.selectionMask && !this.selectionMask.has(`${x},${y}`)) continue;
+        frame[y * width + x] = null;
+      }
     }
+  }
+
+  private boundingBoxOfPoints(pts: Cell[]): SelectionBox {
+    let x0 = pts[0].x, x1 = pts[0].x, y0 = pts[0].y, y1 = pts[0].y;
+    pts.forEach((p) => {
+      x0 = Math.min(x0, p.x);
+      x1 = Math.max(x1, p.x);
+      y0 = Math.min(y0, p.y);
+      y1 = Math.max(y1, p.y);
+    });
+    return { x0, y0, x1, y1 };
+  }
+
+  /** Even-odd scanline fill of the closed polygon `pts` describes (auto-closed from the last point back
+   *  to the first), sampled at each cell's center - the standard way to turn a freehand lasso path into
+   *  the set of cells it actually encloses. Bounded to the polygon's own bounding box, not the whole
+   *  canvas, since a selection is typically a small fraction of a large one. */
+  private polygonMask(pts: Cell[]): Set<string> {
+    const box = this.boundingBoxOfPoints(pts);
+    const mask = new Set<string>();
+    for (let y = box.y0; y <= box.y1; y++) {
+      const cy = y + 0.5;
+      const crossings: number[] = [];
+      for (let i = 0; i < pts.length; i++) {
+        const a = pts[i];
+        const b = pts[(i + 1) % pts.length];
+        if (a.y === b.y) continue;
+        if ((cy >= a.y && cy < b.y) || (cy >= b.y && cy < a.y)) {
+          crossings.push(a.x + ((cy - a.y) / (b.y - a.y)) * (b.x - a.x));
+        }
+      }
+      crossings.sort((m, n) => m - n);
+      for (let i = 0; i + 1 < crossings.length; i += 2) {
+        const xStart = Math.max(box.x0, Math.ceil(crossings[i] - 0.5));
+        const xEnd = Math.min(box.x1, Math.floor(crossings[i + 1] - 0.5));
+        for (let x = xStart; x <= xEnd; x++) mask.add(`${x},${y}`);
+      }
+    }
+    return mask;
+  }
+
+  /** Shifts the current selection by exactly (dx, dy) - a discrete, single-step counterpart to the
+   *  drag-based startMoveGesture/commitMove, for arrow-key nudging (see onKeyDown). Each press is its
+   *  own undo step, same granularity as any other single-shot edit action in this engine. */
+  private nudgeSelection(dx: number, dy: number): void {
+    if (!this.selection) return;
+    this.pushUndo();
+    const box = this.selection;
+    const { width, height } = this.current;
+    const frame = this.activeCells();
+    const cells: MoveBufferCell[] = [];
+    for (let y = box.y0; y <= box.y1; y++) {
+      for (let x = box.x0; x <= box.x1; x++) {
+        if (this.selectionMask && !this.selectionMask.has(`${x},${y}`)) continue;
+        const c = frame[y * width + x];
+        if (c) cells.push({ x, y, color: c });
+        frame[y * width + x] = null;
+      }
+    }
+    cells.forEach((c) => {
+      const nx = c.x + dx;
+      const ny = c.y + dy;
+      if (nx >= 0 && ny >= 0 && nx < width && ny < height) frame[ny * width + nx] = c.color;
+    });
+    this.selection = shiftBox(box, { dx, dy });
+    if (this.lassoPoints) {
+      this.lassoPoints = this.lassoPoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+      this.selectionMask = this.polygonMask(this.lassoPoints);
+    }
+    this.refresh();
   }
 
   private buildResizePreview(source: (string | null)[][], origBox: SelectionBox, newBox: SelectionBox): MoveBufferCell[] {
@@ -927,10 +1371,13 @@ class PixelEditorEngine {
         if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = c.color;
       });
     }
+    // Resize handles only ever render for a plain rectangular marquee (see selectionOverlayBox), so
+    // there's no lasso outline/mask to keep in sync here the way commitMove/commitRotate do.
     this.resizeHandle = null;
     this.resizeOrigin = null;
     this.resizeSource = null;
     this.resizePreview = null;
+    this.gestureBaseBitmap = null;
   }
 
   private computeResizedBox(origin: SelectionBox, handle: HandleName, c: Cell): SelectionBox {
@@ -1017,52 +1464,201 @@ class PixelEditorEngine {
         if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = c.color;
       });
     }
+    // Keep a lasso's outline/mask in sync with the same rotation just applied to its pixels - the
+    // same forward rotation (by rotateAngle, about rotateOrigin's center) computeRotatePreview used to
+    // place each dest pixel, or a subsequent move/copy would use stale, pre-rotation mask coordinates.
+    if (this.lassoPoints && this.rotateOrigin) {
+      const origin = this.rotateOrigin;
+      const cx = origin.x0 + (origin.x1 - origin.x0 + 1) / 2;
+      const cy = origin.y0 + (origin.y1 - origin.y0 + 1) / 2;
+      const cos = Math.cos(this.rotateAngle);
+      const sin = Math.sin(this.rotateAngle);
+      this.lassoPoints = this.lassoPoints.map((p) => {
+        const rx = p.x - cx;
+        const ry = p.y - cy;
+        return { x: Math.round(cx + rx * cos - ry * sin), y: Math.round(cy + rx * sin + ry * cos) };
+      });
+      this.selectionMask = this.polygonMask(this.lassoPoints);
+    }
     this.rotateOrigin = null;
     this.rotateSource = null;
     this.rotatePreview = null;
     this.rotateAngle = 0;
+    this.gestureBaseBitmap = null;
+  }
+
+  /** Where PixelSelectionOverlay.tsx (a DOM layer in .pixel-canvas-wrap, not this <canvas>) should
+   *  place the rotate handle and the stalk connecting it to the selection's top edge - null when
+   *  there's no settled selection to show it for. See rotateHandlePos for why this is unclamped. */
+  selectionRotateHandle(): { mx: number; y0: number; hx: number; hy: number } | null {
+    if (!SELECTION_TOOLS.has(this.tool) || !this.selection || this.selectionDraft) return null;
+    const cellPx = this.effectiveCellPx();
+    // While a move-drag is in progress, this.selection is still the *pre-drag* box (commitMove()
+    // only shifts it on release) - use the same live-shifted box the canvas-drawn border and
+    // handles track (see the `shown` box in drawGrid), or the handle would float at the old spot
+    // while everything else visibly moves with the drag.
+    const box = this.moveBuffer ? shiftBox(this.selection, this.moveDelta) : this.selection;
+    const x0 = box.x0 * cellPx;
+    const y0 = box.y0 * cellPx;
+    const x1 = (box.x1 + 1) * cellPx;
+    const { hx, hy } = this.rotateHandlePos(box, cellPx);
+    return { mx: (x0 + x1) / 2, y0, hx, hy };
+  }
+
+  /** Where PixelSelectionOverlay.tsx should draw the selection's dashed border and its 8 resize
+   *  handles - both DOM elements now (like the rotate handle above), not drawn on this <canvas>, so
+   *  the box stays visible/grabbable even when dragged or stretched fully outside the canvas's own
+   *  bitmap (Paint-style floating selection) rather than being clipped to invisibility the moment it
+   *  crosses the edge. Live-tracks an in-progress move the same way selectionRotateHandle does. */
+  selectionOverlayBox(): { x0: number; y0: number; x1: number; y1: number; handles: { name: HandleName; x: number; y: number }[] } | null {
+    // A lasso selection draws its own polygon outline instead (see selectionLassoOutline) - a
+    // rectangular border/handles around its bounding box would misrepresent what's actually selected.
+    if (!this.selection || this.selectionDraft || this.lassoPoints) return null;
+    if (!SELECTION_AWARE_TOOLS.has(this.tool)) return null;
+    const cellPx = this.effectiveCellPx();
+    const box = this.moveBuffer ? shiftBox(this.selection, this.moveDelta) : this.selection;
+    const x0 = box.x0 * cellPx;
+    const y0 = box.y0 * cellPx;
+    const x1 = (box.x1 + 1) * cellPx;
+    const y1 = (box.y1 + 1) * cellPx;
+    const mx = (x0 + x1) / 2;
+    const my = (y0 + y1) / 2;
+    // Resize handles imply a rectangular scale, so they only render for the Select tool itself - not
+    // while Move (or Lasso) is active, which would show a handle whose own drag start is a no-op.
+    const handles: { name: HandleName; x: number; y: number }[] =
+      this.tool === 'select'
+        ? [
+            { name: 'nw', x: x0, y: y0 }, { name: 'n', x: mx, y: y0 }, { name: 'ne', x: x1, y: y0 },
+            { name: 'w', x: x0, y: my }, { name: 'e', x: x1, y: my },
+            { name: 'sw', x: x0, y: y1 }, { name: 's', x: mx, y: y1 }, { name: 'se', x: x1, y: y1 },
+          ]
+        : [];
+    return { x0, y0, x1, y1, handles };
+  }
+
+  /** Where PixelSelectionOverlay.tsx should draw a lasso selection's own outline (marching ants along
+   *  the actual lassoed shape, not its bounding box) - the freeform counterpart to selectionOverlayBox
+   *  above. Live-tracks an in-progress move the same way that does. */
+  selectionLassoOutline(): { points: string } | null {
+    if (!this.lassoPoints || this.selectionDraft || !SELECTION_AWARE_TOOLS.has(this.tool)) return null;
+    const cellPx = this.effectiveCellPx();
+    const { dx, dy } = this.moveBuffer ? this.moveDelta : { dx: 0, dy: 0 };
+    const points = this.lassoPoints.map((p) => `${(p.x + dx + 0.5) * cellPx},${(p.y + dy + 0.5) * cellPx}`).join(' ');
+    return { points };
+  }
+
+  /** The in-progress freeform path while dragging out a new lasso selection - an open polyline, unlike
+   *  the closed polygon selectionLassoOutline draws once released. */
+  lassoDraftOutline(): { points: string } | null {
+    if (!this.lassoDraftPoints || this.lassoDraftPoints.length < 2) return null;
+    const cellPx = this.effectiveCellPx();
+    return { points: this.lassoDraftPoints.map((p) => `${(p.x + 0.5) * cellPx},${(p.y + 0.5) * cellPx}`).join(' ') };
+  }
+
+  /** Starts a resize drag - called from a DOM resize handle's own pointerdown (see
+   *  PixelSelectionOverlay.tsx) instead of hit-testing the canvas, so the handle works wherever it's
+   *  actually drawn, including outside the canvas's own bounds. */
+  startResizeDrag(handle: HandleName): void {
+    if (this.tool !== 'select' || !this.selection) return;
+    if (this.painting) this.resetGestureState();
+    this.pushUndo();
+    this.painting = true;
+    this.resizeHandle = handle;
+    this.resizeOrigin = { ...this.selection };
+    this.resizeSource = this.captureSelectionPixels(this.selection);
+    this.clearFrameRegion(this.selection);
+    this.resizePreview = this.buildResizePreview(this.resizeSource, this.resizeOrigin, this.selection);
+    this.cacheGestureBaseBitmap();
+    this.refresh();
+  }
+
+  /** Continues an in-progress resize drag - called from the DOM handle's own pointermove (pointer
+   *  capture routes the event there regardless of where the cursor visually is). Unclamped, so the
+   *  box can be stretched fully outside the canvas rather than stopping dead at its edge. */
+  updateResizeDrag(e: { clientX: number; clientY: number }): void {
+    if (!this.resizeHandle || !this.resizeOrigin || !this.resizeSource) return;
+    const c = this.cellFromEventUnclamped(e);
+    const box = this.computeResizedBox(this.resizeOrigin, this.resizeHandle, c);
+    this.selection = box;
+    this.resizePreview = this.buildResizePreview(this.resizeSource, this.resizeOrigin, box);
+    this.refresh();
+  }
+
+  /** Commits an in-progress resize drag - called from the DOM handle's own pointerup/pointercancel. */
+  endResizeDrag(): void {
+    if (!this.resizeHandle) return;
+    this.painting = false;
+    this.stopSprayTimer();
+    this.commitResize();
+    this.refresh();
+  }
+
+  /** Starts a rotate drag - called from the DOM rotate handle's own pointerdown (see
+   *  PixelSelectionOverlay.tsx) instead of hit-testing the canvas, so the handle works wherever it's
+   *  actually drawn, including outside the canvas's own bounds. */
+  startRotateDrag(e: { clientX: number; clientY: number }): void {
+    if (!SELECTION_TOOLS.has(this.tool) || !this.selection) return;
+    if (this.painting) this.resetGestureState();
+    this.pushUndo();
+    this.painting = true;
+    this.rotateOrigin = { ...this.selection };
+    this.rotateSource = this.captureSelectionPixels(this.selection);
+    this.clearFrameRegion(this.selection);
+    const pt = this.pxFromEvent(e);
+    if (!pt) return;
+    const cellPx = this.effectiveCellPx();
+    const { cx, cy } = this.selectionCenterPx(this.rotateOrigin, cellPx);
+    this.rotateStartAngle = Math.atan2(pt.py - cy, pt.px - cx);
+    this.rotateAngle = 0;
+    const { cells, box } = this.computeRotatePreview(0);
+    this.rotatePreview = cells;
+    this.selection = box;
+    this.cacheGestureBaseBitmap();
+    this.refresh();
+  }
+
+  /** Continues an in-progress rotate drag - called from the DOM handle's own pointermove (pointer
+   *  capture routes the event there regardless of where the cursor visually is). */
+  updateRotateDrag(e: { clientX: number; clientY: number }): void {
+    if (!this.rotateOrigin || !this.rotateSource) return;
+    const pt = this.pxFromEvent(e);
+    if (!pt) return;
+    const cellPx = this.effectiveCellPx();
+    const { cx, cy } = this.selectionCenterPx(this.rotateOrigin, cellPx);
+    const currentAngle = Math.atan2(pt.py - cy, pt.px - cx);
+    this.rotateAngle = currentAngle - this.rotateStartAngle;
+    const { cells, box } = this.computeRotatePreview(this.rotateAngle);
+    this.rotatePreview = cells;
+    this.selection = box;
+    // Unlike the resize-drag branch's plain drawGrid() (canvas-only, nothing else depends on it),
+    // the DOM rotate handle (PixelSelectionOverlay.tsx) reads selectionRotateHandle() on every React
+    // render - without reactNotify() here it would freeze at its pre-drag position for the whole
+    // gesture and only snap to the right spot once refresh() fires on release.
+    this.refresh();
+  }
+
+  /** Commits an in-progress rotate drag - called from the DOM handle's own pointerup/pointercancel. */
+  endRotateDrag(): void {
+    if (!this.rotateOrigin) return;
+    this.painting = false;
+    this.stopSprayTimer();
+    this.commitRotate();
+    this.refresh();
   }
 
   onPointerDown(e: React.PointerEvent<HTMLCanvasElement>): void {
-    if (e.button === 2 && !ERASABLE_TOOLS.has(this.tool)) return;
-
-    if (this.tool === 'select' && this.selection && this.hitTestRotateHandle(e)) {
-      if (this.painting) this.resetGestureState();
+    // Middle-button pan (Paint/Photoshop/Pixilart convention): works regardless of the active tool and
+    // independent of `painting`/tool-specific state entirely, so it can't trigger a draw action and
+    // doesn't care what a concurrent primary-button gesture is doing. preventDefault suppresses the
+    // browser's own middle-click autoscroll mode, which would otherwise also arm on this same event.
+    if (e.button === 1) {
+      e.preventDefault();
+      this.middlePanActive = true;
+      this.middlePanLast = { x: e.clientX, y: e.clientY };
       this.canvas?.setPointerCapture(e.pointerId);
-      this.pushUndo();
-      this.painting = true;
-      this.rotateOrigin = { ...this.selection };
-      this.rotateSource = this.captureSelectionPixels(this.selection);
-      this.clearFrameRegion(this.selection);
-      const pt = this.pxFromEvent(e)!;
-      const cellPx = this.effectiveCellPx();
-      const { cx, cy } = this.selectionCenterPx(this.rotateOrigin, cellPx);
-      this.rotateStartAngle = Math.atan2(pt.py - cy, pt.px - cx);
-      this.rotateAngle = 0;
-      if (this.canvas) this.canvas.style.cursor = 'grabbing';
-      const { cells, box } = this.computeRotatePreview(0);
-      this.rotatePreview = cells;
-      this.selection = box;
-      this.refresh();
       return;
     }
-
-    if (this.tool === 'select' && this.selection) {
-      const handle = this.hitTestHandle(e);
-      if (handle) {
-        if (this.painting) this.resetGestureState();
-        this.canvas?.setPointerCapture(e.pointerId);
-        this.pushUndo();
-        this.painting = true;
-        this.resizeHandle = handle;
-        this.resizeOrigin = { ...this.selection };
-        this.resizeSource = this.captureSelectionPixels(this.selection);
-        this.clearFrameRegion(this.selection);
-        this.resizePreview = this.buildResizePreview(this.resizeSource, this.resizeOrigin, this.selection);
-        this.refresh();
-        return;
-      }
-    }
+    if (e.button === 2 && !ERASABLE_TOOLS.has(this.tool)) return;
 
     const cell = this.cellFromEvent(e);
     if (!cell) return;
@@ -1087,7 +1683,20 @@ class PixelEditorEngine {
       this.painting = true;
       this.selectStart = cell;
       this.selectionDraft = { x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y };
-      this.refresh();
+      // reactNotify(), not refresh() - a marquee-in-progress is pure metadata (see onPointerMove's
+      // same substitution for the reasoning); starting one doesn't touch a single pixel either.
+      this.reactNotify();
+      return;
+    }
+
+    if (this.tool === 'lasso') {
+      if (this.isInsideSelection(cell)) {
+        this.startMoveGesture(cell);
+        return;
+      }
+      this.painting = true;
+      this.lassoDraftPoints = [cell];
+      this.reactNotify();
       return;
     }
 
@@ -1106,9 +1715,7 @@ class PixelEditorEngine {
         this.painting = true;
         this.curveDraggingControl = true;
         this.curveControl = cell;
-        this.shapePreviewCells = this.mirroredExpand(this.quadraticBezierCells(this.curveStart!, this.curveControl, this.curveEnd!));
-        this.drawGrid(this.shapePreviewCells);
-        this.reactNotify();
+        this.redrawShapePreview(this.mirroredExpand(this.quadraticBezierCells(this.curveStart!, this.curveControl, this.curveEnd!)));
         return;
       }
       this.pushUndo();
@@ -1117,9 +1724,7 @@ class PixelEditorEngine {
       this.curveEnd = cell;
       this.curveControl = null;
       this.curvePhase = 'drag-end';
-      this.shapePreviewCells = this.mirroredExpand([cell]);
-      this.drawGrid(this.shapePreviewCells);
-      this.reactNotify();
+      this.redrawShapePreview(this.mirroredExpand([cell]));
       return;
     }
 
@@ -1130,9 +1735,7 @@ class PixelEditorEngine {
     if (this.tool === 'line' || this.tool === 'rect' || this.tool === 'ellipse') {
       this.shapeStart = cell;
       const end = e.shiftKey ? this.constrainShapeEnd(cell, cell) : cell;
-      this.shapePreviewCells = this.mirroredExpand(this.computeShapeCells(cell, end));
-      this.drawGrid(this.shapePreviewCells);
-      this.reactNotify();
+      this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(cell, end)));
     } else if (this.tool === 'fill') {
       const frame = this.activeCells();
       const { width, height } = this.current;
@@ -1149,8 +1752,7 @@ class PixelEditorEngine {
     } else if (this.tool === 'gradient') {
       this.gradientStart = cell;
       this.gradientEnd = cell;
-      this.gradientPreview = this.gradientCellsPreview(cell, cell);
-      this.drawGrid();
+      this.drawGradientPreviewOverlay();
     } else {
       this.lastPaintCell = null;
       this.beginStroke();
@@ -1159,59 +1761,64 @@ class PixelEditorEngine {
   }
 
   onPointerMove(e: React.PointerEvent<HTMLCanvasElement>): void {
+    if (this.middlePanActive) {
+      if (!this.middlePanLast) return;
+      const dx = e.clientX - this.middlePanLast.x;
+      const dy = e.clientY - this.middlePanLast.y;
+      this.middlePanLast = { x: e.clientX, y: e.clientY };
+      const wrap = this.canvas?.parentElement?.parentElement as HTMLElement | null;
+      if (wrap) {
+        wrap.scrollLeft -= dx;
+        wrap.scrollTop -= dy;
+      }
+      return;
+    }
     if (!this.painting) {
-      if (this.tool === 'select' && this.selection && this.canvas) {
-        if (this.hitTestRotateHandle(e)) {
-          this.canvas.style.cursor = 'grab';
-        } else {
-          const handle = this.hitTestHandle(e);
-          if (handle) {
-            this.canvas.style.cursor = HANDLE_CURSORS[handle];
-          } else {
-            const hoverCell = this.cellFromEvent(e);
-            this.canvas.style.cursor = hoverCell && this.isInsideSelection(hoverCell) ? 'move' : '';
-          }
-        }
+      // The rotate handle and resize handles are DOM elements now (see PixelSelectionOverlay.tsx)
+      // with their own CSS cursors, so there's nothing to hover-test for them here - only the
+      // move-body, which still lives on this canvas.
+      if (SELECTION_AWARE_TOOLS.has(this.tool) && this.selection && this.canvas) {
+        const hoverCell = this.cellFromEvent(e);
+        this.canvas.style.cursor = hoverCell && this.isInsideSelection(hoverCell) ? 'move' : '';
       }
       return;
     }
 
-    if (this.rotateOrigin && this.rotateSource) {
-      const pt = this.pxFromEvent(e);
-      if (!pt) return;
-      const cellPx = this.effectiveCellPx();
-      const { cx, cy } = this.selectionCenterPx(this.rotateOrigin, cellPx);
-      const currentAngle = Math.atan2(pt.py - cy, pt.px - cx);
-      this.rotateAngle = currentAngle - this.rotateStartAngle;
-      const { cells, box } = this.computeRotatePreview(this.rotateAngle);
-      this.rotatePreview = cells;
-      this.selection = box;
-      this.drawGrid();
-      return;
-    }
-
-    if (this.resizeHandle && this.resizeOrigin && this.resizeSource) {
-      const c = this.cellFromEventClamped(e);
-      const box = this.computeResizedBox(this.resizeOrigin, this.resizeHandle, c);
-      this.selection = box;
-      this.resizePreview = this.buildResizePreview(this.resizeSource, this.resizeOrigin, box);
-      this.drawGrid();
+    if (this.moveBuffer) {
+      if (!this.moveStartCell) return;
+      // Unclamped - lets the selection be dragged fully outside the canvas, Paint-style, instead
+      // of freezing in place the moment the pointer crosses the canvas edge.
+      const uc = this.cellFromEventUnclamped(e);
+      this.moveDelta = { dx: uc.x - this.moveStartCell.x, dy: uc.y - this.moveStartCell.y };
+      // refresh(), not drawGrid() - the DOM rotate handle (PixelSelectionOverlay.tsx) reads
+      // selectionRotateHandle(), which now tracks this move via moveDelta, but only on a React
+      // re-render (reactNotify()); without it the handle would freeze at its pre-drag position for
+      // the whole move gesture, same bug as the rotate-drag case this mirrors.
+      this.refresh();
       return;
     }
 
     const cell = this.cellFromEvent(e);
 
-    if (this.moveBuffer) {
-      if (!cell || !this.moveStartCell) return;
-      this.moveDelta = { dx: cell.x - this.moveStartCell.x, dy: cell.y - this.moveStartCell.y };
-      this.drawGrid();
-      return;
-    }
-
     if (this.tool === 'select') {
       if (!cell || !this.selectStart) return;
       this.selectionDraft = normalizeBox(this.selectStart, cell);
-      this.drawGrid();
+      // reactNotify(), not refresh() - the marquee border is a DOM element now (PixelSelectionOverlay.tsx
+      // reads selectionDraft directly), so this only needs a React re-render to track the drag live, same
+      // as the settled-selection border/handles already do - dragging out a marquee never touches a pixel,
+      // so the full clear+repaint refresh() would otherwise do here is pure waste, and on a large canvas
+      // (e.g. a 1400x900 background) was the same kind of per-move stutter as an unbounded shape preview.
+      this.reactNotify();
+      return;
+    }
+
+    if (this.tool === 'lasso') {
+      if (!cell || !this.lassoDraftPoints) return;
+      const last = this.lassoDraftPoints[this.lassoDraftPoints.length - 1];
+      if (!last || last.x !== cell.x || last.y !== cell.y) this.lassoDraftPoints.push(cell);
+      // reactNotify(), not refresh() - the in-progress path is a DOM <polyline> (PixelSelectionOverlay.tsx
+      // reads lassoDraftOutline directly), same reasoning as the marquee draft above.
+      this.reactNotify();
       return;
     }
 
@@ -1219,12 +1826,12 @@ class PixelEditorEngine {
       if (!cell) return;
       if (this.curvePhase === 'drag-end') {
         this.curveEnd = cell;
-        this.shapePreviewCells = this.mirroredExpand(bresenhamLine(this.curveStart!.x, this.curveStart!.y, cell.x, cell.y));
-        this.drawGrid(this.shapePreviewCells);
+        this.redrawShapePreview(this.mirroredExpand(bresenhamLine(this.curveStart!.x, this.curveStart!.y, cell.x, cell.y)));
       } else if (this.curveDraggingControl) {
         this.curveControl = cell;
-        this.shapePreviewCells = this.mirroredExpand(this.quadraticBezierCells(this.curveStart!, this.curveControl, this.curveEnd!));
-        this.drawGrid(this.shapePreviewCells);
+        this.redrawShapePreview(this.mirroredExpand(this.quadraticBezierCells(this.curveStart!, this.curveControl, this.curveEnd!)));
+        // redrawShapePreview() always reactNotify()s, which the curve control handle - a DOM element
+        // (PixelSelectionOverlay.tsx reads curveControl directly) - needs to track this drag live.
       }
       return;
     }
@@ -1239,37 +1846,28 @@ class PixelEditorEngine {
     if (this.tool === 'gradient') {
       if (!cell || !this.gradientStart) return;
       this.gradientEnd = e.shiftKey ? this.constrainShapeEnd(this.gradientStart, cell) : cell;
-      this.gradientPreview = this.gradientCellsPreview(this.gradientStart, this.gradientEnd);
-      this.drawGrid();
+      this.drawGradientPreviewOverlay();
       return;
     }
 
     if (!cell) return;
     if (this.shapeStart) {
       const end = e.shiftKey ? this.constrainShapeEnd(this.shapeStart, cell) : cell;
-      this.shapePreviewCells = this.mirroredExpand(this.computeShapeCells(this.shapeStart, end));
-      this.drawGrid(this.shapePreviewCells);
+      this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(this.shapeStart, end)));
     } else if (this.tool === 'pen' || this.tool === 'eraser') {
       this.paintCell(cell.x, cell.y, true);
     }
   }
 
   onPointerUp(): void {
+    if (this.middlePanActive) {
+      this.middlePanActive = false;
+      this.middlePanLast = null;
+      return;
+    }
     if (!this.painting) return;
     this.painting = false;
     this.stopSprayTimer();
-
-    if (this.rotateOrigin) {
-      this.commitRotate();
-      this.refresh();
-      return;
-    }
-
-    if (this.resizeHandle) {
-      this.commitResize();
-      this.refresh();
-      return;
-    }
 
     if (this.moveBuffer) {
       this.commitMove();
@@ -1284,8 +1882,10 @@ class PixelEditorEngine {
             y: Math.round((this.curveStart.y + this.curveEnd.y) / 2),
           };
           this.curvePhase = 'bend';
-          this.shapePreviewCells = this.mirroredExpand(this.quadraticBezierCells(this.curveStart, this.curveControl, this.curveEnd));
-          this.drawGrid(this.shapePreviewCells);
+          this.redrawShapePreview(this.mirroredExpand(this.quadraticBezierCells(this.curveStart, this.curveControl, this.curveEnd)));
+          // The curve control handle (a DOM element - see PixelSelectionOverlay.tsx) first appears
+          // right here, on the drag-end→bend transition - redrawShapePreview()'s reactNotify() is
+          // what makes it actually show up.
         } else {
           this.cancelCurve();
         }
@@ -1299,17 +1899,46 @@ class PixelEditorEngine {
     if (this.tool === 'select') {
       const d = this.selectionDraft;
       this.selection = d && (d.x0 !== d.x1 || d.y0 !== d.y1) ? d : null;
+      this.lassoPoints = null;
+      this.selectionMask = null;
       this.selectStart = null;
       this.selectionDraft = null;
-      this.refresh();
+      // reactNotify(), not refresh() - settling a selection is still pure metadata (see
+      // onPointerMove's marquee-drag substitution above); the settled border/handles it now switches
+      // to are DOM too (PixelSelectionOverlay.tsx's `box`, from selectionOverlayBox()).
+      this.reactNotify();
+      return;
+    }
+
+    if (this.tool === 'lasso') {
+      const pts = this.lassoDraftPoints;
+      this.lassoDraftPoints = null;
+      const mask = pts && pts.length >= 3 ? this.polygonMask(pts) : null;
+      if (pts && mask && mask.size > 0) {
+        this.selection = this.boundingBoxOfPoints(pts);
+        this.lassoPoints = pts;
+        this.selectionMask = mask;
+      } else {
+        this.selection = null;
+        this.lassoPoints = null;
+        this.selectionMask = null;
+      }
+      this.reactNotify();
       return;
     }
 
     if (this.tool === 'gradient') {
-      if (this.gradientPreview) {
+      // The exact per-cell color array (gradientCellsPreview) is only computed here, once, on commit -
+      // the live drag preview draws with the canvas's own native gradient instead (see
+      // drawGradientPreviewOverlay) and never needs the per-cell array at all. Baking it into the
+      // actual layer here, then - like the shape commit just below - what's left is a proper (z-order/
+      // opacity-respecting) repaint of just the cells it covered, not the whole canvas.
+      const preview = this.gradientStart && this.gradientEnd ? this.gradientCellsPreview(this.gradientStart, this.gradientEnd) : null;
+      const rects = preview ? this.cellsDirtyRects(preview, null) : [];
+      if (preview) {
         const frame = this.activeCells();
         const { width, height } = this.current;
-        this.gradientPreview.forEach((c) => {
+        preview.forEach((c) => {
           if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = c.color;
         });
         this.addSavedColor(this.color);
@@ -1319,7 +1948,8 @@ class PixelEditorEngine {
       this.gradientEnd = null;
       this.gradientPreview = null;
       this.eraseOverride = false;
-      this.refresh();
+      if (rects.length) this.redrawRegions(rects);
+      else this.reactNotify();
       return;
     }
 
@@ -1327,18 +1957,33 @@ class PixelEditorEngine {
       const frame = this.activeCells();
       const { width, height } = this.current;
       const shapeColor = this.eraseOverride ? null : this.color;
+      // Bounding box of the outgoing preview cells only ("erase old, draw nothing new") - by the time
+      // this repaints, `frame` already has the committed colors, so there's no separate overlay left
+      // to draw on top (unlike redrawShapePreview mid-drag); this just needs a proper, z-order/opacity-
+      // respecting repaint of the region the (fillRect-approximated) live preview covered.
+      const rects = this.cellsDirtyRects(this.shapePreviewCells, null);
       this.shapePreviewCells.forEach((c) => {
         if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = shapeColor;
       });
       if (shapeColor) this.addSavedColor(shapeColor);
       this.shapeStart = null;
       this.shapePreviewCells = null;
+      this.lastPaintCell = null;
+      this.strokeSnapshot = null;
+      this.strokePoints = [];
+      this.eraseOverride = false;
+      this.redrawRegions(rects);
+      return;
     }
+    // Pen/eraser/spray/fill all already left the canvas correctly painted (their own dirty-rect or
+    // full-repaint redraw already ran on the last stroke step / on mousedown) - nothing here changes a
+    // pixel, so this only needs a React re-render (e.g. for canUndo()/dirty-flag-driven UI), not another
+    // full drawGrid().
     this.lastPaintCell = null;
     this.strokeSnapshot = null;
     this.strokePoints = [];
     this.eraseOverride = false;
-    this.refresh();
+    this.reactNotify();
   }
 
   /** Shift-constrain: line snaps to 0/45/90° increments, rect/ellipse snaps to a square/circle bounding box. */
@@ -1362,19 +2007,42 @@ class PixelEditorEngine {
     };
   }
 
+  /** Thickens a 1px path (e.g. a Bresenham line) to `brushSize` by stamping brushCellsAt at every
+   *  point and deduping - the same footprint a pencil stroke along that path would leave. Dedup isn't
+   *  just tidiness: without it, a long path at a large brush size would emit path-length x brushSize^2
+   *  cells (mostly overlapping squares), which is exactly the kind of unbounded-with-drag-distance cost
+   *  redrawShapePreview's dirty-rect fix was meant to avoid. */
+  private thickenPath(points: Cell[]): Cell[] {
+    if (this.brushSize <= 1) return points;
+    const seen = new Set<string>();
+    const cells: Cell[] = [];
+    points.forEach((p) => {
+      this.brushCellsAt(p.x, p.y).forEach((c) => {
+        const key = `${c.x},${c.y}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          cells.push(c);
+        }
+      });
+    });
+    return cells;
+  }
+
   private computeShapeCells(start: Cell, end: Cell): Cell[] {
     if (this.tool === 'line') {
-      return bresenhamLine(start.x, start.y, end.x, end.y);
+      return this.thickenPath(bresenhamLine(start.x, start.y, end.x, end.y));
     }
     if (this.tool === 'rect') {
       const x0 = Math.min(start.x, end.x);
       const x1 = Math.max(start.x, end.x);
       const y0 = Math.min(start.y, end.y);
       const y1 = Math.max(start.y, end.y);
+      const thickness = this.brushSize;
       const cells: Cell[] = [];
       for (let y = y0; y <= y1; y++) {
         for (let x = x0; x <= x1; x++) {
-          if (this.shapeFilled || x === x0 || x === x1 || y === y0 || y === y1) cells.push({ x, y });
+          const nearEdge = x - x0 < thickness || x1 - x < thickness || y - y0 < thickness || y1 - y < thickness;
+          if (this.shapeFilled || nearEdge) cells.push({ x, y });
         }
       }
       return cells;
@@ -1396,13 +2064,16 @@ class PixelEditorEngine {
           cells.push({ x, y });
           continue;
         }
-        if (!inEllipseLocal(x + 0.5, y + 0.5, cx, cy, Math.max(0.5, rx - 1), Math.max(0.5, ry - 1))) cells.push({ x, y });
+        if (!inEllipseLocal(x + 0.5, y + 0.5, cx, cy, Math.max(0.5, rx - this.brushSize), Math.max(0.5, ry - this.brushSize))) cells.push({ x, y });
       }
     }
     return cells;
   }
 
-  /** Samples a quadratic bezier through p0/p1/p2 and connects the samples with bresenham lines so the curve has no gaps. */
+  /** Samples a quadratic bezier through p0/p1/p2 and connects the samples with bresenham lines so the
+   *  curve has no gaps, then thickens the result to `brushSize` the same way a line does (see
+   *  thickenPath) - curve is its own code path from computeShapeCells (line/rect/ellipse), so it needed
+   *  the same treatment applied separately rather than automatically inheriting it. */
   private quadraticBezierCells(p0: Cell, p1: Cell, p2: Cell): Cell[] {
     const approxLen = Math.hypot(p1.x - p0.x, p1.y - p0.y) + Math.hypot(p2.x - p1.x, p2.y - p1.y);
     const steps = Math.max(8, Math.ceil(approxLen * 2));
@@ -1420,12 +2091,13 @@ class PixelEditorEngine {
       prev = cell;
     }
     const seen = new Set<string>();
-    return cells.filter((c) => {
+    const path = cells.filter((c) => {
       const key = `${c.x},${c.y}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
+    return this.thickenPath(path);
   }
 
   /**
@@ -1455,6 +2127,62 @@ class PixelEditorEngine {
       }
     }
     return out;
+  }
+
+  /**
+   * Live drag preview for the gradient tool: paints the box directly with the canvas's own native
+   * (GPU-composited) linear gradient instead of computing a per-cell color array and painting it cell by
+   * cell every frame (see gradientCellsPreview, still used - but only once, on commit, see onPointerUp).
+   * Profiling a drag on a 1400x900, 3-layer canvas found the old per-move path cost ~2440ms in drawGrid's
+   * full repaint plus ~170ms recomputing the per-cell array - the worst of any tool in this file, and for
+   * a reason specific to gradients: unlike a shape outline, a gradient fills its *entire* box every
+   * frame, so the fillRect-per-cell overlay pass could never reuse paintFrameCells' run-length merging
+   * (every cell has a different color) the way a scoped repaint could for other tools.
+   *
+   * This sidesteps that instead of optimizing it: the box is identical on every frame of one gradient
+   * drag (the selection, or the whole canvas - never resized mid-drag), and the gradient is fully opaque,
+   * so painting the new one straight over the previous frame's correctly replaces it without first
+   * re-clearing or repainting the layers underneath - those only need painting once, whenever the drag
+   * *starts* (already true: the canvas already shows the correct base picture at that point, so
+   * onPointerDown doesn't need an extra repaint either, just this call). ctx.createLinearGradient handles
+   * the same clamp-to-end-stop behavior as gradientCellsPreview's `Math.min(1, Math.max(0, t))` for
+   * points beyond the start/end axis natively - the one case it doesn't match is a zero-length axis
+   * (start === end, e.g. right on mousedown before any drag), which paints nothing at all rather than a
+   * solid color, so that case is special-cased to match gradientCellsPreview's own `t = 0.5` default.
+   */
+  private drawGradientPreviewOverlay(): void {
+    if (!this.ctx || !this.gradientStart || !this.gradientEnd) return;
+    const box = this.selection ?? { x0: 0, y0: 0, x1: this.current.width - 1, y1: this.current.height - 1 };
+    const startColor = this.eraseOverride ? this.gradientColor : this.color;
+    const endColor = this.eraseOverride ? this.color : this.gradientColor;
+    const w = box.x1 - box.x0 + 1;
+    const h = box.y1 - box.y0 + 1;
+    if (w <= 0 || h <= 0) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(box.x0, box.y0, w, h);
+    ctx.clip();
+    const dx = this.gradientEnd.x - this.gradientStart.x;
+    const dy = this.gradientEnd.y - this.gradientStart.y;
+    if (dx === 0 && dy === 0) {
+      const [sr, sg, sb] = hexToRgb(startColor);
+      const [er, eg, eb] = hexToRgb(endColor);
+      ctx.fillStyle = rgbToHex((sr + er) / 2, (sg + eg) / 2, (sb + eb) / 2);
+    } else {
+      const gradient = ctx.createLinearGradient(
+        this.gradientStart.x + 0.5,
+        this.gradientStart.y + 0.5,
+        this.gradientEnd.x + 0.5,
+        this.gradientEnd.y + 0.5
+      );
+      gradient.addColorStop(0, startColor);
+      gradient.addColorStop(1, endColor);
+      ctx.fillStyle = gradient;
+    }
+    ctx.fillRect(box.x0, box.y0, w, h);
+    ctx.restore();
+    this.reactNotify();
   }
 
   /** Silently drops any pending curve without a refresh - for use inside other state-resetting methods that will refresh themselves. */
@@ -1621,18 +2349,147 @@ class PixelEditorEngine {
     if (color) this.addSavedColor(color);
   }
 
+  /**
+   * Bounding box(es), in canvas cell coords, that a freehand stroke through `points` actually touches
+   * at the current brush size - what paintCell redraws instead of the whole canvas (see redrawRegions).
+   * Padded by 1 cell beyond the brush footprint to also cover strokeStep's Pixel-Perfect corner trim,
+   * which can retroactively un-paint a cell up to 1 cell outside the current point's own footprint.
+   * Symmetry adds one more rect per mirror axis (mirroring a rectangle's bounds still gives a
+   * rectangle), since applyBrushAt paints those mirrored cells too.
+   */
+  private strokeDirtyRects(points: Cell[]): SelectionBox[] {
+    if (!points.length) return [];
+    const { width, height } = this.current;
+    const off = Math.floor((this.brushSize - 1) / 2);
+    const pad = 1;
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    points.forEach((p) => {
+      x0 = Math.min(x0, p.x - off - pad);
+      x1 = Math.max(x1, p.x - off + this.brushSize - 1 + pad);
+      y0 = Math.min(y0, p.y - off - pad);
+      y1 = Math.max(y1, p.y - off + this.brushSize - 1 + pad);
+    });
+    x0 = Math.max(0, x0);
+    y0 = Math.max(0, y0);
+    x1 = Math.min(width - 1, x1);
+    y1 = Math.min(height - 1, y1);
+    if (x1 < x0 || y1 < y0) return [];
+    const rects: SelectionBox[] = [{ x0, y0, x1, y1 }];
+    if (this.symmetry === 'vertical' || this.symmetry === 'both') {
+      rects.push({ x0: width - 1 - x1, x1: width - 1 - x0, y0, y1 });
+    }
+    if (this.symmetry === 'horizontal' || this.symmetry === 'both') {
+      rects.push({ x0, x1, y0: height - 1 - y1, y1: height - 1 - y0 });
+    }
+    if (this.symmetry === 'both') {
+      rects.push({ x0: width - 1 - x1, x1: width - 1 - x0, y0: height - 1 - y1, y1: height - 1 - y0 });
+    }
+    return rects;
+  }
+
+  /**
+   * Redraws only `rects` of the canvas instead of the whole thing, for paths where drawGrid()'s usual
+   * full clear+repaint was the actual measured bottleneck on a large, detailed canvas: profiling a
+   * 1400×900 canvas with content that defeats paintFrameCells' run-length merging (no long same-color
+   * runs - a real, not contrived, case for detailed pixel art) measured a full redraw at ~590ms per
+   * layer, so every pointer move during a stroke (see paintCell/strokeDirtyRects) or a shape/curve
+   * preview (see cellsDirtyRects) was gated on hundreds of milliseconds of work regardless of how
+   * small the actual change was. Both only ever touch a small, boundable area, so bounding the repaint
+   * to just that area makes its cost depend on the edit size, not the canvas size - confirmed back down
+   * to sub-millisecond on the same worst-case content (see the before/after profile in the commit/PR
+   * notes for this change). Undo/redo (see applyHistoryEntry) reuses this too, for the same reason, with
+   * the changed region found by diffing the two snapshots instead of tracked during the edit.
+   *
+   * `overlay` optionally draws a shape/curve preview's cells on top of the repainted regions, in the
+   * given color - the same thing drawGrid()'s `overlayCells` param does, just scoped to `rects` instead
+   * of a full repaint. Not used for gradient/move/resize/rotate previews, which keep calling refresh()'s
+   * full drawGrid() unchanged - those already have their own optimization (gestureBaseBitmap) or aren't
+   * worth the same treatment yet.
+   */
+  private redrawRegions(rects: SelectionBox[], overlay?: { cells: Cell[]; color: string }): void {
+    if (!this.canvas || !this.ctx || !rects.length) return;
+    const { width, height } = this.current;
+    const ctx = this.ctx;
+    rects.forEach((r) => {
+      ctx.clearRect(r.x0, r.y0, r.x1 - r.x0 + 1, r.y1 - r.y0 + 1);
+      if (this.onionSkin && this.current.frames.length > 1) {
+        const prevIdx = (this.frameIndex - 1 + this.current.frames.length) % this.current.frames.length;
+        paintLayers(ctx, this.current.frames[prevIdx], width, height, 1, 0.3, r);
+      }
+      paintLayers(ctx, this.current.frames[this.frameIndex], width, height, 1, 1, r);
+    });
+    if (overlay) {
+      ctx.fillStyle = overlay.color;
+      overlay.cells.forEach((c) => {
+        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) ctx.fillRect(c.x, c.y, 1, 1);
+      });
+    }
+    this.reactNotify();
+  }
+
+  /**
+   * Union bounding box (canvas cell coords) of two cell sets - `null` for "none". Used both for a
+   * shape/curve preview's own old-vs-new frame (see redrawShapePreview: "erase the old preview" only
+   * ever needs to clear where it actually was, not the whole canvas, and the new preview is drawn on
+   * top of that same repaint via redrawRegions' `overlay` param) and, with `null` as the second set,
+   * to bound the one-time repaint a shape/gradient commit needs (see onPointerUp) to just the cells
+   * that were previewed instead of the whole canvas.
+   */
+  private cellsDirtyRects(oldCells: Cell[] | null, newCells: Cell[] | null): SelectionBox[] {
+    const { width, height } = this.current;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const consider = (cells: Cell[] | null) => {
+      cells?.forEach((c) => {
+        if (c.x < x0) x0 = c.x;
+        if (c.x > x1) x1 = c.x;
+        if (c.y < y0) y0 = c.y;
+        if (c.y > y1) y1 = c.y;
+      });
+    };
+    consider(oldCells);
+    consider(newCells);
+    if (x1 < x0 || y1 < y0) return [];
+    x0 = Math.max(0, x0);
+    y0 = Math.max(0, y0);
+    x1 = Math.min(width - 1, x1);
+    y1 = Math.min(height - 1, y1);
+    if (x1 < x0 || y1 < y0) return [];
+    return [{ x0, y0, x1, y1 }];
+  }
+
+  /** Replaces shapePreviewCells with `newCells` and repaints only the union of its old and new bounding
+   *  box (see cellsDirtyRects) instead of refresh()'s full drawGrid() - the redraw path for every
+   *  line/rect/ellipse/curve preview frame while dragging. */
+  private redrawShapePreview(newCells: Cell[] | null): void {
+    const oldCells = this.shapePreviewCells;
+    this.shapePreviewCells = newCells;
+    const rects = this.cellsDirtyRects(oldCells, newCells);
+    if (!rects.length) {
+      this.reactNotify();
+      return;
+    }
+    const color = this.eraseOverride ? 'rgba(255,255,255,0.45)' : this.color;
+    this.redrawRegions(rects, newCells ? { cells: newCells, color } : undefined);
+  }
+
   private paintCell(x: number, y: number, isMove?: boolean): void {
     const { width, height } = this.current;
     const inBounds = (px: number, py: number) => px >= 0 && py >= 0 && px < width && py < height;
 
+    let points: Cell[];
     if (isMove && this.lastPaintCell) {
-      bresenhamLine(this.lastPaintCell.x, this.lastPaintCell.y, x, y).forEach((p) => {
-        if (inBounds(p.x, p.y)) this.strokeStep(p.x, p.y);
-      });
+      points = bresenhamLine(this.lastPaintCell.x, this.lastPaintCell.y, x, y);
     } else if (inBounds(x, y)) {
-      this.strokeStep(x, y);
+      points = [{ x, y }];
+    } else {
+      points = [];
     }
-    this.refresh();
+
+    points.forEach((p) => {
+      if (inBounds(p.x, p.y)) this.strokeStep(p.x, p.y);
+    });
+
+    this.redrawRegions(this.strokeDirtyRects(points));
   }
 
   /** Samples the topmost visible layer that has paint at this cell, matching what's on screen. */
@@ -1653,33 +2510,73 @@ class PixelEditorEngine {
 
   private floodFill(frame: Frame, width: number, height: number, x: number, y: number, target: string | null, fillColor: string | null): void {
     if (target === fillColor) return;
-    const stack: [number, number][] = [[x, y]];
+    // Packed 1D indices on a plain number[] stack, not [number, number] tuples - avoids allocating
+    // a small array object per visited cell (up to width*height of them on a large canvas), which
+    // mattered once a background-sized fill made this the dominant cost of the fill tool. Bounds are
+    // checked before pushing (not after popping), so an out-of-range neighbor never round-trips
+    // through the stack at all.
+    const stack: number[] = [y * width + x];
     while (stack.length) {
-      const [cx, cy] = stack.pop()!;
-      if (cx < 0 || cy < 0 || cx >= width || cy >= height) continue;
-      const idx = cy * width + cx;
+      const idx = stack.pop()!;
       if (frame[idx] !== target) continue;
       frame[idx] = fillColor;
-      stack.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+      const cx = idx % width;
+      if (cx + 1 < width) stack.push(idx + 1);
+      if (cx - 1 >= 0) stack.push(idx - 1);
+      if (idx + width < width * height) stack.push(idx + width);
+      if (idx - width >= 0) stack.push(idx - width);
     }
   }
 
   // --- rendering ---
 
+  /** Composites layers at their native, unscaled 1px-per-cell resolution onto a reused off-screen
+   *  canvas - used only by tickPreview() now (a small, fixed-size preview panel that isn't a hot
+   *  path), which still needs a scale-up blit since its own canvas is a different, unrelated size
+   *  from the sprite. The main editing canvas doesn't need this indirection any more: it's now
+   *  native-resolution itself (see recomputeCanvasSize), so drawGrid() paints directly onto it. */
+  private compositeToBitmap(layers: Layer[], width: number, height: number, alphaMultiplier = 1): HTMLCanvasElement {
+    if (!this.spriteBitmap) this.spriteBitmap = document.createElement('canvas');
+    const bmp = this.spriteBitmap;
+    if (bmp.width !== width || bmp.height !== height) {
+      bmp.width = width;
+      bmp.height = height;
+    }
+    const bctx = bmp.getContext('2d')!;
+    bctx.clearRect(0, 0, width, height);
+    paintLayers(bctx, layers, width, height, 1, alphaMultiplier);
+    return bmp;
+  }
+
+  /** Paints only the sprite content, at native 1px-per-cell resolution (this <canvas> is exactly
+   *  width×height pixels - see recomputeCanvasSize). Grid lines, symmetry guides, the selection-draft
+   *  marquee, and the curve control handle used to be drawn here too, but at native resolution
+   *  there's no room to draw a hairline *between* cells or a fixed-size handle glyph - they're a DOM
+   *  overlay now (PixelSelectionOverlay.tsx), which also means their live updates during a drag now
+   *  need a reactNotify()/refresh() to reach that overlay - see the pointer handlers that touch
+   *  selectionDraft/curveControl for where that was added. */
   drawGrid(overlayCells?: Cell[]): void {
     if (!this.canvas || !this.ctx) return;
     const { width, height } = this.current;
-    const cellPx = this.effectiveCellPx();
     const canvas = this.canvas;
     const ctx = this.ctx;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     if (this.onionSkin && this.current.frames.length > 1) {
       const prevIdx = (this.frameIndex - 1 + this.current.frames.length) % this.current.frames.length;
-      paintLayers(ctx, this.current.frames[prevIdx], width, height, cellPx, 0.3);
+      paintLayers(ctx, this.current.frames[prevIdx], width, height, 1, 0.3);
     }
 
-    paintLayers(ctx, this.current.frames[this.frameIndex], width, height, cellPx);
+    // During a move/resize/rotate drag, the base scene (everything but the dragged region, which is
+    // drawn separately below at its live offset) hasn't changed since the gesture started - only its
+    // on-screen position has - so it's blitted from gestureBaseBitmap with one drawImage() instead of
+    // re-running paintLayers() over every layer on every single pointer move. That full repaint was the
+    // actual cost that made dragging a selection on a large canvas (e.g. a 1400×900 background) lag.
+    if ((this.moveBuffer || this.resizePreview || this.rotatePreview) && this.gestureBaseBitmap) {
+      ctx.drawImage(this.gestureBaseBitmap, 0, 0);
+    } else {
+      paintLayers(ctx, this.current.frames[this.frameIndex], width, height, 1);
+    }
 
     if (this.moveBuffer) {
       const { dx, dy } = this.moveDelta;
@@ -1688,7 +2585,7 @@ class PixelEditorEngine {
         const ny = c.y + dy;
         if (nx < 0 || ny < 0 || nx >= width || ny >= height) return;
         ctx.fillStyle = c.color;
-        ctx.fillRect(nx * cellPx, ny * cellPx, cellPx, cellPx);
+        ctx.fillRect(nx, ny, 1, 1);
       });
     }
 
@@ -1696,7 +2593,7 @@ class PixelEditorEngine {
       this.resizePreview.forEach((c) => {
         if (c.x < 0 || c.y < 0 || c.x >= width || c.y >= height) return;
         ctx.fillStyle = c.color;
-        ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
+        ctx.fillRect(c.x, c.y, 1, 1);
       });
     }
 
@@ -1704,7 +2601,7 @@ class PixelEditorEngine {
       this.rotatePreview.forEach((c) => {
         if (c.x < 0 || c.y < 0 || c.x >= width || c.y >= height) return;
         ctx.fillStyle = c.color;
-        ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
+        ctx.fillRect(c.x, c.y, 1, 1);
       });
     }
 
@@ -1712,7 +2609,7 @@ class PixelEditorEngine {
       this.gradientPreview.forEach((c) => {
         if (c.x < 0 || c.y < 0 || c.x >= width || c.y >= height) return;
         ctx.fillStyle = c.color;
-        ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
+        ctx.fillRect(c.x, c.y, 1, 1);
       });
     }
 
@@ -1720,137 +2617,32 @@ class PixelEditorEngine {
       ctx.fillStyle = this.eraseOverride ? 'rgba(255,255,255,0.45)' : this.color;
       overlayCells.forEach((c) => {
         if (c.x < 0 || c.y < 0 || c.x >= width || c.y >= height) return;
-        ctx.fillRect(c.x * cellPx, c.y * cellPx, cellPx, cellPx);
+        ctx.fillRect(c.x, c.y, 1, 1);
       });
     }
-
-    if (this.tool === 'curve' && this.curvePhase === 'bend' && this.curveControl) {
-      const hx = (this.curveControl.x + 0.5) * cellPx;
-      const hy = (this.curveControl.y + 0.5) * cellPx;
-      const s = HANDLE_SIZE;
-      ctx.save();
-      ctx.fillStyle = '#ffcc00';
-      ctx.strokeStyle = '#1a1a1a';
-      ctx.lineWidth = 1;
-      ctx.fillRect(hx - s / 2, hy - s / 2, s, s);
-      ctx.strokeRect(hx - s / 2, hy - s / 2, s, s);
-      ctx.restore();
-    }
-
-    if (this.symmetry !== 'none') {
-      ctx.save();
-      ctx.strokeStyle = 'rgba(0,229,255,0.6)';
-      ctx.setLineDash([3, 3]);
-      ctx.lineWidth = 1;
-      if (this.symmetry === 'vertical' || this.symmetry === 'both') {
-        ctx.beginPath();
-        ctx.moveTo((width * cellPx) / 2, 0);
-        ctx.lineTo((width * cellPx) / 2, height * cellPx);
-        ctx.stroke();
-      }
-      if (this.symmetry === 'horizontal' || this.symmetry === 'both') {
-        ctx.beginPath();
-        ctx.moveTo(0, (height * cellPx) / 2);
-        ctx.lineTo(width * cellPx, (height * cellPx) / 2);
-        ctx.stroke();
-      }
-      ctx.setLineDash([]);
-      ctx.restore();
-    }
-
-    const activeBox = this.selectionDraft || this.selection;
-    if (activeBox) {
-      const shown = this.moveBuffer && this.selection && !this.selectionDraft ? shiftBox(activeBox, this.moveDelta) : activeBox;
-      const settled = this.tool === 'select' && this.selection && !this.selectionDraft;
-      ctx.save();
-      ctx.strokeStyle = '#ffeb3b';
-      ctx.lineWidth = 2;
-      // A settled selection (handles live, ready to move/resize/rotate) reads as dashed, same
-      // free-transform-box convention as the tank's background placement (see TankEngine's
-      // drawBackgroundHandles) - still drawn solid while merely being dragged out (selectionDraft),
-      // since that's a one-shot marquee, not yet an editable box.
-      if (settled) ctx.setLineDash([6, 4]);
-      ctx.strokeRect(shown.x0 * cellPx, shown.y0 * cellPx, (shown.x1 - shown.x0 + 1) * cellPx, (shown.y1 - shown.y0 + 1) * cellPx);
-      ctx.restore();
-
-      if (settled) {
-        this.drawSelectionHandles(this.selection!, cellPx);
-      }
-    }
-
-    if (this.showGrid) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-      ctx.lineWidth = 1;
-      for (let i = 0; i <= width; i++) {
-        ctx.beginPath();
-        ctx.moveTo(i * cellPx + 0.5, 0);
-        ctx.lineTo(i * cellPx + 0.5, height * cellPx);
-        ctx.stroke();
-      }
-      for (let i = 0; i <= height; i++) {
-        ctx.beginPath();
-        ctx.moveTo(0, i * cellPx + 0.5);
-        ctx.lineTo(width * cellPx, i * cellPx + 0.5);
-        ctx.stroke();
-      }
-    }
   }
 
-  private drawSelectionHandles(box: SelectionBox, cellPx: number): void {
-    if (!this.ctx) return;
-    const ctx = this.ctx;
-    const x0 = box.x0 * cellPx;
-    const y0 = box.y0 * cellPx;
-    const x1 = (box.x1 + 1) * cellPx;
-    const y1 = (box.y1 + 1) * cellPx;
-    const mx = (x0 + x1) / 2;
-    const my = (y0 + y1) / 2;
-    const points: [number, number][] = [
-      [x0, y0], [mx, y0], [x1, y0],
-      [x0, my], [x1, my],
-      [x0, y1], [mx, y1], [x1, y1],
-    ];
-    const s = HANDLE_SIZE;
-    ctx.save();
-    ctx.fillStyle = '#ffeb3b';
-    ctx.strokeStyle = '#1c2436';
-    ctx.lineWidth = 1;
-    points.forEach(([px, py]) => {
-      ctx.fillRect(px - s / 2, py - s / 2, s, s);
-      ctx.strokeRect(px - s / 2, py - s / 2, s, s);
-    });
-
-    // Hidden entirely while actively dragging - the connecting line and handle glyph are just
-    // clutter once the user has already grabbed the handle and is watching the artwork rotate;
-    // they reappear at rest once the drag ends. Same dashed-stalk-to-a-filled-circle look as the
-    // tank's own background rotate handle (see TankEngine.drawBackgroundHandles), for one
-    // consistent "free transform" affordance across both tools.
-    if (!this.rotateOrigin) {
-      const { hx, hy } = this.rotateHandlePos(box, cellPx);
-      ctx.strokeStyle = '#ffeb3b';
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      ctx.moveTo(mx, y0);
-      ctx.lineTo(hx, hy);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      ctx.beginPath();
-      ctx.fillStyle = '#ffeb3b';
-      ctx.strokeStyle = '#1c2436';
-      ctx.lineWidth = 1.5;
-      ctx.arc(hx, hy, ROTATE_HANDLE_RADIUS, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-    }
-
-    ctx.restore();
-  }
-
-  /** Re-armed whenever the current sprite's frameMs changes, or a different sprite becomes current. */
+  /**
+   * Re-armed whenever the current sprite's frameMs changes, or a different sprite becomes current.
+   * Renders once immediately (so the thumbnail reflects the new sprite right away instead of waiting
+   * up to frameMs for the first tick) and only schedules repeat ticks when there's more than one frame
+   * to animate between - a single-frame sprite's composited bitmap can never change, so ticking it
+   * anyway was pure waste. That waste wasn't just cosmetic: tickPreview composites the sprite at full
+   * resolution (see compositeToBitmap/paintLayers) regardless of the small 160x160 thumbnail it's drawn
+   * into, so on a large single-frame 'background' sprite (up to 1400x900 - the common case, since a
+   * background is rarely animated) each tick cost ~1750ms on a 3-layer checkerboard-content canvas -
+   * longer than the default 350ms tick period itself, so the timer was re-firing back-to-back
+   * essentially continuously, starving the main thread for as long as that sprite stayed open for
+   * editing (independent of anything else this file does - discovered profiling shape preview/undo-redo
+   * on exactly this kind of sprite, where it made even unrelated, otherwise-instant calls crawl).
+   */
   private restartPreviewTimer(): void {
     if (this.previewTimer) clearInterval(this.previewTimer);
-    this.previewTimer = setInterval(() => this.tickPreview(), this.current.frameMs);
+    this.previewTimer = null;
+    this.tickPreview();
+    if (this.current.frames.length > 1) {
+      this.previewTimer = setInterval(() => this.tickPreview(), this.current.frameMs);
+    }
   }
 
   setFrameSpeed(fps: number): void {
@@ -1871,17 +2663,22 @@ class PixelEditorEngine {
     const cellPx = PREVIEW_CELL_PX_BASE / Math.max(width, height);
     const ctx = this.previewCtx;
     ctx.clearRect(0, 0, this.previewCanvas.width, this.previewCanvas.height);
-    ctx.save();
-    ctx.translate((this.previewCanvas.width - width * cellPx) / 2, (this.previewCanvas.height - height * cellPx) / 2);
-    paintLayers(ctx, frames[this.previewFrame], width, height, cellPx);
-    ctx.restore();
+    ctx.imageSmoothingEnabled = false;
+    const bmp = this.compositeToBitmap(frames[this.previewFrame], width, height);
+    const dx = (this.previewCanvas.width - width * cellPx) / 2;
+    const dy = (this.previewCanvas.height - height * cellPx) / 2;
+    ctx.drawImage(bmp, 0, 0, width, height, dx, dy, width * cellPx, height * cellPx);
   }
 
   // --- undo/redo ---
 
   private snapshot(): Snapshot {
     return {
-      frames: JSON.parse(JSON.stringify(this.current.frames)),
+      // structuredClone, not JSON.parse(JSON.stringify(...)) - frames is plain data (no functions/
+      // undefined), and the engine-native structured-clone algorithm skips JSON's string
+      // serialize/parse round trip, which matters once a large (e.g. background-sized) canvas makes
+      // this array huge and every stroke pushes a new undo snapshot.
+      frames: structuredClone(this.current.frames),
       width: this.current.width,
       height: this.current.height,
       frameIndex: this.frameIndex,
@@ -1890,6 +2687,9 @@ class PixelEditorEngine {
     };
   }
 
+  /** Mutates engine state to match snapshot `s` - the repaint is the caller's job (see
+   *  applyHistoryEntry), since unlike every other refresh()-triggering change, undo/redo can often get
+   *  away with repainting far less than the whole canvas. */
   private restoreSnapshot(s: Snapshot): void {
     this.current.frames = s.frames;
     this.current.width = s.width;
@@ -1898,11 +2698,12 @@ class PixelEditorEngine {
     this.frameIndex = Math.min(s.frameIndex, s.frames.length - 1);
     this.activeLayerIndex = Math.min(s.activeLayerIndex, this.current.frames[this.frameIndex].length - 1);
     this.selection = null;
+    this.lassoPoints = null;
+    this.selectionMask = null;
     this.moveBuffer = null;
     if (this.curvePhase) this.clearCurveState();
     this.recomputeCanvasSize();
     this.restartPreviewTimer();
-    this.refresh();
   }
 
   pushUndo(): void {
@@ -1913,16 +2714,48 @@ class PixelEditorEngine {
     this.dirty = true;
   }
 
+  /**
+   * Undo/redo swap in a whole snapshotted frame stack, so - unlike a brush stroke or shape preview -
+   * there's no dirty region known in advance the way strokeDirtyRects/cellsDirtyRects give one.
+   * But most undo steps (undoing one small brush stroke on a large canvas) only actually change a tiny
+   * fraction of it, so layersDiffRegion compares the outgoing and incoming layers cell-by-cell (plain
+   * !== on color strings - far cheaper than the fillRect calls a repaint needs) to find the changed
+   * region's bounding box, and redrawRegions repaints just that instead of a full drawGrid(). Falls back
+   * to the ordinary full refresh() whenever the two states aren't safely comparable this way (different
+   * canvas size, a different active frame index after restoring, or whatever else layersDiffRegion
+   * itself declines to diff - e.g. a different layer count or a visibility/opacity change) or onion skin
+   * is on (its own source frame would need the same treatment, not worth it for a rarely-used mode).
+   */
+  private applyHistoryEntry(s: Snapshot): void {
+    const beforeLayers = this.current.frames[this.frameIndex];
+    const beforeWidth = this.current.width;
+    const beforeHeight = this.current.height;
+    const beforeFrameIndex = this.frameIndex;
+
+    this.restoreSnapshot(s);
+
+    const canDiff =
+      !this.onionSkin &&
+      beforeWidth === this.current.width &&
+      beforeHeight === this.current.height &&
+      beforeFrameIndex === this.frameIndex;
+    const region = canDiff ? layersDiffRegion(beforeLayers, this.current.frames[this.frameIndex], this.current.width, this.current.height) : 'full';
+
+    if (region === null) this.reactNotify();
+    else if (region === 'full') this.refresh();
+    else this.redrawRegions([region]);
+  }
+
   undo(): void {
     if (!this.undoStack.length) return;
     this.redoStack.push(this.snapshot());
-    this.restoreSnapshot(this.undoStack.pop()!);
+    this.applyHistoryEntry(this.undoStack.pop()!);
   }
 
   redo(): void {
     if (!this.redoStack.length) return;
     this.undoStack.push(this.snapshot());
-    this.restoreSnapshot(this.redoStack.pop()!);
+    this.applyHistoryEntry(this.redoStack.pop()!);
   }
 
   // --- export ---
@@ -1977,7 +2810,11 @@ class PixelEditorEngine {
     this.frameIndex = 0;
     this.activeLayerIndex = 0;
     this.selection = null;
+    this.lassoPoints = null;
+    this.selectionMask = null;
     this.moveBuffer = null;
+    this.panX = 0;
+    this.panY = 0;
     this.clearCurveState();
     this.undoStack = [];
     this.redoStack = [];
@@ -2030,7 +2867,11 @@ class PixelEditorEngine {
     this.activeLayerIndex = 0;
     this.previewFrame = 0;
     this.selection = null;
+    this.lassoPoints = null;
+    this.selectionMask = null;
     this.moveBuffer = null;
+    this.panX = 0;
+    this.panY = 0;
     this.clearCurveState();
     this.undoStack = [];
     this.redoStack = [];
@@ -2057,7 +2898,11 @@ class PixelEditorEngine {
       this.current = blankSprite();
       this.activeLayerIndex = 0;
       this.selection = null;
+      this.lassoPoints = null;
+      this.selectionMask = null;
       this.moveBuffer = null;
+      this.panX = 0;
+      this.panY = 0;
       this.clearCurveState();
       this.loadToken += 1;
       this.recomputeCanvasSize();
