@@ -13,27 +13,6 @@ export function PreviewPanel({ engine, type }: { engine: PixelEditorEngine; type
   return (
     <div className="preview-panel">
       <canvas ref={(el) => engine.attachPreviewCanvas(el)} width={160} height={160} className="preview-canvas pixelated" />
-      <label className="mini-toggle">
-        <Checkbox checked={engine.onionSkin} onCheckedChange={(v) => engine.setOnionSkin(!!v)} />
-        <Label>{t('preview.onionSkin')}</Label>
-      </label>
-      {engine.onionSkin && (
-        <div className="mini-toggle" title={t('preview.onionDepthTitle')}>
-          <Label htmlFor="onion-depth">{t('preview.onionDepth')}</Label>
-          <Input
-            id="onion-depth"
-            type="number"
-            min={1}
-            max={2}
-            value={engine.onionSkinDepth}
-            onChange={(e) => {
-              const v = Number(e.target.value);
-              if (Number.isFinite(v)) engine.setOnionSkinDepth(v);
-            }}
-            className="w-12 h-7 px-1 text-center text-xs"
-          />
-        </div>
-      )}
       {type === 'background' && (
         <>
           <label className="mini-toggle" title={t('preview.tiledTitle')}>

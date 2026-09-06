@@ -55,6 +55,20 @@ export type ToolName =
   | 'magicWand'
   | 'move';
 
+/** How onion-skin frames are colored: 'tint' recolors them by direction (red before, blue after) so
+ *  which side a frame is on is unmistakable; 'original' keeps their own colors and only fades them. */
+export type OnionColorMode = 'tint' | 'original';
+
+/** Onion-skin preferences, persisted across sessions (see storage.loadOnionSettings). `before`/`after`
+ *  are frame counts per direction, `opacity` the nearest frame's alpha. */
+export type OnionSettings = {
+  enabled: boolean;
+  before: number;
+  after: number;
+  opacity: number;
+  colorMode: OnionColorMode;
+};
+
 /** 'diagonal' mirrors across both diagonals through the (draggable) symmetry axis point - good for
  *  starfish/coral shapes; 'radial' rotates 90/180/270° around that same point instead of mirroring. */
 export type SymmetryMode = 'none' | 'vertical' | 'horizontal' | 'both' | 'diagonal' | 'radial';

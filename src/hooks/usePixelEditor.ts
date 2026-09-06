@@ -23,6 +23,7 @@ import type {
   Cell,
   Frame,
   Layer,
+  OnionColorMode,
   ResizeAnchor,
   ResizeMode,
   SelectionBox,
@@ -67,6 +68,12 @@ export const ZOOM_BUTTON_STEP = 1.2;
  *  container clamps it any more, see clampPan), and without a stop the canvas can be flung out of
  *  view entirely with nothing on screen to say where it went. */
 const PAN_EDGE_MARGIN_PX = 56;
+/** Onion skin: most frames shown per direction, and the nearest frame's default alpha. */
+export const ONION_MAX_DEPTH = 3;
+export const ONION_DEFAULT_OPACITY = 0.45;
+export const ONION_MIN_OPACITY = 0.1;
+const ONION_TINT_BEFORE = '#ff4d4d';
+const ONION_TINT_AFTER = '#4d94ff';
 const PREVIEW_CELL_PX_BASE = 96;
 /** Above this many cells, the preview panel stops repainting *during* a stroke and waits for the stroke
  *  to end (see schedulePreviewRepaint). A preview repaint costs a full compositeToBitmap over every
@@ -230,8 +237,20 @@ class PixelEditorEngine {
   /** Colors a user has pinned in the saved-colors row (see ColorPalette.tsx) - survive
    *  clearUnusedColors regardless of use. Persisted separately from savedColors (see storage.ts). */
   pinnedColors: Set<string> = new Set();
-  /** How many frames in each direction real onion skin shows (see paintOnionSkin) - 1 or 2. */
-  onionSkinDepth = 1;
+  /** How many frames *before* the active one onion skin shows, and how many *after* - independently,
+   *  because the two are useful for different things (checking a hand-off from the previous frame vs.
+   *  drawing toward the next one) and a single shared "depth" could only ever do both at once. 0 turns
+   *  that direction off without turning onion skin off. See paintOnionSkin. */
+  onionBefore = 1;
+  onionAfter = 1;
+  /** Alpha of the *nearest* onion frame; each further one is proportionally fainter (see
+   *  paintOnionSkin). The old fixed 0.3 was hard to make out against the checkered transparency
+   *  background, which is exactly where onion skin is needed most. */
+  onionOpacity = ONION_DEFAULT_OPACITY;
+  /** 'tint' recolors onion frames red (before) / blue (after) so their direction is unmistakable;
+   *  'original' keeps their real colors and only fades them, which reads better on a sprite whose own
+   *  palette is already red/blue heavy. */
+  onionColorMode: OnionColorMode = 'tint';
   /** Shows the composited preview tiled 3x3 instead of once, to spot seams on a 'background'-type
    *  sprite meant to repeat (see tickPreview/PreviewPanel.tsx). */
   tiledPreview = false;
@@ -347,6 +366,14 @@ class PixelEditorEngine {
     this.savedColors = storage.loadSavedColors();
     this.pinnedColors = new Set(storage.loadPinnedColors());
     this.canvasBackground = storage.loadCanvasBackground() ?? 'checker-dark';
+    const onion = storage.loadOnionSettings();
+    if (onion) {
+      this.onionSkin = onion.enabled;
+      this.onionBefore = onion.before;
+      this.onionAfter = onion.after;
+      this.onionOpacity = onion.opacity;
+      this.onionColorMode = onion.colorMode;
+    }
     this.brushSizes = storage.loadBrushSizes();
     this.centerSymmetryAxis();
 
@@ -624,14 +651,49 @@ class PixelEditorEngine {
 
   setOnionSkin(v: boolean): void {
     this.onionSkin = v;
+    this.persistOnionSettings();
     this.refresh();
   }
 
-  setOnionSkinDepth(depth: number): void {
-    const clamped = Math.min(2, Math.max(1, Math.round(depth)));
-    if (clamped === this.onionSkinDepth) return;
-    this.onionSkinDepth = clamped;
+  setOnionBefore(depth: number): void {
+    const clamped = Math.min(ONION_MAX_DEPTH, Math.max(0, Math.round(depth)));
+    if (clamped === this.onionBefore) return;
+    this.onionBefore = clamped;
+    this.persistOnionSettings();
     this.refresh();
+  }
+
+  setOnionAfter(depth: number): void {
+    const clamped = Math.min(ONION_MAX_DEPTH, Math.max(0, Math.round(depth)));
+    if (clamped === this.onionAfter) return;
+    this.onionAfter = clamped;
+    this.persistOnionSettings();
+    this.refresh();
+  }
+
+  setOnionOpacity(v: number): void {
+    const clamped = Math.min(1, Math.max(ONION_MIN_OPACITY, v));
+    if (clamped === this.onionOpacity) return;
+    this.onionOpacity = clamped;
+    this.persistOnionSettings();
+    this.refresh();
+  }
+
+  setOnionColorMode(mode: OnionColorMode): void {
+    if (mode === this.onionColorMode) return;
+    this.onionColorMode = mode;
+    this.persistOnionSettings();
+    this.refresh();
+  }
+
+  private persistOnionSettings(): void {
+    storage.saveOnionSettings({
+      enabled: this.onionSkin,
+      before: this.onionBefore,
+      after: this.onionAfter,
+      opacity: this.onionOpacity,
+      colorMode: this.onionColorMode,
+    });
   }
 
   setTiledPreview(v: boolean): void {
@@ -3417,18 +3479,18 @@ class PixelEditorEngine {
    *  overlay now (PixelSelectionOverlay.tsx), which also means their live updates during a drag now
    *  need a reactNotify()/refresh() to reach that overlay - see the pointer handlers that touch
    *  selectionDraft/curveControl for where that was added. */
-  /** Tints a composited frame red-ish or blue-ish (via 'source-atop', which only recolors already-
-   *  opaque pixels, leaving transparent ones transparent) onto the reused onionBitmap scratch canvas,
-   *  then blits it onto `targetCtx` at `alpha` - one tinted onion-skin frame per call, see
-   *  paintOnionSkin. `region` (canvas cell coords) restricts the blit to that sub-rectangle, same as
-   *  paintLayers' own `region` param, for redrawRegions' scoped repaints. */
+  /** Composites one onion-skin frame onto the reused onionBitmap scratch canvas and blits it onto
+   *  `targetCtx` at `alpha`. `tintColor` recolors it first (via 'source-atop', which only touches
+   *  already-opaque pixels, leaving transparent ones transparent) - null keeps the frame's own colors,
+   *  for onionColorMode 'original'. `region` (canvas cell coords) restricts the blit to that
+   *  sub-rectangle, same as paintLayers' own `region` param, for redrawRegions' scoped repaints. */
   private paintTintedOnion(
     targetCtx: CanvasRenderingContext2D,
     layers: Layer[],
     width: number,
     height: number,
     alpha: number,
-    tintColor: string,
+    tintColor: string | null,
     region?: SelectionBox
   ): void {
     if (!this.onionBitmap) this.onionBitmap = document.createElement('canvas');
@@ -3440,10 +3502,12 @@ class PixelEditorEngine {
     const bctx = bmp.getContext('2d')!;
     bctx.clearRect(0, 0, width, height);
     paintLayers(bctx, layers, width, height, 1);
-    bctx.globalCompositeOperation = 'source-atop';
-    bctx.fillStyle = tintColor;
-    bctx.fillRect(0, 0, width, height);
-    bctx.globalCompositeOperation = 'source-over';
+    if (tintColor) {
+      bctx.globalCompositeOperation = 'source-atop';
+      bctx.fillStyle = tintColor;
+      bctx.fillRect(0, 0, width, height);
+      bctx.globalCompositeOperation = 'source-over';
+    }
     targetCtx.save();
     targetCtx.globalAlpha = alpha;
     if (region) {
@@ -3457,26 +3521,45 @@ class PixelEditorEngine {
   }
 
   /**
-   * Real onion skin: up to onionSkinDepth frames before (tinted red-ish) and after (tinted blue-ish)
-   * the active one, each one step fainter than the last (alpha 0.3, 0.15, ...) - unlike the old fixed
-   * "previous frame only, flat 0.3 alpha" version. Skipped entirely when onionSkin is off or there's
+   * Onion skin: onionBefore frames before the active one and onionAfter frames after it, each one
+   * proportionally fainter the further away it is (onionOpacity / distance), tinted red/blue by
+   * direction unless onionColorMode says otherwise. Skipped entirely when onionSkin is off or there's
    * only one frame to begin with. `region` threads through to redrawRegions' scoped repaints the same
    * way paintLayers' own `region` param does.
+   *
+   * The frames are resolved into a map keyed by frame index *before* anything is painted, for two
+   * reasons. Frames wrap, so on a short sprite the same frame can be reached in both directions (on a
+   * 2-frame sprite, "the previous frame" and "the next frame" are the same one) - painting it once per
+   * direction stacked two tints into a muddy purple at double the intended alpha, which is most of why
+   * onion skin read as "only showing one side". And the map lets the nearest occurrence win, so a
+   * frame's tint always reflects its shortest distance from the active one. Painting then runs
+   * farthest-first so nearer frames land on top.
    */
   private paintOnionSkin(ctx: CanvasRenderingContext2D, region?: SelectionBox): void {
-    if (!this.onionSkin || this.current.frames.length <= 1) return;
-    const { width, height } = this.current;
+    if (!this.onionSkin) return;
     const total = this.current.frames.length;
-    for (let d = 1; d <= this.onionSkinDepth; d++) {
-      const idx = ((this.frameIndex - d) % total + total) % total;
-      if (idx === this.frameIndex) continue;
-      this.paintTintedOnion(ctx, this.current.frames[idx], width, height, 0.3 / d, '#ff4d4d', region);
-    }
-    for (let d = 1; d <= this.onionSkinDepth; d++) {
-      const idx = (this.frameIndex + d) % total;
-      if (idx === this.frameIndex) continue;
-      this.paintTintedOnion(ctx, this.current.frames[idx], width, height, 0.3 / d, '#4d94ff', region);
-    }
+    if (total <= 1) return;
+    const { width, height } = this.current;
+
+    const shown = new Map<number, { distance: number; tint: string }>();
+    const consider = (idx: number, distance: number, tint: string) => {
+      if (idx === this.frameIndex) return;
+      const existing = shown.get(idx);
+      if (existing && existing.distance <= distance) return;
+      shown.set(idx, { distance, tint });
+    };
+    // "Before" first, so a frame reachable at the same distance in both directions keeps the
+    // before-tint - the direction people actually mean when a 2-frame sprite makes the two identical.
+    for (let d = 1; d <= this.onionBefore; d++) consider(((this.frameIndex - d) % total + total) % total, d, ONION_TINT_BEFORE);
+    for (let d = 1; d <= this.onionAfter; d++) consider((this.frameIndex + d) % total, d, ONION_TINT_AFTER);
+
+    [...shown.entries()]
+      .sort((a, b) => b[1].distance - a[1].distance)
+      .forEach(([idx, { distance, tint }]) => {
+        const alpha = Math.min(1, this.onionOpacity / distance);
+        const color = this.onionColorMode === 'tint' ? tint : null;
+        this.paintTintedOnion(ctx, this.current.frames[idx], width, height, alpha, color, region);
+      });
   }
 
   drawGrid(overlayCells?: Cell[]): void {

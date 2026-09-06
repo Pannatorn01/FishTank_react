@@ -983,7 +983,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 }
 .palette-panel { min-height: 0; }
 
-.preview-panel, .transform-panel {
+.preview-panel, .transform-panel, .onion-panel {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -991,6 +991,46 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   border-bottom: 1px solid var(--pixel-panel-hover);
 }
 .preview-panel { align-items: center; }
+
+/* Onion skin (OnionSkinPanel.tsx). Two independent per-direction steppers plus strength/color, each
+ * row a label-control-value triple on one line so the whole panel stays inside the 165px side rail. */
+.onion-panel .panel-title { font-size: 0.48rem; opacity: 0.7; }
+.onion-panel .mini-toggle { gap: 4px; }
+.onion-panel .mini-toggle [data-slot="checkbox"] { width: 0.85rem; height: 0.85rem; }
+.onion-panel .mini-toggle label,
+.onion-panel label { font-size: 0.66rem; letter-spacing: 0.02em; }
+.onion-hint { font-size: 0.6rem; opacity: 0.65; line-height: 1.3; }
+.onion-depths { display: flex; flex-direction: column; gap: 3px; }
+.onion-depth { display: flex; align-items: center; gap: 4px; }
+.onion-depth-label { font-size: 0.66rem; flex: 1; }
+/* The same red/blue the canvas tints those frames with (ONION_TINT_BEFORE/AFTER in usePixelEditor.ts)
+ * - the legend for what's on the canvas, so "Before"/"After" don't have to be decoded from the words
+ * alone while drawing. */
+.onion-swatch { width: 8px; height: 8px; flex-shrink: 0; box-shadow: inset 0 0 0 1px var(--bevel-dark); }
+.onion-swatch-before { background: #ff4d4d; }
+.onion-swatch-after { background: #4d94ff; }
+.onion-stepper { display: flex; align-items: center; gap: 2px; }
+.onion-stepper button {
+  width: 1.05rem;
+  height: 1.05rem;
+  line-height: 1;
+  font-size: 0.7rem;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: var(--pixel-panel);
+  color: var(--pixel-text-strong);
+  cursor: pointer;
+}
+.onion-stepper button:hover:not(:disabled) { background: var(--pixel-accent-hover); }
+.onion-stepper button:disabled { opacity: 0.35; cursor: not-allowed; }
+.onion-row { display: flex; align-items: center; gap: 4px; }
+.onion-row input[type="range"] { flex: 1; min-width: 0; height: 12px; accent-color: var(--pixel-accent); }
+.onion-value { font-size: 0.62rem; min-width: 2.2em; text-align: right; opacity: 0.85; }
+/* Inside a stepper the value sits between the two buttons, so it wants to be centered and no wider
+   than a single digit needs - the 2.2em right-aligned default above is for the % readout. */
+.onion-stepper .onion-value { min-width: 1.1em; text-align: center; }
+.onion-select { flex: 1; min-width: 0; font-size: 0.62rem; padding: 1px 2px; }
 
 .layer-list { display: flex; flex-direction: column; gap: 3px; }
 .layer-row {

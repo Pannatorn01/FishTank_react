@@ -1,4 +1,18 @@
-import type { BackgroundTransform, CanvasBackground, Frame, Instance, Layer, ResizeAnchor, RoomInstance, Sprite, TankGroup, TankShape, UiTheme } from './types';
+import type {
+  BackgroundTransform,
+  CanvasBackground,
+  Frame,
+  Instance,
+  Layer,
+  OnionColorMode,
+  OnionSettings,
+  ResizeAnchor,
+  RoomInstance,
+  Sprite,
+  TankGroup,
+  TankShape,
+  UiTheme,
+} from './types';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
@@ -23,6 +37,9 @@ const KEY_PALETTE_COLORS = 'fishtank.paletteColors.v1';
 const KEY_CANVAS_BG = 'fishtank.canvasBackground.v1';
 const CANVAS_BACKGROUNDS: CanvasBackground[] = ['checker-dark', 'checker-light', 'white', 'black', 'gray'];
 const KEY_UI_THEME = 'fishtank.uiTheme.v1';
+/** Onion-skin preferences (see OnionSettings) - an editor preference like the canvas background, not
+ *  part of any sprite, so it's its own key rather than anything the sprite format has to migrate. */
+const KEY_ONION = 'fishtank.onionSkin.v1';
 export const UI_THEMES: UiTheme[] = [
   'cottonCandy',
   'watermelonCandy',
@@ -300,6 +317,37 @@ export function loadCanvasBackground(): CanvasBackground | null {
 
 export function saveCanvasBackground(bg: CanvasBackground): void {
   localStorage.setItem(KEY_CANVAS_BG, bg);
+}
+
+const ONION_COLOR_MODES: OnionColorMode[] = ['tint', 'original'];
+
+/** Returns null (i.e. "use the defaults") for anything missing or out of range rather than trusting
+ *  what's in storage - this key is written by a version of the app that may not be the one reading it. */
+export function loadOnionSettings(): OnionSettings | null {
+  try {
+    const raw = localStorage.getItem(KEY_ONION);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<OnionSettings>;
+    const depth = (v: unknown, fallback: number) =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.min(3, Math.max(0, Math.round(v))) : fallback;
+    return {
+      enabled: parsed.enabled === true,
+      before: depth(parsed.before, 1),
+      after: depth(parsed.after, 1),
+      opacity:
+        typeof parsed.opacity === 'number' && Number.isFinite(parsed.opacity)
+          ? Math.min(1, Math.max(0.1, parsed.opacity))
+          : 0.45,
+      colorMode: ONION_COLOR_MODES.includes(parsed.colorMode as OnionColorMode) ? (parsed.colorMode as OnionColorMode) : 'tint',
+    };
+  } catch (e) {
+    console.warn('loadOnionSettings failed', e);
+    return null;
+  }
+}
+
+export function saveOnionSettings(settings: OnionSettings): void {
+  localStorage.setItem(KEY_ONION, JSON.stringify(settings));
 }
 
 export function loadUiTheme(): UiTheme | null {

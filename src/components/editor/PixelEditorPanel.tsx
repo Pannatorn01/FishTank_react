@@ -7,6 +7,7 @@ import { CanvasStatusBar } from './CanvasStatusBar';
 import { ColorPalette } from './ColorPalette';
 import { FrameStrip } from './FrameStrip';
 import { LayerPanel } from './LayerPanel';
+import { OnionSkinPanel } from './OnionSkinPanel';
 import { PixelCanvas } from './PixelCanvas';
 import { PreviewPanel } from './PreviewPanel';
 import { SpriteLibrary } from './SpriteLibrary';
@@ -63,6 +64,7 @@ export function PixelEditorPanel({
 
         <div className="side-panel">
           <PreviewPanel engine={engine} type={type} />
+          <OnionSkinPanel engine={engine} />
           <TransformPanel engine={engine} />
           <LayerPanel engine={engine} onError={onError} />
         </div>
