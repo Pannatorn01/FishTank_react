@@ -49,7 +49,7 @@ export function PixelEditorPanel({
   layoutApi: EditorLayoutApi;
 }) {
   const { t } = useLanguage();
-  const { layout, movePanel, setZoneSize } = layoutApi;
+  const { layout, movePanel, setZoneSize, setPanelHeight } = layoutApi;
   /** Which panel is mid-drag, so every dock can offer itself as a drop target while one is moving. */
   const [dragging, setDragging] = useState<DockPanelId | null>(null);
 
@@ -85,33 +85,39 @@ export function PixelEditorPanel({
     library: <SpriteLibrary engine={engine} onConfirmDiscard={confirmDiscard} onError={onError} />,
   };
 
+  const renderPanel = (id: DockPanelId) => (
+    <DockPanel
+      key={id}
+      id={id}
+      title={t(PANEL_META[id].titleKey)}
+      icon={PANEL_META[id].icon}
+      dragging={dragging === id}
+      height={layout.panelHeights[id]}
+      onDragStart={setDragging}
+      onDragEnd={() => setDragging(null)}
+    >
+      {panelBody[id]}
+    </DockPanel>
+  );
+
   const renderZone = (zone: DockZone) => (
     <DockZoneView
       zone={zone}
       size={layout.sizes[zone]}
+      columns={layout.zones[zone]}
       dragging={dragging}
-      onDropPanel={(panel, target, beforeId) => {
-        movePanel(panel, target, beforeId);
+      onDropPanel={(panel, target, dropTarget) => {
+        movePanel(panel, target, dropTarget);
         setDragging(null);
       }}
       onResize={(px) => setZoneSize(zone, px)}
+      onPanelResize={setPanelHeight}
+      renderPanel={renderPanel}
       resizeLabel={t('dock.resize')}
+      panelResizeLabel={t('dock.resizePanel')}
+      newColumnLabel={t('dock.newColumn')}
       emptyHint={t('dock.dropHere')}
-    >
-      {layout.zones[zone].map((id) => (
-        <DockPanel
-          key={id}
-          id={id}
-          title={t(PANEL_META[id].titleKey)}
-          icon={PANEL_META[id].icon}
-          dragging={dragging === id}
-          onDragStart={setDragging}
-          onDragEnd={() => setDragging(null)}
-        >
-          {panelBody[id]}
-        </DockPanel>
-      ))}
-    </DockZoneView>
+    />
   );
 
   return (
