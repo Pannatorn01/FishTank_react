@@ -657,6 +657,33 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
  * cursor: on a pixel canvas that reads as the drawing jumping while you draw on it. Panning is
  * entirely transform-based now (panX/panY in usePixelEditor.ts) and .pixel-canvas-scrollbar below
  * overlays position indicators inside this box without taking any layout space of its own. */
+/* Photoshop-style tool options bar (ToolOptionsBar.tsx) - directly above the canvas, showing only
+ * what the active tool has to configure. Shares the status bar's chrome so the canvas reads as sitting
+ * between two bars of the same kind. */
+.tool-options-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--pixel-panel);
+  border: 3px solid var(--bevel-dark);
+  box-shadow: 3px 3px 0 var(--bevel-dark);
+  min-height: 2.1rem;
+}
+.tool-options-name {
+  font-family: "Press Start 2P", "Pixelify Sans", system-ui, sans-serif;
+  font-size: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--pixel-text-strong);
+  opacity: 0.8;
+  padding-right: 4px;
+  margin-right: 2px;
+  border-right: 2px solid var(--bevel-dark);
+  white-space: nowrap;
+}
+
 .pixel-canvas-wrap {
   position: relative;
   background: var(--pixel-bg-deep);
@@ -897,6 +924,13 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   font-size: 0.78rem;
 }
 .mini-toggle { display: flex; align-items: center; gap: 5px; }
+/* The status bar's non-interactive readouts (canvas size, cursor position, selection size), pushed to
+ * the trailing edge so the controls before them never shift as a readout appears or disappears - the
+ * cursor one in particular comes and goes every time the pointer leaves the canvas. */
+.status-readouts { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.status-readout { font-size: 0.66rem; opacity: 0.75; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* Fixed width so the digits changing under the moving cursor can't reflow the bar. */
+.status-cursor { min-width: 4.5em; text-align: right; }
 .zoom-controls { display: flex; align-items: center; gap: 4px; }
 #zoom-label { min-width: 32px; text-align: center; font-family: "VT323", monospace; font-size: 0.95rem; }
 .zoom-unit { margin-left: -2px; color: var(--pixel-muted); font-size: 0.8rem; }
@@ -976,6 +1010,23 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .frame-controls { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
 
 .side-panel { flex: 0 0 190px; min-width: 165px; display: flex; flex-direction: column; gap: 5px; }
+/* SidePanelSection.tsx - the header is a button, so it needs the plain-button reset the rest of
+   .panel-title's styling sits on top of. */
+.side-section { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.side-section-header {
+  width: 100%;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid var(--bevel-dark);
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.side-section-header:hover { opacity: 1; }
+.side-section-header i { font-size: 0.6rem; opacity: 0.7; }
+/* A collapsed section is just its header - drop the body's bottom rule so consecutive collapsed
+   headers don't stack two lines between them. */
+.side-section[data-collapsed] > .side-section-header { border-bottom-color: transparent; }
 
 .palette-panel, .library, .layer-panel {
   background: var(--pixel-panel);

@@ -8,7 +8,6 @@ export function TransformPanel({ engine }: { engine: PixelEditorEngine }) {
   const { t } = useLanguage();
   return (
     <div className="transform-panel">
-      <span className="panel-title">{t('transform.title')}</span>
       <div className="transform-buttons">
         <Button type="button" size="icon" variant="secondary" title={t('transform.flipH')} onClick={() => engine.flipH()}>
           <i className="fa-solid fa-left-right" />

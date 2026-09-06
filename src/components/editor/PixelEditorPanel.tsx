@@ -10,7 +10,9 @@ import { LayerPanel } from './LayerPanel';
 import { OnionSkinPanel } from './OnionSkinPanel';
 import { PixelCanvas } from './PixelCanvas';
 import { PreviewPanel } from './PreviewPanel';
+import { SidePanelSection } from './SidePanelSection';
 import { SpriteLibrary } from './SpriteLibrary';
+import { ToolOptionsBar } from './ToolOptionsBar';
 import { ToolRail } from './ToolRail';
 import { TransformPanel } from './TransformPanel';
 
@@ -56,16 +58,26 @@ export function PixelEditorPanel({
             onError={onError}
             onConfirmDiscard={confirmDiscard}
           />
+          <ToolOptionsBar engine={engine} />
           <PixelCanvas engine={engine} />
           <CanvasStatusBar engine={engine} type={type} />
           <FrameStrip engine={engine} type={type} />
           <SpriteLibrary engine={engine} onConfirmDiscard={confirmDiscard} onError={onError} />
         </div>
 
+        {/* Layers is deliberately not collapsible: it's the panel in constant use, and it owns its own
+            header with an add button. The three above it are set-and-forget, which is exactly what
+            makes them worth folding away on a short window. */}
         <div className="side-panel">
-          <PreviewPanel engine={engine} type={type} />
-          <OnionSkinPanel engine={engine} />
-          <TransformPanel engine={engine} />
+          <SidePanelSection id="preview" title={t('preview.title')}>
+            <PreviewPanel engine={engine} type={type} />
+          </SidePanelSection>
+          <SidePanelSection id="onion" title={t('onion.title')}>
+            <OnionSkinPanel engine={engine} />
+          </SidePanelSection>
+          <SidePanelSection id="transform" title={t('transform.title')}>
+            <TransformPanel engine={engine} />
+          </SidePanelSection>
           <LayerPanel engine={engine} onError={onError} />
         </div>
       </div>

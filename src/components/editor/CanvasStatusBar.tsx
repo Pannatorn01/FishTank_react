@@ -14,22 +14,13 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { BRUSH_SIZE_TOOLS, MAX_BRUSH_SIZE, ZOOM_LEVELS } from '@/hooks/usePixelEditor';
+import { ZOOM_LEVELS } from '@/hooks/usePixelEditor';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import { GRID_SIZES, MAX_BACKGROUND_GRID_SIZE, MAX_GRID_SIZE, MIN_BACKGROUND_GRID_SIZE, MIN_GRID_SIZE, RESIZE_ANCHOR_FRAC } from '@/lib/storage';
-import type { CanvasBackground, ResizeAnchor, ResizeMode, SpriteType, SymmetryMode } from '@/lib/types';
+import type { CanvasBackground, ResizeAnchor, ResizeMode, SpriteType } from '@/lib/types';
 
 const CUSTOM_SIZE_VALUE = 'custom';
-
-const SYMMETRY_KEYS: Record<SymmetryMode, string> = {
-  none: 'symmetry.none',
-  vertical: 'symmetry.vertical',
-  horizontal: 'symmetry.horizontal',
-  both: 'symmetry.both',
-  diagonal: 'symmetry.diagonal',
-  radial: 'symmetry.radial',
-};
 
 const RESIZE_ANCHORS = Object.keys(RESIZE_ANCHOR_FRAC) as ResizeAnchor[];
 
@@ -47,13 +38,8 @@ function clampGridSize(n: number, min: number, max: number): number {
 
 export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; type: SpriteType }) {
   const { t } = useLanguage();
-  const showShapeFilled = engine.tool === 'rect' || engine.tool === 'ellipse';
-  // Single source of truth (BRUSH_SIZE_TOOLS) shared with the engine's own brushSizeToolKey()/
-  // brushPreviewRect() gating - this used to be its own hardcoded tool list here, which silently fell
-  // out of sync with the engine's list when line/rect/ellipse were added to it (the UI kept hiding the
-  // control for tools that could otherwise use it).
-  const showBrushOptions = BRUSH_SIZE_TOOLS.has(engine.tool);
   const selection = engine.selection;
+  const hover = engine.hoverCell();
   const { width, height } = engine.current;
   const [customOpen, setCustomOpen] = useState(false);
   const [customWidth, setCustomWidth] = useState('');
@@ -294,111 +280,21 @@ export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; t
         </SelectContent>
       </Select>
 
-      {(engine.tool === 'fill' || engine.tool === 'magicWand') && (
-        <div className="mini-toggle brush-size-control" title={t('status.fillToleranceTitle')}>
-          <Label htmlFor="fill-tolerance-range">{t('status.fillTolerance')}</Label>
-          <input
-            id="fill-tolerance-range"
-            type="range"
-            min={0}
-            max={100}
-            step={1}
-            value={engine.fillTolerance}
-            onChange={(e) => engine.setFillTolerance(Number(e.target.value))}
-            className="brush-size-slider"
-          />
-          <Input
-            type="number"
-            min={0}
-            max={100}
-            value={engine.fillTolerance}
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              if (Number.isFinite(n)) engine.setFillTolerance(n);
-            }}
-            className="w-14 h-7 px-1.5 text-center text-xs"
-            aria-label={t('status.fillTolerance')}
-          />
-        </div>
-      )}
-
-      {(engine.tool === 'gradient' || showBrushOptions) && (
-        <label className="mini-toggle" title={t('status.ditherTitle')}>
-          <Checkbox checked={engine.ditherEnabled} onCheckedChange={(v) => engine.setDitherEnabled(!!v)} />
-          <Label>{t('status.dither')}</Label>
-        </label>
-      )}
-
-      {(showShapeFilled || showBrushOptions) && <span className="toolbar-divider" aria-hidden="true" />}
-
-      {showShapeFilled && (
-        <label className="mini-toggle">
-          <Checkbox checked={engine.shapeFilled} onCheckedChange={(v) => engine.setShapeFilled(!!v)} />
-          <Label>{t('status.fillShape')}</Label>
-        </label>
-      )}
-
-      {showBrushOptions && (
-        <div className="mini-toggle brush-size-control" title={t('status.brushSizeTitle')}>
-          <Label htmlFor="brush-size-range">{t('status.brushSize')}</Label>
-          <input
-            id="brush-size-range"
-            type="range"
-            min={1}
-            max={MAX_BRUSH_SIZE}
-            step={1}
-            value={engine.brushSize}
-            onChange={(e) => engine.setBrushSize(Number(e.target.value))}
-            className="brush-size-slider"
-          />
-          <Input
-            type="number"
-            min={1}
-            max={MAX_BRUSH_SIZE}
-            value={engine.brushSize}
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              if (Number.isFinite(n)) engine.setBrushSize(n);
-            }}
-            className="w-14 h-7 px-1.5 text-center text-xs"
-            aria-label={t('status.brushSize')}
-          />
-          <span className="brush-size-unit">{t('status.brushSizeUnit')}</span>
-        </div>
-      )}
-
-      <span className="toolbar-divider" aria-hidden="true" />
-
-      <Select value={engine.symmetry} onValueChange={(v) => engine.setSymmetry(v as SymmetryMode)}>
-        <SelectTrigger className="w-48 text-xs" title={t('status.symmetryTitle')}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {(Object.keys(SYMMETRY_KEYS) as SymmetryMode[]).map((mode) => (
-            <SelectItem key={mode} value={mode}>
-              {t(SYMMETRY_KEYS[mode])}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      {engine.symmetry !== 'none' && (
-        <Button
-          type="button"
-          size="icon"
-          variant="secondary"
-          title={t('status.resetSymmetryAxis')}
-          onClick={() => engine.resetSymmetryAxis()}
-        >
-          <i className="fa-solid fa-crosshairs" />
-        </Button>
-      )}
-
-      {selection && (
-        <span className="selection-info" title={t('status.selectionHint')}>
-          <i className="fa-solid fa-vector-square" />{' '}
-          {t('status.selectionSize', { w: selection.x1 - selection.x0 + 1, h: selection.y1 - selection.y0 + 1 })}
-        </span>
-      )}
+      {/* Readouts, not controls - pushed to the far end (see .status-readouts) so the interactive
+          part of the bar keeps a stable left-to-right order as these come and go. */}
+      <span className="status-readouts">
+        {hover && (
+          <span className="status-readout status-cursor" title={t('status.cursorPos')}>
+            {hover.x}, {hover.y}
+          </span>
+        )}
+        {selection && (
+          <span className="selection-info" title={t('status.selectionHint')}>
+            <i className="fa-solid fa-vector-square" />{' '}
+            {t('status.selectionSize', { w: selection.x1 - selection.x0 + 1, h: selection.y1 - selection.y0 + 1 })}
+          </span>
+        )}
+      </span>
     </div>
   );
 }

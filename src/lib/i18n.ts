@@ -6,6 +6,11 @@ const en: Dict = {
 
   'tool.pen.desc': 'Pen — draw pixels one at a time (B) • Shift+click to draw a straight line from where you last drew • hold Alt to pick a color • right-click to erase',
   'tool.line.desc': 'Line — drag to draw a straight line (L) • hold Shift to snap to 0/45/90° • hold Alt to pick a color • right-click to erase',
+  'tool.pen.short': 'Pen',
+  'tool.eraser.short': 'Eraser',
+  'tool.eyedropper.short': 'Eyedropper',
+  'tool.spray.short': 'Spray',
+  'tool.move.short': 'Move',
   'tool.line.short': 'Line',
   'tool.curve.desc': 'Curve — drag to draw the initial line (U), then drag the yellow handle to bend it • click elsewhere or press Enter to confirm, Esc to cancel • hold Alt to pick a color • right-click to erase',
   'tool.curve.short': 'Curve',
@@ -57,6 +62,7 @@ const en: Dict = {
   'status.brushSizeUnit': 'px',
   'status.symmetryTitle': 'Symmetry drawing',
   'status.selectionSize': 'Selection {w}×{h}',
+  'status.cursorPos': 'Cursor position on the canvas (x, y)',
   'status.gridSizeTitle': 'Canvas size (width×height, in pixels) - not zoom; see the zoom % field to the left for that',
   'status.gridCustom': 'Custom...',
   'status.gridCustomTitle': 'Custom grid size',
@@ -143,6 +149,7 @@ const en: Dict = {
   'sprite.defaultRoomName': 'Unnamed room decor',
   'sprite.defaultBackgroundName': 'Unnamed background',
 
+  'preview.title': 'Preview',
   'onion.title': 'Onion Skin',
   'onion.enable': 'Show nearby frames',
   'onion.enableTitle': 'Ghost the frames around this one onto the canvas while you draw',

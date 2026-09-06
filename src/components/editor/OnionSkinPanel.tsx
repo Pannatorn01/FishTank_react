@@ -14,7 +14,6 @@ export function OnionSkinPanel({ engine }: { engine: PixelEditorEngine }) {
   const multiFrame = engine.current.frames.length > 1;
   return (
     <div className="onion-panel">
-      <span className="panel-title">{t('onion.title')}</span>
       <label className="mini-toggle" title={t('onion.enableTitle')}>
         <Checkbox checked={engine.onionSkin} onCheckedChange={(v) => engine.setOnionSkin(!!v)} />
         <Label>{t('onion.enable')}</Label>

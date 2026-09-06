@@ -807,7 +807,11 @@ class PixelEditorEngine {
     const pt = this.pxFromEvent(e);
     if (!pt) return;
     this.hoverPointerPx = pt;
-    if (BRUSH_SIZE_TOOLS.has(this.tool)) this.reactNotify();
+    // Unconditional now that the status bar shows live cursor coordinates (see hoverCell) - it used to
+    // be gated on the brush tools, the only thing that needed a re-render per move back then.
+    // reactNotify coalesces to one render per animation frame, so this stays one render per displayed
+    // frame while the pointer moves, not one per pointer event.
+    this.reactNotify();
   }
 
   clearHoverPointer(): void {
@@ -821,6 +825,18 @@ class PixelEditorEngine {
    *  doc comment) - so the outline shows exactly which cells a click would paint, not just an
    *  approximate box centered on the raw pointer position. Null when there's nothing to show (pointer
    *  not over the canvas, or the active tool doesn't use a brush size). */
+  /** Which cell the pointer is over, for the status bar's coordinate readout - null when it isn't over
+   *  the canvas, and also when it's over the wrap but outside the canvas's own bounds, since a
+   *  coordinate outside the sprite isn't a coordinate the user can do anything with. */
+  hoverCell(): Cell | null {
+    if (!this.hoverPointerPx) return null;
+    const cellPx = this.effectiveCellPx();
+    const x = Math.floor(this.hoverPointerPx.px / cellPx);
+    const y = Math.floor(this.hoverPointerPx.py / cellPx);
+    const { width, height } = this.current;
+    return x >= 0 && y >= 0 && x < width && y < height ? { x, y } : null;
+  }
+
   brushPreviewRect(): { left: number; top: number; size: number } | null {
     if (!this.hoverPointerPx || !BRUSH_SIZE_TOOLS.has(this.tool)) return null;
     const cellPx = this.effectiveCellPx();
