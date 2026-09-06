@@ -62,7 +62,18 @@ const MAX_RENDERED_CANVAS_PX = 8000;
  *  (50%→60% and 400%→480% are both "one click") instead of mattering a lot at low zoom and nothing at
  *  high zoom the way a fixed +0.1 would. */
 export const ZOOM_BUTTON_STEP = 1.2;
+/** How much of the canvas must stay inside .pixel-canvas-wrap after any pan (screen px, per axis) -
+ *  or the whole canvas, when it's smaller than that. Panning is otherwise free-form (no scroll
+ *  container clamps it any more, see clampPan), and without a stop the canvas can be flung out of
+ *  view entirely with nothing on screen to say where it went. */
+const PAN_EDGE_MARGIN_PX = 56;
 const PREVIEW_CELL_PX_BASE = 96;
+/** Above this many cells, the preview panel stops repainting *during* a stroke and waits for the stroke
+ *  to end (see schedulePreviewRepaint). A preview repaint costs a full compositeToBitmap over every
+ *  layer at the sprite's native resolution - nothing on a 32x32 fish, but hundreds of ms on a
+ *  background-sized canvas (see restartPreviewTimer's doc comment for that profile). Small sprites, the
+ *  overwhelmingly common case here, still update live mid-stroke. */
+const PREVIEW_LIVE_CELL_LIMIT = 128 * 128;
 const UNDO_LIMIT = 50;
 export const MAX_BRUSH_SIZE = 20;
 /** Tools that share the brush-size stepper (see CanvasStatusBar's `showBrushOptions` / PixelCanvas's
@@ -256,13 +267,24 @@ class PixelEditorEngine {
    *  dimensions can otherwise overflow .pixel-canvas-wrap for a differently-sized one it carries over
    *  to, with no visible sign beyond a stray scrollbar (place-items:center hides the clipped edges). */
   zoomScale = 1;
-  /** Manual correction (screen px) applied as a transform on .pixel-canvas-inner, on top of whatever
-   *  CSS centering/native scroll already puts it at - see setZoom's doc comment for why cursor-anchored
-   *  zoom needs this instead of just adjusting the wrap's scrollLeft/scrollTop. Reset to 0 wherever the
+  /** The view offset (screen px), applied as a transform on .pixel-canvas-inner on top of the CSS
+   *  centering .pixel-canvas-wrap gives it. This is now the *only* way the view moves: the wrap used to
+   *  be overflow:auto and pan was split between native scrollLeft/scrollTop and this transform, which
+   *  meant a scrollbar appearing or disappearing mid-stroke resized the wrap's content box and visibly
+   *  jumped the canvas out from under the cursor. The wrap is overflow:hidden now (see index.css) and
+   *  every pan - hand-drag, wheel, scrollbar, zoom anchoring - goes through panBy/clampPan instead, so
+   *  nothing about the view depends on layout that can change while drawing. Reset to 0 wherever the
    *  view should snap back to a plain default (zoomToFit, a resized canvas, a different sprite) rather
-   *  than carry over a stale correction from whatever was on screen before. */
+   *  than carry over a stale offset from whatever was on screen before. */
   panX = 0;
   panY = 0;
+  /** The pan currently written into .pixel-canvas-inner's transform, which is what the canvas's measured
+   *  rect reflects. Distinct from panX/panY, which are already the *next* value by the time clampPan
+   *  measures: subtracting the new pan from a rect still showing the old one made viewMetrics' `restX`
+   *  drift by exactly one pan step, so a fast drag stopped short of the real clamp. Only applyPanToDom
+   *  writes these, and it's the only thing that writes the transform. */
+  private appliedPanX = 0;
+  private appliedPanY = 0;
   /** True for the duration of a middle-mouse-button drag, panning the view via the wrap's native scroll
    *  regardless of the active tool - see onPointerDown/Move/Up. Deliberately doesn't reuse `painting`
    *  (and isn't itself gated by it): this needs to work mid-stroke, mid-shape-drag, etc. without
@@ -288,6 +310,10 @@ class PixelEditorEngine {
   loadToken = 0;
 
   private previewTimer: ReturnType<typeof setInterval> | null = null;
+  /** Set by schedulePreviewRepaint whenever the sprite's pixels change, cleared once the pending rAF
+   *  actually repaints - see that method for why the repaint is deferred to a frame boundary. */
+  private previewDirty = false;
+  private previewRepaintRafId: number | null = null;
   private reactNotify: () => void = () => {};
   private notifyRafId: number | null = null;
   private windowListeners: Array<() => void> = [];
@@ -370,6 +396,10 @@ class PixelEditorEngine {
 
   destroy(): void {
     if (this.previewTimer) clearInterval(this.previewTimer);
+    if (this.previewRepaintRafId !== null) {
+      cancelAnimationFrame(this.previewRepaintRafId);
+      this.previewRepaintRafId = null;
+    }
     if (this.sprayTimer) clearInterval(this.sprayTimer);
     // Reset to null, not just cancelled - React 18 StrictMode's dev-mode double-invoke (mount →
     // cleanup → mount again) means a fresh init() can follow this destroy() in the same tick. Its
@@ -391,6 +421,8 @@ class PixelEditorEngine {
    */
   private refresh(): void {
     this.drawGrid(this.shapePreviewCells ?? undefined);
+    this.syncPreviewTimer();
+    this.schedulePreviewRepaint();
     this.reactNotify();
   }
 
@@ -404,8 +436,12 @@ class PixelEditorEngine {
   }
 
   attachPreviewCanvas(el: HTMLCanvasElement | null): void {
+    const isNew = el !== null && el !== this.previewCanvas;
     this.previewCanvas = el;
     this.previewCtx = el ? el.getContext('2d') : null;
+    // A freshly attached canvas is blank until something paints it, and for a single-frame sprite no
+    // timer ever will - paint it once here so the panel isn't empty until the first edit.
+    if (isNew) this.paintPreview();
   }
 
   setActive(active: boolean): void {
@@ -600,12 +636,10 @@ class PixelEditorEngine {
 
   setTiledPreview(v: boolean): void {
     this.tiledPreview = v;
-    // tickPreview(), not just reactNotify(): the preview canvas is painted imperatively on its own
-    // timer (see restartPreviewTimer), which only ever ticks once for a single-frame sprite - the
-    // common case for a 'background' (see FrameStrip.tsx), the only type this toggle is shown for.
-    // Without forcing a tick here, flipping this checkbox on a single-frame background would never
-    // actually repaint the preview until some other change happened to restart the timer.
-    this.tickPreview();
+    // Repainted explicitly: this toggle changes how the preview is drawn without changing a single
+    // pixel of the sprite, so none of the content-change paths that call schedulePreviewRepaint()
+    // (refresh/redrawRegions) run for it.
+    this.paintPreview();
     this.reactNotify();
   }
 
@@ -736,17 +770,11 @@ class PixelEditorEngine {
    * Sets a new continuous zoom scale, clamped to [minZoomScale(), maxZoomScale()] - the single place
    * that ever changes zoomScale. When `anchor` (client coords, e.g. the cursor position) is given, the
    * content point under it is kept at the same screen position ("zoom to cursor") by measuring where
-   * that point actually rendered before and after the resize, then correcting the gap (see
-   * absorbPanCorrection) via the wrap's native scrollLeft/scrollTop wherever there's room for it, and
-   * only the leftover via panX/panY - a small transform applied to .pixel-canvas-inner (see
-   * PixelCanvas.tsx). panX/panY exists at all because .pixel-canvas-wrap centers its content via CSS
-   * grid `place-items: center` whenever the canvas is smaller than the wrap (the common case for most
-   * sprites at ordinary zoom levels), and in that regime scrollLeft/scrollTop are pinned at 0 with no
-   * scrollable slack to adjust - writing to them is silently a no-op, so that case has to be corrected
-   * some other way. Measuring the canvas's actual rendered rect sidesteps needing to know which regime
-   * applies: it's correct whether the current position comes from centering, native scroll, a prior
-   * panX/panY, or any mix of the three, since getBoundingClientRect() always reports the final on-screen
-   * result of all of them together.
+   * that point actually rendered before and after the resize, then correcting the gap through panX/panY
+   * (see absorbPanCorrection) - the transform on .pixel-canvas-inner that is now the only thing moving
+   * the view. Measuring the canvas's actual rendered rect, rather than computing where it "should" be,
+   * means this stays correct whether the current position comes from CSS centering, a prior pan, or
+   * both: getBoundingClientRect() always reports the final on-screen result of everything together.
    *
    * Deliberately does NOT call recomputeCanvasSize()/drawGrid(): a zoom change never touches the
    * sprite's own dimensions or pixel content, only how large it's drawn on screen and where the DOM
@@ -772,80 +800,127 @@ class PixelEditorEngine {
       // That same fraction now naturally renders at (naturalX, naturalY) - wherever CSS centering/
       // scroll/the previous panX,panY happened to land it - which has drifted from the cursor by
       // exactly (naturalX - anchor.clientX, naturalY - anchor.clientY); absorbPanCorrection closes that
-      // gap. rectAfter's own width/height (the canvas's true CSS size, set moments ago by
-      // updateCanvasCssSize() and unaffected by any transform on its ancestor - translate doesn't
-      // resize anything) go with it, not read fresh from the DOM again there - see that method's doc
-      // comment for why re-deriving "does this overflow" from the wrap itself is the wrong check.
-      this.absorbPanCorrection(naturalX - anchor.clientX, naturalY - anchor.clientY, rectAfter.width, rectAfter.height);
+      // gap.
+      this.absorbPanCorrection(naturalX - anchor.clientX, naturalY - anchor.clientY);
     }
     this.reactNotify();
   }
 
   /**
    * Applies a (dx, dy) screen-px correction - "content needs to shift left/up by this much to bring the
-   * zoom anchor back under the cursor" - through the wrap's native scroll whenever the canvas's own true
-   * size (`canvasWidth`/`canvasHeight`, from the caller's already-measured rect) exceeds the wrap's
-   * client size on that axis, draining any pan already sitting in the transform back into scroll at the
-   * same time (see `oldPanX`/`oldPanY` below) instead of just adding to it. Falls back to the panX/panY
-   * transform only when the canvas genuinely fits (CSS grid `place-items: center` has scrollLeft/Top
-   * pinned at 0 there - the one case a transform is unavoidable).
+   * zoom anchor back under the cursor" - straight to panX/panY, then clamps.
    *
-   * Deliberately does NOT ask the wrap "do you currently have scrollable overflow" (e.g.
-   * `scrollWidth > clientWidth`) to decide this - scrollWidth includes the *transformed* position of a
-   * nonzero panX/panY, so a large enough pan alone can make scrollWidth exceed clientWidth even while
-   * the canvas's own untransformed size still fits: confirmed by reproducing exactly that (zooming into
-   * a small sprite, where after a couple of steps panX had grown just large enough to flip that check
-   * true a step early, at which point the untransformed canvas still didn't actually overflow, scroll
-   * couldn't do anything useful with the "room" that check saw, and the cursor anchor drifted ~15% of
-   * the canvas's width on the next step and stayed drifted). Comparing the canvas's own transform-
-   * independent size against the wrap's clientWidth/Height sidesteps that feedback loop entirely.
-   *
-   * Separately, a transform and native scroll both contribute to a scroll container's overflow area,
-   * but independently, and the browser doesn't reconcile them: once panX/panY holds a large offset *and*
-   * the canvas is also large enough to genuinely overflow the wrap, scrollWidth/scrollHeight balloon to
-   * cover both the untransformed and transformed positions, and neither scrollLeft=0, scrollLeft=max,
-   * nor the midpoint between them still means "left/right/center edge of the visible canvas" - confirmed
-   * by reproducing that too (zoom out from 100% while anchored off-center down to the 5% minimum left
-   * panX/panY at several thousand px, at which point even scrolling to the wrap's own scrollWidth/2
-   * landed the canvas over a thousand px from the wrap's center). Draining into scroll whenever the
-   * canvas genuinely overflows avoids this the same way it avoids the other feedback loop above.
-   *
-   * Whenever scroll applies, this deliberately lets the browser's own clamping (scrollLeft/Top always
-   * self-clamp to [0, scrollWidth-clientWidth]) have the final say and discards anything the clamp
-   * couldn't satisfy, rather than pushing the shortfall into panX/panY to preserve the anchor exactly.
-   * That shortfall is only ever nonzero when perfectly honoring the anchor would mean scrolling past the
-   * canvas's own edge - content that doesn't exist - so the trade is a marginal, edge-only loss of
-   * cursor-anchor precision (confirmed: same order of magnitude whether reached in one zoom step or many
-   * small ones, i.e. a real geometric floor, not accumulated drift) in exchange for scrollLeft/Top always
-   * meaning exactly what they say, which is what the reported bug actually needs guaranteed.
+   * This used to be far more involved: with the wrap as an overflow:auto scroll container it had to
+   * decide, per axis, whether to spend the correction on native scrollLeft/scrollTop or on the
+   * transform, because CSS grid centering pins scroll at 0 whenever the canvas fits, while a transform
+   * and native scroll both inflate a scroll container's overflow area independently and the browser
+   * reconciles neither - two separate feedback loops that each produced real anchor drift. Making the
+   * wrap overflow:hidden and moving the view entirely into the transform (see panX/panY) deletes both
+   * problems rather than balancing them.
    */
-  private absorbPanCorrection(dx: number, dy: number, canvasWidth: number, canvasHeight: number): void {
+  private absorbPanCorrection(dx: number, dy: number): void {
+    this.panX -= dx;
+    this.panY -= dy;
+    this.clampPan();
+    this.applyPanToDom();
+  }
+
+  /**
+   * Wrap (viewport) and canvas geometry that the pan clamp and the overlay scrollbars both work from,
+   * all in the wrap's padding-box coordinates. `restX`/`restY` are where the canvas's top-left corner
+   * sits with pan at 0 - measured (current rect minus the pan currently in the transform), not derived
+   * from the CSS.
+   *
+   * Measured because deriving it is wrong in exactly the case that matters: .pixel-canvas-wrap centers
+   * with grid `place-items: center`, which suggests an oversized canvas rests at (wrapW - canvasW) / 2,
+   * overflowing equally on both sides. It doesn't - a grid item larger than its area resolves to the
+   * content box's start edge instead, so its resting offset is 0, not a large negative number. Assuming
+   * the centered value made the pan clamp wrong by exactly that difference in *opposite* directions on
+   * the two edges: one direction stopped while the canvas still filled the whole viewport, the other let
+   * it be dragged entirely off screen. Measuring is also robust to any future change in how the wrap
+   * lays its content out, which deriving would silently break again.
+   *
+   * Null before the canvas is attached.
+   */
+  viewMetrics(): {
+    wrapW: number;
+    wrapH: number;
+    canvasW: number;
+    canvasH: number;
+    restX: number;
+    restY: number;
+  } | null {
+    const wrap = this.canvas?.parentElement?.parentElement as HTMLElement | null;
+    if (!wrap || !this.canvas) return null;
+    const wrapRect = wrap.getBoundingClientRect();
+    const canvasRect = this.canvas.getBoundingClientRect();
+    return {
+      wrapW: wrap.clientWidth,
+      wrapH: wrap.clientHeight,
+      canvasW: canvasRect.width,
+      canvasH: canvasRect.height,
+      // clientLeft/clientTop are the border widths - subtracting them puts these in the same padding-box
+      // coordinates as clientWidth/clientHeight above, which is also what `position: absolute` uses for
+      // the overlay scrollbars.
+      restX: canvasRect.left - wrapRect.left - wrap.clientLeft - this.appliedPanX,
+      restY: canvasRect.top - wrapRect.top - wrap.clientTop - this.appliedPanY,
+    };
+  }
+
+  /** Keeps at least PAN_EDGE_MARGIN_PX of canvas inside the wrap on each axis (or the whole canvas, when
+   *  it's smaller than that margin). Written in terms of the measured resting offset from viewMetrics -
+   *  see there for why that isn't computed from the wrap's centering. */
+  private clampPan(): void {
+    const m = this.viewMetrics();
+    if (!m) return;
+    const axis = (pan: number, wrap: number, size: number, rest: number): number => {
+      if (wrap <= 0) return pan;
+      const margin = Math.min(PAN_EDGE_MARGIN_PX, size);
+      // Leading edge no further right than wrapW - margin; trailing edge no further left than margin.
+      return Math.min(wrap - margin - rest, Math.max(margin - size - rest, pan));
+    };
+    this.panX = axis(this.panX, m.wrapW, m.canvasW, m.restX);
+    this.panY = axis(this.panY, m.wrapH, m.canvasH, m.restY);
+  }
+
+  /** Writes panX/panY to .pixel-canvas-inner synchronously instead of waiting for React's next render.
+   *  A hand-drag or wheel-pan fires many times between two renders, and the transform is the only thing
+   *  those change - going through React for each one would add a render per pointermove for no reason
+   *  (PixelCanvas.tsx renders the same value from state on its own next render, so the two agree). */
+  private applyPanToDom(): void {
     const inner = this.canvas?.parentElement as HTMLElement | null;
-    const wrap = inner?.parentElement as HTMLElement | null;
-    if (!wrap || !inner) {
-      this.panX -= dx;
-      this.panY -= dy;
-      return;
-    }
-    const oldPanX = this.panX;
-    const oldPanY = this.panY;
-    const useScrollX = canvasWidth > wrap.clientWidth;
-    const useScrollY = canvasHeight > wrap.clientHeight;
-    this.panX = useScrollX ? 0 : oldPanX - dx;
-    this.panY = useScrollY ? 0 : oldPanY - dy;
-    // Written to the DOM directly here, synchronously, rather than left for React's next render:
-    // scrollLeft/Top's assignments just below auto-clamp against the wrap's *current* scrollWidth/
-    // Height, which still include whatever transform is actually on the element right now - if that's
-    // still last render's (larger) panX/panY because React hasn't re-rendered yet, the clamp would use a
-    // stale, inflated bound, and the value actually assigned would only turn out wrong once React's own
-    // render later swaps in the smaller/zero transform computed above and the browser re-clamps against
-    // the now-current (smaller) scrollWidth. React reads this same panX/panY on its own next render and
-    // writes the identical style, so this isn't a fight with it, just staying in sync one tick sooner
-    // than a render would - the same reasoning as this method reading getBoundingClientRect() directly
-    // instead of waiting on a render.
+    if (!inner) return;
     inner.style.transform = this.panX || this.panY ? `translate(${this.panX}px, ${this.panY}px)` : '';
-    if (useScrollX) wrap.scrollLeft += dx - oldPanX;
-    if (useScrollY) wrap.scrollTop += dy - oldPanY;
+    this.appliedPanX = this.panX;
+    this.appliedPanY = this.panY;
+  }
+
+  /** Snaps the view back to its default position. Every "the view should start fresh" site goes through
+   *  this rather than assigning panX/panY directly, so the transform (and appliedPanX/Y with it) can
+   *  never be left describing a pan that's already been zeroed. */
+  private clearPan(): void {
+    this.panX = 0;
+    this.panY = 0;
+    this.applyPanToDom();
+  }
+
+  /** Moves the view by (dx, dy) screen px - the single entry point for hand-drag, wheel-pan and the
+   *  overlay scrollbars. `notify` is opt-in because the two drag paths repaint the transform themselves
+   *  and have nothing else on screen to update. */
+  panBy(dx: number, dy: number, notify = false): void {
+    if (!dx && !dy) return;
+    this.panX += dx;
+    this.panY += dy;
+    this.clampPan();
+    this.applyPanToDom();
+    if (notify) this.reactNotify();
+  }
+
+  /** Recentres the view without changing zoom - the escape hatch when the canvas has been panned
+   *  somewhere unhelpful. */
+  resetPan(): void {
+    this.clearPan();
+    this.reactNotify();
   }
 
   /** Multiplicative zoom-button step (see ZOOM_BUTTON_STEP), anchored at the wrap's own visible center
@@ -883,8 +958,7 @@ class PixelEditorEngine {
     if (availW <= 0 || availH <= 0) return;
     const { width, height } = this.current;
     const scale = Math.min(availW / (width * BASE_CELL_PX), availH / (height * BASE_CELL_PX));
-    this.panX = 0;
-    this.panY = 0;
+    this.clearPan();
     this.setZoom(scale);
   }
 
@@ -928,8 +1002,7 @@ class PixelEditorEngine {
     this.current.width = clampedWidth;
     this.current.height = clampedHeight;
     this.zoomScale = this.defaultZoomForSize(Math.max(clampedWidth, clampedHeight));
-    this.panX = 0;
-    this.panY = 0;
+    this.clearPan();
     this.frameIndex = Math.min(this.frameIndex, this.current.frames.length - 1);
     this.selection = null;
     this.lassoPoints = null;
@@ -978,8 +1051,7 @@ class PixelEditorEngine {
     this.current.width = newWidth;
     this.current.height = newHeight;
     this.zoomScale = this.defaultZoomForSize(Math.max(newWidth, newHeight));
-    this.panX = 0;
-    this.panY = 0;
+    this.clearPan();
     this.selection = null;
     this.lassoPoints = null;
     this.selectionMask = null;
@@ -1206,10 +1278,8 @@ class PixelEditorEngine {
     this.layers().forEach((layer) => {
       layer.cells = wrapShiftFrame(layer.cells, width, height);
     });
-    // tickPreview(), not just refresh(): seeing the effect in the tiled preview is the whole point of
-    // this action, and (see setTiledPreview's own comment) the preview canvas won't otherwise repaint
-    // on its own for a single-frame 'background' sprite.
-    this.tickPreview();
+    // refresh() covers the preview too (it calls schedulePreviewRepaint), which matters here because
+    // seeing the effect in the tiled preview is the whole point of this action.
     this.refresh();
   }
 
@@ -1344,6 +1414,11 @@ class PixelEditorEngine {
         this.spacePanActive = true;
         if (this.canvas) this.canvas.style.cursor = 'grab';
       }
+      return;
+    }
+    if (key === 'home') {
+      e.preventDefault();
+      this.resetPan();
       return;
     }
     if (key === 'escape') {
@@ -2199,18 +2274,10 @@ class PixelEditorEngine {
       const dx = e.clientX - this.middlePanLast.x;
       const dy = e.clientY - this.middlePanLast.y;
       this.middlePanLast = { x: e.clientX, y: e.clientY };
-      const inner = this.canvas?.parentElement as HTMLElement | null;
-      if (inner) {
-        // Always the transform, never native scroll: a Photoshop-style hand-drag moves 1:1 with the
-        // mouse for as long as it's held, with no clamp at the canvas's own edge (unlike scrollLeft/Top,
-        // which self-clamp to [0, scrollWidth-clientWidth] and would otherwise hard-stop the drag right
-        // at the last visible pixel). Written directly to the DOM rather than through reactNotify() for
-        // the same reason absorbPanCorrection does - one drag can fire many pointermoves between
-        // renders, and there's nothing else on screen that needs to react to panX/panY moving.
-        this.panX += dx;
-        this.panY += dy;
-        inner.style.transform = `translate(${this.panX}px, ${this.panY}px)`;
-      }
+      // A Photoshop-style hand-drag: moves 1:1 with the mouse, stopping only at clampPan's edge margin
+      // so the canvas can't be dragged out of sight entirely. panBy writes the transform straight to
+      // the DOM (no React render per pointermove) - see applyPanToDom.
+      this.panBy(dx, dy);
       return;
     }
     if (!this.painting) {
@@ -2424,6 +2491,10 @@ class PixelEditorEngine {
     this.strokeSnapshot = null;
     this.strokePoints = [];
     this.eraseOverride = false;
+    // Nothing here repaints the canvas, but the stroke that just ended did change pixels, and on a
+    // large sprite schedulePreviewRepaint() deliberately skips repainting mid-stroke - this is where
+    // that deferred preview repaint finally gets to run.
+    this.flushPreviewRepaint();
     this.reactNotify();
   }
 
@@ -2967,6 +3038,7 @@ class PixelEditorEngine {
         if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) ctx.fillRect(c.x, c.y, 1, 1);
       });
     }
+    this.schedulePreviewRepaint();
     this.reactNotify();
   }
 
@@ -3488,7 +3560,9 @@ class PixelEditorEngine {
   private restartPreviewTimer(): void {
     if (this.previewTimer) clearInterval(this.previewTimer);
     this.previewTimer = null;
-    this.tickPreview();
+    // paintPreview(), not tickPreview(): restarting the timer (changing speed, adding a frame, loading
+    // a sprite) shouldn't itself advance the animation by one frame.
+    this.paintPreview();
     if (this.current.frames.length > 1) {
       this.previewTimer = setInterval(() => this.tickPreview(), this.current.frameMs);
     }
@@ -3504,10 +3578,63 @@ class PixelEditorEngine {
     this.refresh();
   }
 
+  /** Advances to the next frame, then paints it - the animation timer's tick (see
+   *  restartPreviewTimer). Painting the frame that's already showing is paintPreview()'s job, not this
+   *  one's: they used to be a single method, which is why a single-frame sprite (no timer, so nothing
+   *  ever called it) showed a preview that never updated no matter how much was drawn. */
   private tickPreview(): void {
     if (!this.previewCanvas || !this.previewCtx) return;
+    this.previewFrame = (this.previewFrame + 1) % this.current.frames.length;
+    this.paintPreview();
+  }
+
+  /**
+   * Repaints the preview panel with whatever frame it's currently showing, at most once per animation
+   * frame. Called on every content change (see refresh/redrawRegions), which during a fast stroke means
+   * many times between two browser paints - hence the dirty flag instead of painting inline.
+   *
+   * On a large canvas the repaint itself is the expensive part (a full compositeToBitmap over every
+   * layer - see PREVIEW_LIVE_CELL_LIMIT), so past that size it's held back until the stroke finishes
+   * rather than competing with the drawing it's meant to be previewing; onPointerUp re-schedules, so
+   * the deferred repaint still lands the moment the gesture ends.
+   */
+  private schedulePreviewRepaint(): void {
+    if (!this.previewCanvas || !this.previewCtx) return;
+    this.previewDirty = true;
+    if (this.previewRepaintRafId !== null) return;
+    this.previewRepaintRafId = requestAnimationFrame(() => {
+      this.previewRepaintRafId = null;
+      if (!this.previewDirty) return;
+      if (this.painting && this.current.width * this.current.height > PREVIEW_LIVE_CELL_LIMIT) return;
+      this.previewDirty = false;
+      this.paintPreview();
+    });
+  }
+
+  /** Starts or stops the animation timer so it always matches the current frame count. Checked on every
+   *  refresh() rather than from each of addFrame/dupFrame/delFrame/moveFrame: those four all reach
+   *  refresh(), and none of them used to restart the timer, so adding a 2nd frame to a single-frame
+   *  sprite left the preview frozen on frame 1 forever - it animated only if some *other* action (a
+   *  speed change, a reload) happened to restart the timer afterwards. Comparing against the timer's
+   *  own existence makes this idempotent, so the common no-op refresh costs one comparison. */
+  private syncPreviewTimer(): void {
+    if (this.current.frames.length > 1 === (this.previewTimer !== null)) return;
+    this.restartPreviewTimer();
+  }
+
+  /** Re-arms a preview repaint that schedulePreviewRepaint() skipped because a stroke was in progress
+   *  - a no-op when nothing has actually changed, so ending a gesture that painted nothing (a stray
+   *  click, a cancelled shape) doesn't cost a full recomposite on a large sprite. */
+  private flushPreviewRepaint(): void {
+    if (this.previewDirty) this.schedulePreviewRepaint();
+  }
+
+  private paintPreview(): void {
+    if (!this.previewCanvas || !this.previewCtx) return;
     const frames = this.current.frames;
-    this.previewFrame = (this.previewFrame + 1) % frames.length;
+    // Clamped rather than assumed in range: frames can shrink under the preview (deleting a frame, or
+    // loading a shorter sprite) between one paint and the next.
+    if (this.previewFrame >= frames.length) this.previewFrame = 0;
     const { width, height } = this.current;
     const cellPx = PREVIEW_CELL_PX_BASE / Math.max(width, height);
     const ctx = this.previewCtx;
@@ -3697,8 +3824,7 @@ class PixelEditorEngine {
         this.lassoPoints = null;
         this.selectionMask = null;
         this.moveBuffer = null;
-        this.panX = 0;
-        this.panY = 0;
+        this.clearPan();
         this.zoomScale = this.defaultZoomForSize(Math.max(normalized.width, normalized.height));
         this.clearCurveState();
         this.undoStack = [];
@@ -3729,8 +3855,7 @@ class PixelEditorEngine {
     this.lassoPoints = null;
     this.selectionMask = null;
     this.moveBuffer = null;
-    this.panX = 0;
-    this.panY = 0;
+    this.clearPan();
     this.zoomScale = this.defaultZoomForSize(Math.max(this.current.width, this.current.height));
     this.clearCurveState();
     this.undoStack = [];
@@ -3788,8 +3913,7 @@ class PixelEditorEngine {
     this.lassoPoints = null;
     this.selectionMask = null;
     this.moveBuffer = null;
-    this.panX = 0;
-    this.panY = 0;
+    this.clearPan();
     this.zoomScale = this.defaultZoomForSize(Math.max(this.current.width, this.current.height));
     this.clearCurveState();
     this.undoStack = [];
@@ -3821,8 +3945,7 @@ class PixelEditorEngine {
       this.lassoPoints = null;
       this.selectionMask = null;
       this.moveBuffer = null;
-      this.panX = 0;
-      this.panY = 0;
+      this.clearPan();
       this.clearCurveState();
       this.loadToken += 1;
       this.centerSymmetryAxis();

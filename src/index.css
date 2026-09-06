@@ -651,16 +651,50 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 
 .canvas-column { flex: 1 1 340px; min-width: 240px; display: flex; flex-direction: column; gap: 5px; }
 
+/* overflow: hidden, not auto - a native scrollbar appearing or disappearing here (which the canvas
+ * crossing the wrap's size mid-zoom, or a window resize, can do at any moment) changes the content
+ * box's size, and grid centering then shifts the canvas by half of the scrollbar's width under the
+ * cursor: on a pixel canvas that reads as the drawing jumping while you draw on it. Panning is
+ * entirely transform-based now (panX/panY in usePixelEditor.ts) and .pixel-canvas-scrollbar below
+ * overlays position indicators inside this box without taking any layout space of its own. */
 .pixel-canvas-wrap {
+  position: relative;
   background: var(--pixel-bg-deep);
   padding: 9px;
-  overflow: auto;
+  overflow: hidden;
   height: min(520px, 68vh);
   display: grid;
   place-items: center;
   border: 3px solid var(--bevel-dark);
   box-shadow: 4px 4px 0 var(--bevel-dark);
+  /* The wrap owns wheel-pan and pinch-zoom itself (see PixelCanvas.tsx), so the browser must not also
+   * try to scroll/zoom an ancestor with the same gesture. */
+  overscroll-behavior: contain;
 }
+
+/* Overlay pan indicators - absolutely positioned *inside* .pixel-canvas-wrap, so unlike the native
+ * scrollbars they replace they never consume layout space and can't move the canvas by appearing.
+ * Only rendered on an axis where the canvas is actually bigger than the viewport (PixelCanvas.tsx),
+ * and draggable to pan. */
+.pixel-canvas-scrollbar {
+  position: absolute;
+  background: rgb(0 0 0 / 0.28);
+  z-index: 4;
+  touch-action: none;
+  opacity: 0.55;
+  transition: opacity 0.12s linear;
+}
+.pixel-canvas-wrap:hover .pixel-canvas-scrollbar,
+.pixel-canvas-scrollbar[data-dragging] { opacity: 1; }
+.pixel-canvas-scrollbar[data-axis='x'] { left: 3px; right: 3px; bottom: 3px; height: 8px; }
+.pixel-canvas-scrollbar[data-axis='y'] { top: 3px; bottom: 3px; right: 3px; width: 8px; }
+.pixel-canvas-scrollbar-thumb {
+  position: absolute;
+  background: var(--pixel-accent, #c8a165);
+  box-shadow: inset 0 0 0 1px var(--bevel-dark);
+}
+.pixel-canvas-scrollbar[data-axis='x'] .pixel-canvas-scrollbar-thumb { top: 0; height: 100%; }
+.pixel-canvas-scrollbar[data-axis='y'] .pixel-canvas-scrollbar-thumb { left: 0; width: 100%; }
 
 .pixel-canvas {
   box-shadow: 0 0 0 1px var(--pixel-dark-2);

@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
+import { PixelCanvasScrollbars } from './PixelCanvasScrollbars';
 import { PixelSelectionOverlay } from './PixelSelectionOverlay';
+
+/** Screen px panned per unit of wheel delta. 1:1 with a mouse wheel's ~100px notch is a comfortable
+ *  step; a trackpad's smaller per-event deltas scale down from the same factor. */
+const WHEEL_PAN_FACTOR = 1;
 
 export function PixelCanvas({ engine }: { engine: PixelEditorEngine }) {
   // A stable ref callback matters here: an inline `(el) => ...` is a new function every render, and
@@ -28,10 +33,20 @@ export function PixelCanvas({ engine }: { engine: PixelEditorEngine }) {
     // preventDefault() the browser's own ctrl+wheel page zoom - a native, non-passive listener can.
     const onWheel = (e: WheelEvent) => {
       // Ctrl/Cmd+wheel = zoom (browsers also report a trackpad pinch gesture as wheel+ctrlKey,
-      // regardless of whether Ctrl is actually held, so this covers pinch-to-zoom too); plain wheel is
-      // left alone entirely so it keeps panning the canvas via the wrap's native overflow:auto scroll.
-      if (!e.ctrlKey && !e.metaKey) return;
+      // regardless of whether Ctrl is actually held, so this covers pinch-to-zoom too). Everything
+      // else pans: the wrap is overflow:hidden now (see index.css) and has no native scroll left to
+      // fall through to, so plain wheel = vertical pan and shift+wheel = horizontal pan, both handled
+      // here. deltaX is honored as well, so a trackpad's two-finger sideways scroll pans sideways.
       e.preventDefault();
+      if (!e.ctrlKey && !e.metaKey) {
+        // Shift+wheel: browsers already report that as deltaX on some platforms and deltaY on others,
+        // so read whichever is nonzero rather than trusting either.
+        const primary = e.deltaY || e.deltaX;
+        const dx = e.shiftKey ? -primary : -e.deltaX;
+        const dy = e.shiftKey ? 0 : -e.deltaY;
+        engine.panBy(dx * WHEEL_PAN_FACTOR, dy * WHEEL_PAN_FACTOR, true);
+        return;
+      }
       // Multiplicative and continuous, not a fixed per-tick amount: exp(-deltaY * k) means a regular
       // mouse wheel's much larger per-notch deltaY (~100) zooms in bigger, snappier steps while a
       // trackpad's much smaller per-event deltaY yields smooth, fine-grained zooming - both from the
@@ -83,6 +98,7 @@ export function PixelCanvas({ engine }: { engine: PixelEditorEngine }) {
         />
         <PixelSelectionOverlay engine={engine} />
       </div>
+      <PixelCanvasScrollbars engine={engine} />
     </div>
   );
 }
