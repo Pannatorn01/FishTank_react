@@ -97,6 +97,8 @@ const en: Dict = {
   'status.wandContiguousTitle': 'On: select only the area connected to the pixel you click. Off: select every matching pixel in the layer (same as holding Shift for one click)',
   'status.sprayDensity': 'Density',
   'status.sprayDensityTitle': 'How many dots the spray lays down per tick - low builds up slowly for soft edges, high fills fast',
+  'status.pixelPerfect': 'Pixel perfect',
+  'status.pixelPerfectTitle': 'Drops the redundant corner pixel where a 1px pen stroke turns, so diagonals stay a clean staircase instead of doubling up. Turn it off to paint every single cell the pointer passes over. Never applies to erasing - an eraser has to clear everything it is dragged across',
   'status.dither': 'Dither',
   'status.ditherTitle': 'Ordered (Bayer 4x4) dither pattern between the primary and secondary colors, for the gradient tool or as a stippled brush texture',
 

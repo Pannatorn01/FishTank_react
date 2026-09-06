@@ -296,6 +296,16 @@ class PixelEditorEngine {
   /** Snapshot of the active layer taken at freehand-stroke start, so Pixel Perfect can restore a trimmed corner pixel. */
   strokeSnapshot: Frame | null = null;
   strokePoints: Cell[] = [];
+  /** Aseprite's Pixel Perfect: drop the redundant corner pixel where a 1px freehand stroke turns, so a
+   *  diagonal reads as a clean staircase instead of a doubled-up elbow. It was unconditional and
+   *  invisible, which is a problem for a feature whose whole job is to *not* paint a cell the pointer
+   *  went over - see pixelPerfectActive for where it now applies, and ToolOptionsBar for the switch. */
+  pixelPerfect = true;
+  /** How many times the current stroke has painted each cell (1px brush only - see strokeStep). Pixel
+   *  Perfect trims a corner by restoring it from the stroke-start snapshot, which is only correct while
+   *  no *other* part of the same stroke also painted that cell: a scribble crossing its own path would
+   *  otherwise punch a hole straight through the segment it already drew. */
+  private strokeVisits = new Map<string, number>();
   sprayTimer: ReturnType<typeof setInterval> | null = null;
   sprayPointerCell: Cell | null = null;
   /** Curve tool: null = idle, 'drag-end' = dragging the initial line, 'bend' = adjusting the control-point handle. */
@@ -769,6 +779,11 @@ class PixelEditorEngine {
 
   setSprayDensity(v: number): void {
     this.sprayDensity = Math.min(MAX_SPRAY_DENSITY, Math.max(MIN_SPRAY_DENSITY, v));
+    this.reactNotify();
+  }
+
+  setPixelPerfect(v: boolean): void {
+    this.pixelPerfect = v;
     this.reactNotify();
   }
 
@@ -1504,8 +1519,16 @@ class PixelEditorEngine {
     // "this will sample a color" the moment it's held regardless of what happens to be focused.
     // Deliberately no preventDefault - that would suppress the browser's own Alt shortcuts.
     if (e.key === 'Alt') this.setAltPick(true);
-    const tag = (document.activeElement && document.activeElement.tagName) || '';
-    if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) return;
+    const el = document.activeElement as HTMLElement | null;
+    const tag = el?.tagName ?? '';
+    const isRange = tag === 'INPUT' && (el as HTMLInputElement).type === 'range';
+    // Typing into a field must never double as a shortcut - except on a range slider (brush size,
+    // tolerance, spray density), which has no text to type into. Blocking everything while one of those
+    // had focus meant that after nudging the brush size the tool shortcuts silently stopped working
+    // until you clicked somewhere else, with nothing on screen explaining why. The keys the slider
+    // itself uses are still left to it.
+    if ((tag === 'INPUT' && !isRange) || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (isRange && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) return;
     if (!this.active) return;
     if (this.painting) {
       // Esc is the one key that has to get through mid-gesture: it's the way out of a drag that started
@@ -2697,28 +2720,37 @@ class PixelEditorEngine {
       return;
     }
 
-    if (!cell) return;
-    if (this.shapeStart) {
-      const end = e.shiftKey ? this.constrainShapeEnd(this.shapeStart, cell) : cell;
-      this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(this.shapeStart, end)));
-    } else if (this.tool === 'pen' || this.tool === 'eraser') {
+    if (this.tool === 'pen' || this.tool === 'eraser') {
       // Coalesced events are the positions the OS actually sampled between two browser frames, which a
       // fast flick can spread over a lot of distance. paintCell already Bresenhams between consecutive
       // points, so nothing is ever *missing* without them - but a fast curve replayed through its
       // intermediate samples bends where it was drawn to bend instead of being chorded into one long
       // straight segment between frames. Falls back to the single event where unsupported.
+      // Unclamped cells, and handled before the `if (!cell) return` below: paintCell interpolates the
+      // segment and paints only the cells that are on the canvas, so a stroke that runs off an edge
+      // still draws everything up to it. Bailing out on an off-canvas pointer instead - what this used
+      // to do - threw away that whole frame's samples, including the ones that were still inside, so a
+      // fast stroke crossing an edge (or a flick that overshot and came back) left a gap along it.
       const coalesced = typeof e.nativeEvent.getCoalescedEvents === 'function' ? e.nativeEvent.getCoalescedEvents() : [];
       if (coalesced.length > 1) {
-        // cellFromEvent only needs clientX/clientY, and its getBoundingClientRect() call is cheap to
-        // repeat here: painting writes to the canvas bitmap, which invalidates no layout, so the
-        // browser answers the rest of the loop from the same cached box.
+        // cellFromEventUnclamped only needs clientX/clientY, and its getBoundingClientRect() call is
+        // cheap to repeat here: painting writes to the canvas bitmap, which invalidates no layout, so
+        // the browser answers the rest of the loop from the same cached box.
         coalesced.forEach((ce) => {
-          const c = this.cellFromEvent(ce);
-          if (c) this.paintCell(c.x, c.y, true);
+          const c = this.cellFromEventUnclamped(ce);
+          this.paintCell(c.x, c.y, true);
         });
       } else {
-        this.paintCell(cell.x, cell.y, true);
+        const c = this.cellFromEventUnclamped(e);
+        this.paintCell(c.x, c.y, true);
       }
+      return;
+    }
+
+    if (!cell) return;
+    if (this.shapeStart) {
+      const end = e.shiftKey ? this.constrainShapeEnd(this.shapeStart, cell) : cell;
+      this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(this.shapeStart, end)));
     }
   }
 
@@ -3271,6 +3303,22 @@ class PixelEditorEngine {
   private beginStroke(): void {
     this.strokeSnapshot = this.activeCells().slice();
     this.strokePoints = [];
+    this.strokeVisits.clear();
+  }
+
+  /**
+   * Whether the stroke in progress should have its turning corners trimmed. Beyond the user's own
+   * switch, two cases never should:
+   *
+   * - An *erasing* stroke - the Eraser, or a right-click erase with any paint tool (currentPaintColor()
+   *   is null for both). Trimming restores the corner cell from the stroke-start snapshot, i.e. puts the
+   *   original pixel back; on an erase that isn't a tidier line, it's the eraser visibly skipping cells
+   *   the pointer was dragged straight over, one leftover dot per corner of every diagonal.
+   * - A brush wider than 1px, where there's no 1px staircase to clean up in the first place (this was
+   *   already the case, and is folded in here so every caller asks the same question).
+   */
+  private pixelPerfectActive(): boolean {
+    return this.pixelPerfect && this.brushSize === 1 && this.currentPaintColor() !== null;
   }
 
   private restoreCellFromSnapshot(x: number, y: number): void {
@@ -3295,17 +3343,26 @@ class PixelEditorEngine {
     if (Math.abs(c.x - a.x) !== 1 || Math.abs(c.y - a.y) !== 1) return;
     const isCorner = (b.x === a.x && b.y === c.y) || (b.x === c.x && b.y === a.y);
     if (!isCorner) return;
-    this.mirrorCells(b.x, b.y).forEach((m) => this.restoreCellFromSnapshot(m.x, m.y));
+    // Only un-paint the corner if this stroke isn't relying on that cell somewhere else. restoreCell-
+    // FromSnapshot puts back what was there before the stroke began, so trimming a cell an earlier
+    // segment of the same stroke had painted (a scribble that crosses itself) left a hole in that
+    // earlier segment - a cell the pointer had unmistakably been dragged over, now blank.
+    const key = `${b.x},${b.y}`;
+    const remaining = (this.strokeVisits.get(key) ?? 1) - 1;
+    this.strokeVisits.set(key, remaining);
+    if (remaining <= 0) this.mirrorCells(b.x, b.y).forEach((m) => this.restoreCellFromSnapshot(m.x, m.y));
     this.strokePoints.splice(n - 2, 1);
   }
 
   private strokeStep(x: number, y: number): void {
     const color = this.currentPaintColor();
     this.applyBrushAt(x, y, color);
-    if (this.brushSize === 1) {
+    if (this.pixelPerfectActive()) {
       const last = this.strokePoints[this.strokePoints.length - 1];
       if (!last || last.x !== x || last.y !== y) {
         this.strokePoints.push({ x, y });
+        const key = `${x},${y}`;
+        this.strokeVisits.set(key, (this.strokeVisits.get(key) ?? 0) + 1);
         this.applyPixelPerfectCorner();
       }
     }
@@ -3478,11 +3535,18 @@ class PixelEditorEngine {
       points = [];
     }
 
+    // Only the cells actually painted feed the dirty rect - a freehand stroke is now tracked past the
+    // canvas edge (see onPointerMove), so `points` can run well outside it, and bounding a repaint by
+    // where the pointer went rather than by what was painted would repaint the whole canvas on every
+    // move for cells that were never touched.
+    const painted: Cell[] = [];
     points.forEach((p) => {
-      if (inBounds(p.x, p.y)) this.strokeStep(p.x, p.y);
+      if (!inBounds(p.x, p.y)) return;
+      this.strokeStep(p.x, p.y);
+      painted.push(p);
     });
 
-    this.redrawRegions(this.strokeDirtyRects(points));
+    this.redrawRegions(this.strokeDirtyRects(painted));
   }
 
   /** Samples the topmost visible layer that has paint at this cell, matching what's on screen. */

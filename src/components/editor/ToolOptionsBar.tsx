@@ -49,6 +49,9 @@ export function ToolOptionsBar({ engine }: { engine: PixelEditorEngine }) {
   const showDither = engine.tool === 'gradient' || showBrushSize;
   const showSelectionMode = engine.tool === 'select' || engine.tool === 'lasso' || engine.tool === 'magicWand';
   const showSprayDensity = engine.tool === 'spray';
+  // Pen only: on an erase stroke Pixel Perfect is off by construction (see pixelPerfectActive), and a
+  // switch that does nothing is worse than no switch.
+  const showPixelPerfect = engine.tool === 'pen';
   const showContiguous = engine.tool === 'magicWand';
   // Symmetry mirrors whatever a paint tool draws, so it belongs to the same set of tools the brush
   // size does - and it's worth still showing while it's ON for any tool, so an active mirror is never
@@ -171,6 +174,13 @@ export function ToolOptionsBar({ engine }: { engine: PixelEditorEngine }) {
         <label className="mini-toggle">
           <Checkbox checked={engine.shapeFilled} onCheckedChange={(v) => engine.setShapeFilled(!!v)} />
           <Label>{t('status.fillShape')}</Label>
+        </label>
+      )}
+
+      {showPixelPerfect && (
+        <label className="mini-toggle" title={t('status.pixelPerfectTitle')}>
+          <Checkbox checked={engine.pixelPerfect} onCheckedChange={(v) => engine.setPixelPerfect(!!v)} />
+          <Label>{t('status.pixelPerfect')}</Label>
         </label>
       )}
 
