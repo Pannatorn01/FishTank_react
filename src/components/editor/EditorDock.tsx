@@ -89,6 +89,8 @@ export function DockZoneView({
   size,
   dragging,
   onDropPanel,
+  onResize,
+  resizeLabel,
   emptyHint,
   children,
 }: {
@@ -96,11 +98,18 @@ export function DockZoneView({
   size: number;
   dragging: DockPanelId | null;
   onDropPanel: (panel: DockPanelId, zone: DockZone, beforeId: DockPanelId | null) => void;
+  onResize: (px: number) => void;
+  resizeLabel: string;
   emptyHint: string;
   children: ReactNode;
 }) {
   const [over, setOver] = useState(false);
   const vertical = zone !== 'bottom';
+  const axis = vertical ? 'x' : 'y';
+  /** Which way the dock grows relative to pointer movement: the left dock widens as the pointer moves
+   *  right, the right and bottom docks shrink. */
+  const sign = zone === 'left' ? 1 : -1;
+  const resizeStart = useRef<{ pos: number; size: number } | null>(null);
 
   const insertionBefore = (e: React.DragEvent<HTMLDivElement>): DockPanelId | null => {
     const panels = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[data-panel-id]'));
@@ -143,70 +152,52 @@ export function DockZoneView({
         if (panel) onDropPanel(panel, zone, insertionBefore(e));
       }}
     >
-      {children}
-      {dragging && <div className="dock-zone-hint">{emptyHint}</div>}
+      {/* The panels scroll inside this; the resize edge below sits outside it, so it can't be clipped
+          or scrolled away by a dock with more in it than fits. */}
+      <div className="dock-zone-scroll">
+        {children}
+        {dragging && <div className="dock-zone-hint">{emptyHint}</div>}
+      </div>
+      {!empty && (
+        /* The dock's own inner edge is the resize handle - there is no bar between the canvas and the
+           docks any more, just the gap that separates them. Grabbing the edge of the thing you want
+           bigger is the same gesture, minus a strip of chrome down the middle of the workspace. */
+        <div
+          className="dock-resize-edge"
+          data-axis={axis}
+          role="separator"
+          aria-orientation={axis === 'x' ? 'vertical' : 'horizontal'}
+          aria-label={resizeLabel}
+          title={resizeLabel}
+          tabIndex={0}
+          onPointerDown={(e) => {
+            if (e.button !== 0 && e.pointerType === 'mouse') return;
+            e.preventDefault();
+            resizeStart.current = { pos: axis === 'x' ? e.clientX : e.clientY, size };
+            e.currentTarget.setPointerCapture(e.pointerId);
+          }}
+          onPointerMove={(e) => {
+            if (!resizeStart.current) return;
+            const delta = (axis === 'x' ? e.clientX : e.clientY) - resizeStart.current.pos;
+            onResize(resizeStart.current.size + delta * sign);
+          }}
+          onPointerUp={(e) => {
+            resizeStart.current = null;
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+          }}
+          onPointerCancel={() => {
+            resizeStart.current = null;
+          }}
+          onKeyDown={(e) => {
+            // Arrow keys nudge the same edge, so a dock's size isn't reachable only by a precise drag.
+            const step = e.shiftKey ? 24 : 8;
+            const dir = e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : 0;
+            if (!dir) return;
+            e.preventDefault();
+            onResize(size + dir * step * sign);
+          }}
+        />
+      )}
     </div>
-  );
-}
-
-/**
- * The draggable edge between a dock and the canvas. Pointer-capture based rather than a native
- * scrollbar or CSS resize: the size lives in the layout state (and localStorage), so it survives a
- * reload and stays the single source of truth for how wide that dock is.
- *
- * `sign` is which way the size grows relative to pointer movement: +1 for the left dock (drag right =
- * wider), -1 for the right and bottom docks (drag right/down = narrower/shorter).
- */
-export function DockSplitter({
-  axis,
-  sign,
-  size,
-  onResize,
-  label,
-}: {
-  axis: 'x' | 'y';
-  sign: 1 | -1;
-  size: number;
-  onResize: (px: number) => void;
-  label: string;
-}) {
-  const start = useRef<{ pos: number; size: number } | null>(null);
-
-  return (
-    <div
-      className="dock-splitter"
-      data-axis={axis}
-      role="separator"
-      aria-orientation={axis === 'x' ? 'vertical' : 'horizontal'}
-      aria-label={label}
-      title={label}
-      tabIndex={0}
-      onPointerDown={(e) => {
-        if (e.button !== 0 && e.pointerType === 'mouse') return;
-        e.preventDefault();
-        start.current = { pos: axis === 'x' ? e.clientX : e.clientY, size };
-        e.currentTarget.setPointerCapture(e.pointerId);
-      }}
-      onPointerMove={(e) => {
-        if (!start.current) return;
-        const delta = (axis === 'x' ? e.clientX : e.clientY) - start.current.pos;
-        onResize(start.current.size + delta * sign);
-      }}
-      onPointerUp={(e) => {
-        start.current = null;
-        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-      }}
-      onPointerCancel={() => {
-        start.current = null;
-      }}
-      onKeyDown={(e) => {
-        // Arrow keys nudge the same edge, so the layout isn't reachable only by a precise mouse drag.
-        const step = e.shiftKey ? 24 : 8;
-        const dir = e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : 0;
-        if (!dir) return;
-        e.preventDefault();
-        onResize(size + dir * step * sign);
-      }}
-    />
   );
 }

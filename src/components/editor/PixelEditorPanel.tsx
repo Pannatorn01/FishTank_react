@@ -6,7 +6,7 @@ import type { SpriteType } from '@/lib/types';
 import { CanvasMetaBar } from './CanvasMetaBar';
 import { CanvasStatusBar } from './CanvasStatusBar';
 import { ColorPalette } from './ColorPalette';
-import { DockPanel, DockSplitter, DockZoneView } from './EditorDock';
+import { DockPanel, DockZoneView } from './EditorDock';
 import { FrameStrip } from './FrameStrip';
 import { LayerPanel } from './LayerPanel';
 import { OnionSkinPanel } from './OnionSkinPanel';
@@ -94,6 +94,8 @@ export function PixelEditorPanel({
         movePanel(panel, target, beforeId);
         setDragging(null);
       }}
+      onResize={(px) => setZoneSize(zone, px)}
+      resizeLabel={t('dock.resize')}
       emptyHint={t('dock.dropHere')}
     >
       {layout.zones[zone].map((id) => (
@@ -116,9 +118,6 @@ export function PixelEditorPanel({
     <div className="editor-shell" data-dock-dragging={dragging || undefined}>
       <div className="editor-main">
         {renderZone('left')}
-        {layout.zones.left.length > 0 && (
-          <DockSplitter axis="x" sign={1} size={layout.sizes.left} onResize={(px) => setZoneSize('left', px)} label={t('dock.resize')} />
-        )}
 
         <div className="canvas-column">
           <CanvasMetaBar
@@ -136,15 +135,9 @@ export function PixelEditorPanel({
           <FrameStrip engine={engine} type={type} />
         </div>
 
-        {layout.zones.right.length > 0 && (
-          <DockSplitter axis="x" sign={-1} size={layout.sizes.right} onResize={(px) => setZoneSize('right', px)} label={t('dock.resize')} />
-        )}
         {renderZone('right')}
       </div>
 
-      {layout.zones.bottom.length > 0 && (
-        <DockSplitter axis="y" sign={-1} size={layout.sizes.bottom} onResize={(px) => setZoneSize('bottom', px)} label={t('dock.resize')} />
-      )}
       {renderZone('bottom')}
     </div>
   );

@@ -577,19 +577,28 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
  * interface size, docks dragged tall) the shell scrolls rather than quietly clipping whatever sits at
  * the bottom - which is how the library ended up unreachable, visible as a header with nothing under
  * it and no way to scroll to the rest. */
-.editor-shell { display: flex; flex-direction: column; gap: 4px; height: 100%; min-height: 0; overflow-y: auto; }
+/* The gap is what separates the docks from the canvas now that no bar does - wide enough to read as
+ * space between two boxes, and wide enough to hold the invisible resize edge (see .dock-resize-edge). */
+.editor-shell { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; overflow-y: auto; }
 /* Paired with the above: the canvas area keeps a usable height instead of being squeezed to nothing to
  * make everything fit, and whatever no longer fits goes below the fold where it can be scrolled to. */
-.editor-main { display: flex; align-items: stretch; gap: 4px; flex: 1 1 auto; min-height: 85vh; }
+.editor-main { display: flex; align-items: stretch; gap: 8px; flex: 1 1 auto; min-height: 85vh; }
 
-.dock-zone { display: flex; flex-direction: column; gap: 5px; min-width: 0; min-height: 0; overflow: auto; }
+/* The zone is a positioned frame holding two things: the scroller with the panels in it, and the resize
+ * edge - which has to sit outside that scroller or it would be clipped and scroll away with the
+ * content. There is no splitter bar between a dock and the canvas any more: they are separate boxes
+ * with a gap, and the dock's own edge is what you drag to resize it. */
+.dock-zone { position: relative; display: flex; min-width: 0; min-height: 0; }
+.dock-zone-scroll { display: flex; flex-direction: column; gap: 5px; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; }
 /* flex: 0 0 auto - the bottom dock keeps the height it was given instead of being shrunk by a tight
  * shell. Letting it shrink is what left the library as a bare header: the panel was still "there",
  * just squeezed to nothing. */
-.dock-zone[data-zone="bottom"] { flex: 0 0 auto; flex-direction: row; align-items: stretch; }
+.dock-zone[data-zone="bottom"] { flex: 0 0 auto; }
+.dock-zone[data-zone="bottom"] > .dock-zone-scroll { flex-direction: row; align-items: stretch; }
 /* A dock everything has been dragged out of collapses to a thin strip - still a place, so a panel can
  * always be put back - and opens into a labelled target the moment one is picked up. */
-.dock-zone[data-empty] { flex: 0 0 10px; min-width: 10px; min-height: 10px; overflow: visible; }
+.dock-zone[data-empty] { flex: 0 0 10px; min-width: 10px; min-height: 10px; }
+.dock-zone[data-empty] > .dock-zone-scroll { overflow: visible; }
 .editor-shell[data-dock-dragging] .dock-zone {
   outline: 2px dashed var(--pixel-muted);
   outline-offset: -2px;
@@ -661,10 +670,15 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .dock-panel-body { display: flex; flex-direction: column; gap: 5px; padding: 6px; min-height: 0; overflow: auto; }
 .dock-panel[data-collapsed] > .dock-panel-header { border-bottom-color: transparent; }
 
-.dock-splitter { flex: 0 0 6px; align-self: stretch; background: var(--pixel-panel-hover); border: 1px solid var(--bevel-dark); }
-.dock-splitter[data-axis="x"] { width: 6px; cursor: col-resize; }
-.dock-splitter[data-axis="y"] { height: 6px; cursor: row-resize; }
-.dock-splitter:hover, .dock-splitter:focus-visible { background: var(--pixel-accent); outline: none; }
+/* Absolutely positioned, so it takes no layout space of its own: it lives in the gap between the dock
+ * and the canvas and only shows itself - a highlight plus a resize cursor - when the pointer is on it. */
+.dock-resize-edge { position: absolute; z-index: 3; background: transparent; }
+.dock-resize-edge[data-axis="x"] { top: 0; bottom: 0; width: 8px; cursor: col-resize; }
+.dock-resize-edge[data-axis="y"] { left: 0; right: 0; height: 8px; cursor: row-resize; }
+.dock-zone[data-zone="left"] .dock-resize-edge { right: -6px; }
+.dock-zone[data-zone="right"] .dock-resize-edge { left: -6px; }
+.dock-zone[data-zone="bottom"] .dock-resize-edge { top: -6px; }
+.dock-resize-edge:hover, .dock-resize-edge:focus-visible { background: var(--pixel-accent); outline: none; }
 /* The dock panel around it owns the chrome now (see .dock-panel), so this is just a container. */
 .tool-rail { display: flex; }
 /* An auto-filling grid rather than a fixed single column: every tool is always visible (no flyouts),
@@ -1836,7 +1850,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   }
   .dock-zone[data-zone="left"] .dock-panel, .dock-zone[data-zone="right"] .dock-panel { flex: 1 1 210px; min-width: 170px; }
   .dock-zone[data-zone="bottom"] { height: auto !important; max-height: 40vh; }
-  .dock-splitter { display: none; }
+  .dock-resize-edge { display: none; }
   .palette { grid-template-columns: repeat(8, 1fr); }
   .pixel-canvas-wrap { min-height: 46vh; }
   .tank-layout { flex-direction: column; }

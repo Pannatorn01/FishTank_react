@@ -157,7 +157,7 @@ const en: Dict = {
   'dock.tools': 'Tools',
   'dock.palette': 'Colors',
   'dock.dropHere': 'Drop panel here',
-  'dock.resize': 'Drag to resize (arrow keys also work)',
+  'dock.resize': 'Drag this edge to resize the panel (arrow keys also work)',
   'dock.resetLayoutShort': 'Reset layout',
   'dock.resetLayout': 'Reset the panel layout - puts every panel back in its default dock at its default size',
   'library.deleteConfirm': 'Delete this from the library? (Any tank decorations using it will be removed too.)',
