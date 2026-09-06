@@ -3,7 +3,9 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { PixelEditorPanel } from '@/components/editor/PixelEditorPanel';
 import { TankPanel } from '@/components/tank/TankPanel';
+import { useEditorLayout } from '@/hooks/useEditorLayout';
 import { usePixelEditor } from '@/hooks/usePixelEditor';
+import { UI_SCALES, useUiScale, type UiScale } from '@/hooks/useUiScale';
 import { THEME_PREVIEW, useUiTheme } from '@/hooks/useUiTheme';
 import { useLanguage } from '@/lib/i18n';
 import { UI_THEMES } from '@/lib/storage';
@@ -15,7 +17,9 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('editor');
   const { t } = useLanguage();
   const { theme, setTheme } = useUiTheme();
+  const { scale, setScale } = useUiScale();
   const engine = usePixelEditor();
+  const layoutApi = useEditorLayout();
   const [name, setName] = useState(engine.current.name);
   const [type, setType] = useState<SpriteType>(engine.current.type);
 
@@ -33,6 +37,20 @@ export default function App() {
             <i className="fa-solid fa-fish" /> Pixel Fish Tank
           </h1>
           <div className="title-bar-actions">
+            <Select value={scale} onValueChange={(v) => setScale(v as UiScale)}>
+              <SelectTrigger className="ui-scale-trigger text-xs" size="sm" title={t('scale.title')}>
+                <SelectValue>
+                  <i className="fa-solid fa-magnifying-glass" aria-hidden="true" /> {t(`scale.${scale}`)}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent align="end" position="popper">
+                {UI_SCALES.map((id) => (
+                  <SelectItem key={id} value={id}>
+                    {t(`scale.${id}`)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Select value={theme} onValueChange={(v) => setTheme(v as UiTheme)}>
               <SelectTrigger className="theme-select-trigger text-xs" size="sm" title={t('theme.switch')}>
                 <SelectValue>
@@ -75,6 +93,16 @@ export default function App() {
           </nav>
           {tab === 'editor' && (
             <nav className="header-editor-actions">
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                title={t('dock.resetLayout')}
+                onClick={() => layoutApi.resetLayout()}
+              >
+                <i className="fa-solid fa-table-columns" />
+                {t('dock.resetLayoutShort')}
+              </Button>
               <Button type="button" size="sm" variant="secondary" onClick={() => engine.exportFramePng()}>
                 <i className="fa-solid fa-download" />
                  {t('form.exportPng')}
@@ -96,7 +124,15 @@ export default function App() {
 
       <main>
         <section className="tab-panel" hidden={tab !== 'editor'}>
-          <PixelEditorPanel engine={engine} name={name} setName={setName} type={type} setType={setType} active={tab === 'editor'} />
+          <PixelEditorPanel
+            engine={engine}
+            name={name}
+            setName={setName}
+            type={type}
+            setType={setType}
+            active={tab === 'editor'}
+            layoutApi={layoutApi}
+          />
         </section>
         <section className="tab-panel" hidden={tab !== 'tank'}>
           <TankPanel active={tab === 'tank'} />

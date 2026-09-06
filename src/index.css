@@ -487,7 +487,10 @@ button.pixel-raised:not(:disabled):active {
 }
 
 /* ---------- App layout ---------- */
-html { height: 100%; margin: 0; font-size: 130%; }
+/* No font-size here: the root size is the user's Interface-size setting (see useUiScale.ts), which
+ * scales every rem in the app at once. It used to be pinned at 130%, which reads as comfortable on a
+ * small laptop and oversized on a large monitor, with nothing to say so. */
+html { height: 100%; margin: 0; }
 body, #root { height: 100%; margin: 0; }
 #app {
   display: flex;
@@ -517,6 +520,8 @@ body, #root { height: 100%; margin: 0; }
 }
 .title-bar-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
 .theme-select-trigger { gap: 6px; }
+.ui-scale-trigger { gap: 6px; }
+.ui-scale-trigger i { font-size: 0.7em; opacity: 0.75; }
 .theme-swatch {
   display: inline-block;
   width: 14px;
@@ -553,7 +558,7 @@ body, #root { height: 100%; margin: 0; }
    margin-left: auto;
    }
 main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
-.tab-panel { height: 100%; }
+/* .tab-panel { height: 100%; } */
 .tab-panel[hidden] { display: none; }
 
 .pixelated { image-rendering: pixelated; }
@@ -562,32 +567,119 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 [data-size="icon"] { width: 1.75rem; height: 1.75rem; }
 
 /* ---------- Editor ---------- */
-.editor-shell { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; }
+/* The editor is a fixed-height workspace - the canvas in the middle, three docks around it - rather
+ * than a page that grows downward. Each dock's thickness is a draggable splitter away (see
+ * EditorDock.tsx) and which panels live in it is up to the user (useEditorLayout.ts), so the whole
+ * arrangement is theirs to set up once and keep. Nothing here scrolls the page: every dock scrolls its
+ * own contents, which is what keeps the canvas on screen at any window size. */
+/* overflow-y: auto is the escape hatch, not the normal state: on any window with room the whole
+ * workspace fits and nothing scrolls, but when it genuinely can't fit (a short window, a large
+ * interface size, docks dragged tall) the shell scrolls rather than quietly clipping whatever sits at
+ * the bottom - which is how the library ended up unreachable, visible as a header with nothing under
+ * it and no way to scroll to the rest. */
+.editor-shell { display: flex; flex-direction: column; gap: 4px; height: 100%; min-height: 0; overflow-y: auto; }
+/* Paired with the above: the canvas area keeps a usable height instead of being squeezed to nothing to
+ * make everything fit, and whatever no longer fits goes below the fold where it can be scrolled to. */
+.editor-main { display: flex; align-items: stretch; gap: 4px; flex: 1 1 auto; min-height: 17rem; }
 
-/* .left-rail keeps its original width - it also hosts ColorPalette below the tool rail, which still
- * needs room for its swatch grid/select/preset controls. Only .tool-rail itself (the Aseprite-style
- * single icon-wide column) is narrow, and it hugs the left edge instead of stretching to fill. */
-.left-rail { flex: 0 0 190px; min-width: 165px; display: flex; flex-direction: column; gap: 5px; overflow-y: auto; overflow-x: hidden; }
-/* The bordered/beveled box spans the whole sidebar width (stretch) so the space beside the narrow
- * icon column reads as this toolbar's own chrome, not bare unstyled page background - only the icons
- * themselves (.tool-rail-icons) stay a single column hugging the left edge. */
-.tool-rail {
+.dock-zone { display: flex; flex-direction: column; gap: 5px; min-width: 0; min-height: 0; overflow: auto; }
+/* flex: 0 0 auto - the bottom dock keeps the height it was given instead of being shrunk by a tight
+ * shell. Letting it shrink is what left the library as a bare header: the panel was still "there",
+ * just squeezed to nothing. */
+.dock-zone[data-zone="bottom"] { flex: 0 0 auto; flex-direction: row; align-items: stretch; }
+/* A dock everything has been dragged out of collapses to a thin strip - still a place, so a panel can
+ * always be put back - and opens into a labelled target the moment one is picked up. */
+.dock-zone[data-empty] { flex: 0 0 10px; min-width: 10px; min-height: 10px; overflow: visible; }
+.editor-shell[data-dock-dragging] .dock-zone {
+  outline: 2px dashed var(--pixel-muted);
+  outline-offset: -2px;
+}
+.editor-shell[data-dock-dragging] .dock-zone[data-empty] { flex-basis: 82px; min-width: 82px; min-height: 82px; }
+.editor-shell[data-dock-dragging] .dock-zone[data-drop-active] {
+  outline: 2px solid var(--pixel-accent);
+  background: color-mix(in srgb, var(--pixel-accent) 18%, transparent);
+}
+.dock-zone-hint { display: none; }
+.editor-shell[data-dock-dragging] .dock-zone[data-empty] .dock-zone-hint {
   display: flex;
-  align-self: stretch;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  padding: 4px;
+  text-align: center;
+  font-size: 0.6rem;
+  color: var(--pixel-muted);
+}
+
+.dock-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-height: 0;
+  min-width: 0;
   background: var(--pixel-panel);
   border: 2px solid var(--bevel-dark);
   box-shadow: 4px 4px 0 var(--bevel-dark);
-  padding: 5px 4px;
 }
-.tool-rail-icons {
+/* The three that earn the leftover space: a longer layer list, more palette swatches, more of the
+ * library visible at once. The rest are content-sized, so folding one open never squeezes these flat. */
+.dock-panel[data-panel-id="layers"],
+.dock-panel[data-panel-id="palette"],
+.dock-panel[data-panel-id="library"] { flex: 1 1 0; min-height: 64px; }
+.dock-panel[data-collapsed] { flex: 0 0 auto; }
+.dock-panel[data-dragging] { opacity: 0.45; }
+.dock-zone[data-zone="bottom"] .dock-panel { flex: 1 1 auto; min-width: 180px; }
+
+.dock-panel-header {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 2px;
-  width: 38px;
+  gap: 5px;
+  padding: 4px 5px;
+  background: var(--pixel-panel-hover);
+  border-bottom: 2px solid var(--bevel-dark);
+  cursor: grab;
+  user-select: none;
+  font-family: "Press Start 2P", "Pixelify Sans", system-ui, sans-serif;
+  font-size: 0.46rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--pixel-text-strong);
 }
-/* Thin horizontal rule separating draw / shape / selection clusters within the single column. */
-.tool-divider { width: 100%; height: 2px; margin: 3px 0; background: var(--bevel-dark); box-shadow: 0 1px 0 var(--bevel-light); }
+.dock-panel-header:active { cursor: grabbing; }
+.dock-panel-icon { font-size: 0.6rem; opacity: 0.6; }
+.dock-panel-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dock-panel-collapse {
+  background: none;
+  border: 0;
+  padding: 2px 3px;
+  color: inherit;
+  font-size: 0.62rem;
+  opacity: 0.7;
+  cursor: pointer;
+}
+.dock-panel-collapse:hover { opacity: 1; }
+.dock-panel-body { display: flex; flex-direction: column; gap: 5px; padding: 6px; min-height: 0; overflow: auto; }
+.dock-panel[data-collapsed] > .dock-panel-header { border-bottom-color: transparent; }
+
+.dock-splitter { flex: 0 0 6px; align-self: stretch; background: var(--pixel-panel-hover); border: 1px solid var(--bevel-dark); }
+.dock-splitter[data-axis="x"] { width: 6px; cursor: col-resize; }
+.dock-splitter[data-axis="y"] { height: 6px; cursor: row-resize; }
+.dock-splitter:hover, .dock-splitter:focus-visible { background: var(--pixel-accent); outline: none; }
+/* The dock panel around it owns the chrome now (see .dock-panel), so this is just a container. */
+.tool-rail { display: flex; }
+/* An auto-filling grid rather than a fixed single column: every tool is always visible (no flyouts),
+ * and the same list reflows to however many columns the dock it was dropped into is wide - one column
+ * in a slim left dock, several in a wide one or along the bottom. */
+.tool-rail-icons {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(1.85rem, 1fr));
+  justify-items: center;
+  gap: 2px;
+  width: 100%;
+}
+/* Thin rule separating the draw / shape / selection clusters, spanning whatever the current column
+ * count happens to be. */
+.tool-divider { grid-column: 1 / -1; width: 100%; height: 2px; margin: 3px 0; background: var(--bevel-dark); box-shadow: 0 1px 0 var(--bevel-light); }
 
 /* The active tool needs a much clearer signal than the accent-color background swap alone gives it on
  * its own - some themes' accent color reads as low-contrast against the surrounding secondary buttons.
@@ -605,51 +697,10 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 }
 .tool-rail button[data-variant="default"]:hover { transform: translate(1px, 1px); }
 
-/* Aseprite's tiny corner triangle hint that a button is a flyout group with more tools underneath -
- * CSS-only via a diagonal border split, no extra asset. */
-.tool-flyout-trigger { position: relative; }
-.tool-flyout-trigger::after {
-  content: '';
-  position: absolute;
-  right: 1px;
-  bottom: 1px;
-  width: 0;
-  height: 0;
-  border-style: solid;
-  border-width: 0 0 5px 5px;
-  border-color: transparent transparent var(--pixel-highlight, #fff8dc) transparent;
-  pointer-events: none;
-}
-
-.tool-flyout-content {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px;
-  min-width: 130px;
-  z-index: 50;
-}
-.tool-flyout-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  background: var(--pixel-panel);
-  color: var(--pixel-text-strong, inherit);
-  border: none;
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 0.78rem;
-  text-align: left;
-}
-.tool-flyout-item:hover { background: var(--pixel-accent-hover); }
-.tool-flyout-item[data-active] { background: var(--pixel-accent-hover); box-shadow: inset 0 0 0 1px var(--pixel-highlight, #fff8dc); }
-.tool-flyout-item i { width: 1rem; text-align: center; }
-
 .tool-actions { display: flex; gap: 3px; }
 .tool-actions > * { flex: 1; }
 
-.canvas-column { flex: 1 1 340px; min-width: 240px; display: flex; flex-direction: column; gap: 5px; }
+.canvas-column { flex: 1 1 0; min-width: 220px; min-height: 0; display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
 
 /* overflow: hidden, not auto - a native scrollbar appearing or disappearing here (which the canvas
  * crossing the wrap's size mid-zoom, or a window resize, can do at any moment) changes the content
@@ -693,7 +744,11 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   background: var(--pixel-bg-deep);
   padding: 9px;
   overflow: hidden;
-  height: min(520px, 68vh);
+  /* Fills whatever the canvas column has left after the bars around it, instead of a fixed 520px slab
+   * that left dead space on a tall window and overflowed a short one. The editor shell is height-bound
+   * now (see .editor-shell), so "the rest of the column" is a real, finite number. */
+  flex: 1 1 0;
+  min-height: 120px;
   display: grid;
   place-items: center;
   border: 3px solid var(--bevel-dark);
@@ -1013,35 +1068,15 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 }
 .frame-controls { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
 
-.side-panel { flex: 0 0 190px; min-width: 165px; display: flex; flex-direction: column; gap: 5px; }
-/* SidePanelSection.tsx - the header is a button, so it needs the plain-button reset the rest of
-   .panel-title's styling sits on top of. */
-.side-section { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.side-section-header {
-  width: 100%;
-  background: none;
-  border: 0;
-  border-bottom: 2px solid var(--bevel-dark);
-  cursor: pointer;
-  font-family: inherit;
-  text-align: left;
-}
-.side-section-header:hover { opacity: 1; }
-.side-section-header i { font-size: 0.6rem; opacity: 0.7; }
-/* A collapsed section is just its header - drop the body's bottom rule so consecutive collapsed
-   headers don't stack two lines between them. */
-.side-section[data-collapsed] > .side-section-header { border-bottom-color: transparent; }
-
+/* These three sit inside a dock panel now, which owns the chrome (border, shadow, padding) and the
+   title - what's left here is just how their own contents stack. */
 .palette-panel, .library, .layer-panel {
-  background: var(--pixel-panel);
-  border: 2px solid var(--bevel-dark);
-  box-shadow: 4px 4px 0 var(--bevel-dark);
-  padding: 9px;
   display: flex;
   flex-direction: column;
   gap: 5px;
+  min-height: 0;
+  flex: 1 1 auto;
 }
-.palette-panel { min-height: 0; }
 
 .preview-panel, .transform-panel, .onion-panel {
   display: flex;
@@ -1051,6 +1086,10 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   border-bottom: 1px solid var(--pixel-panel-hover);
 }
 .preview-panel { align-items: center; }
+/* The preview canvas is sized in device pixels by the engine (see PREVIEW_CELL_PX_BASE); this caps how
+   much of a dock it is allowed to eat, so a tall preview can't push the Layers panel below the fold on
+   a short window. Aspect ratio is preserved - it just draws smaller. */
+.preview-panel canvas { max-width: 100%; max-height: min(20vh, 150px); height: auto; }
 
 /* Onion skin (OnionSkinPanel.tsx). Two independent per-direction steppers plus strength/color, each
  * row a label-control-value triple on one line so the whole panel stays inside the 165px side rail. */
@@ -1361,23 +1400,46 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .panel-title-add:hover:not(:disabled) { background: var(--pixel-accent); }
 .panel-title-add:disabled { opacity: 0.4; cursor: not-allowed; }
 .transform-panel .panel-title { font-size: 0.48rem; opacity: 0.7; }
+/* A docked panel's own header already names it (see DockPanel), so the panel's internal title row
+   keeps only its buttons - see LayerPanel's `showTitle`. */
+.panel-title[data-actions-only] { justify-content: flex-end; border-bottom: 0; padding-bottom: 0; margin-bottom: 0; }
 .transform-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; }
 
 .frame-controls button, .canvas-status-bar button, .canvas-meta-bar button { font-size: 0.7rem; }
 .tool-grid button { font-size: 0.75rem; }
 
-.library h3 {
-  font-family: "Press Start 2P", "Pixelify Sans", system-ui, sans-serif;
-  font-size: 0.52rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--pixel-text-strong);
-  opacity: 0.85;
-  margin: 0 0 6px;
-  padding-bottom: 6px;
+/* One row of type tabs above the thumbnails (SpriteLibrary.tsx). The library is docked along the
+   bottom by default, so the tabs are what keep a few dozen sprites findable in a short, wide box. */
+.library-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding-bottom: 5px;
   border-bottom: 2px solid var(--bevel-dark);
 }
-.library-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.library-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  background: var(--pixel-panel-hover);
+  border: 1px solid var(--bevel-dark);
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.66rem;
+  cursor: pointer;
+}
+.library-tab:hover:not(:disabled) { background: var(--pixel-accent); }
+.library-tab[data-active] {
+  background: var(--pixel-accent);
+  color: var(--pixel-text-strong);
+  box-shadow: inset 0 0 0 1px var(--pixel-highlight, #fff8dc);
+}
+.library-tab:disabled { opacity: 0.4; cursor: default; }
+.library-tab-count { font-size: 0.58rem; opacity: 0.75; font-variant-numeric: tabular-nums; }
+.library-empty { margin: 0; align-self: center; font-size: 0.68rem; color: var(--pixel-muted); }
+/* Scrolls inside the panel rather than growing it - the dock's height is the user's to set. */
+.library-grid { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start; overflow: auto; min-height: 0; flex: 1 1 auto; }
 .library-card {
   position: relative;
   background: var(--pixel-panel-hover);
@@ -1760,25 +1822,23 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 
 /* ---------- Mobile ---------- */
 @media (max-width: 800px) {
-  .editor-shell { flex-direction: column; }
-  /* width:100% (not the old shrink-to-fit "flex:0 0 auto") - .left-rail must actually be bound to the
-   * column's real available width for flex-wrap anywhere inside it to have anything to wrap against;
-   * otherwise every descendant just sizes to its own content and .left-rail balloons past the viewport,
-   * which - combined with the overflow:visible below (kept so popovers aren't clipped) - is exactly what
-   * let .tool-actions spill past the edge instead of actually wrapping onto a new line. */
-  .left-rail { flex: 0 0 auto; min-width: 0; width: 100%; flex-direction: row; flex-wrap: wrap; max-height: none; overflow: visible; }
-  /* flex: 1 1 100% - always takes a full row of .left-rail's now-real width, so .tool-rail-icons below
-   * has a concrete width to wrap its buttons against instead of sizing to their un-wrapped total. */
-  .tool-rail { flex: 1 1 100%; min-width: 0; align-self: stretch; width: auto; }
-  .tool-rail-icons { flex-direction: row; flex-wrap: wrap; justify-content: flex-start; width: 100%; }
-  .tool-divider { width: 2px; height: 1.75rem; margin: 0 3px; }
-  /* Forced onto its own full-width row rather than sharing one with .tool-rail, so Undo/Redo can never
-   * end up squeezed past the visible edge regardless of how much horizontal space the icon column takes. */
-  .tool-actions { flex: 1 1 100%; margin-top: 4px; }
-  .palette-panel { flex: 1 1 200px; }
+  /* Docking is a pointer-and-elbow-room affordance: on a phone the docks simply stack under the canvas
+   * at their natural height, the splitters step out of the way (their sizes are ignored, not lost - a
+   * wider window gets the saved layout straight back), and each side dock lays its panels out in a row
+   * that wraps instead of one tall column nothing fits in. */
+  .editor-main { flex-direction: column; }
+  .dock-zone[data-zone="left"], .dock-zone[data-zone="right"] {
+    width: auto !important;
+    max-height: 42vh;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .dock-zone[data-zone="left"] .dock-panel, .dock-zone[data-zone="right"] .dock-panel { flex: 1 1 210px; min-width: 170px; }
+  .dock-zone[data-zone="bottom"] { height: auto !important; max-height: 40vh; }
+  .dock-splitter { display: none; }
   .palette { grid-template-columns: repeat(8, 1fr); }
-  .side-panel { flex: 0 0 auto; min-width: 0; }
-  .pixel-canvas-wrap { height: 46vh; }
+  .pixel-canvas-wrap { min-height: 46vh; }
   .tank-layout { flex-direction: column; }
   .tank-viewport { min-height: 55vh; }
   .tank-sidebar { flex: 0 0 auto; max-height: 280px; }

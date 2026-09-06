@@ -27,7 +27,17 @@ function LayerThumb({ layer, width, height }: { layer: Layer; width: number; hei
   return <canvas ref={ref} width={THUMB_PX} height={THUMB_PX} className="layer-thumb pixelated" />;
 }
 
-export function LayerPanel({ engine, onError }: { engine: PixelEditorEngine; onError: (msg: string) => void }) {
+/** `showTitle` is false when the panel is docked (see PixelEditorPanel): the dock's own header already
+ *  names it, so this row keeps only its add/import buttons rather than repeating the word twice. */
+export function LayerPanel({
+  engine,
+  onError,
+  showTitle = true,
+}: {
+  engine: PixelEditorEngine;
+  onError: (msg: string) => void;
+  showTitle?: boolean;
+}) {
   const { t } = useLanguage();
   const { width, height } = engine.current;
   const layers = engine.current.frames[engine.frameIndex];
@@ -54,8 +64,8 @@ export function LayerPanel({ engine, onError }: { engine: PixelEditorEngine; onE
 
   return (
     <div className="layer-panel flex-1">
-      <div className="panel-title">
-        {t('layer.title')}
+      <div className="panel-title" data-actions-only={!showTitle || undefined}>
+        {showTitle && t('layer.title')}
         <span className="panel-title-actions">
           <button
             type="button"

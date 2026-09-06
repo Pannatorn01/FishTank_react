@@ -248,14 +248,18 @@ export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; t
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* Icon-only: this bar has to survive being squeezed into a narrow canvas column (the docks on
+          either side are the user's to widen), and a second wrapped row here costs the canvas the same
+          height it costs the bar. The label lives in the tooltip and the accessible name. */}
       <Button
         type="button"
-        size="sm"
+        size="icon"
         variant="secondary"
-        title={t('status.trimToContentTitle')}
+        title={`${t('status.trimToContent')} - ${t('status.trimToContentTitle')}`}
+        aria-label={t('status.trimToContent')}
         onClick={() => engine.trimToContent()}
       >
-        <i className="fa-solid fa-crop-simple" /> {t('status.trimToContent')}
+        <i className="fa-solid fa-crop-simple" />
       </Button>
 
       <label className="mini-toggle">
@@ -264,7 +268,7 @@ export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; t
       </label>
 
       <Select value={engine.canvasBackground} onValueChange={(v) => engine.setCanvasBackground(v as CanvasBackground)}>
-        <SelectTrigger className="w-44 text-xs" title={t('status.canvasBgTitle')}>
+        <SelectTrigger className="w-32 text-xs" title={t('status.canvasBgTitle')}>
           <SelectValue>
             <span className="bg-swatch" data-bg={engine.canvasBackground} aria-hidden="true" />
             {t(CANVAS_BG_KEYS[engine.canvasBackground])}
