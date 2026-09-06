@@ -73,6 +73,13 @@ export type OnionSettings = {
  *  starfish/coral shapes; 'radial' rotates 90/180/270° around that same point instead of mirroring. */
 export type SymmetryMode = 'none' | 'vertical' | 'horizontal' | 'both' | 'diagonal' | 'radial';
 
+/** What a newly drawn selection does to the one already on the canvas: 'new' replaces it (the
+ *  default), 'add' unions the two, 'subtract' cuts the new shape out of the old one. Shared by the
+ *  marquee, the lasso and the Magic Wand so all three build up one selection together - this used to
+ *  be a Magic-Wand-only behavior reachable only by holding a modifier, with nothing on screen saying
+ *  it existed. */
+export type SelectionMode = 'new' | 'add' | 'subtract';
+
 /** How setGridSize() maps old pixel content onto a new canvas size: 'stretch' resamples (the original,
  *  only behavior), 'crop' keeps pixels at their original 1:1 position, anchored per ResizeAnchor, and
  *  either crops or pads with transparency as needed. */

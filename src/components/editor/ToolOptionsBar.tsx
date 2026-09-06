@@ -3,9 +3,24 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { BRUSH_SIZE_TOOLS, MAX_BRUSH_SIZE, type PixelEditorEngine } from '@/hooks/usePixelEditor';
+import {
+  BRUSH_SIZE_TOOLS,
+  MAX_BRUSH_SIZE,
+  MAX_SPRAY_DENSITY,
+  MIN_SPRAY_DENSITY,
+  type PixelEditorEngine,
+} from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
-import type { SymmetryMode } from '@/lib/types';
+import type { SelectionMode, SymmetryMode } from '@/lib/types';
+
+/** The three selection modes as icon buttons: one glyph per mode, in the order they read as an
+ *  escalation (replace, add, take away). Shown for all three selection tools, since the mode belongs to
+ *  the selection rather than to whichever tool is drawing the next piece of it. */
+const SELECTION_MODES: { mode: SelectionMode; icon: string; key: string }[] = [
+  { mode: 'new', icon: 'square', key: 'status.selectModeNew' },
+  { mode: 'add', icon: 'square-plus', key: 'status.selectModeAdd' },
+  { mode: 'subtract', icon: 'square-minus', key: 'status.selectModeSubtract' },
+];
 
 const SYMMETRY_KEYS: Record<SymmetryMode, string> = {
   none: 'symmetry.none',
@@ -32,12 +47,15 @@ export function ToolOptionsBar({ engine }: { engine: PixelEditorEngine }) {
   const showShapeFilled = engine.tool === 'rect' || engine.tool === 'ellipse';
   const showTolerance = engine.tool === 'fill' || engine.tool === 'magicWand';
   const showDither = engine.tool === 'gradient' || showBrushSize;
+  const showSelectionMode = engine.tool === 'select' || engine.tool === 'lasso' || engine.tool === 'magicWand';
+  const showSprayDensity = engine.tool === 'spray';
+  const showContiguous = engine.tool === 'magicWand';
   // Symmetry mirrors whatever a paint tool draws, so it belongs to the same set of tools the brush
   // size does - and it's worth still showing while it's ON for any tool, so an active mirror is never
   // invisible.
   const showSymmetry = showBrushSize || engine.tool === 'fill' || engine.symmetry !== 'none';
 
-  if (!showBrushSize && !showShapeFilled && !showTolerance && !showDither && !showSymmetry) return null;
+  if (!showBrushSize && !showShapeFilled && !showTolerance && !showDither && !showSymmetry && !showSelectionMode) return null;
 
   return (
     <div className="tool-options-bar">
@@ -71,6 +89,53 @@ export function ToolOptionsBar({ engine }: { engine: PixelEditorEngine }) {
             aria-label={t('status.brushSize')}
           />
           <span className="brush-size-unit">{t('status.brushSizeUnit')}</span>
+        </div>
+      )}
+
+      {showSelectionMode && (
+        <div className="mini-toggle selection-mode-control" title={t('status.selectModeTitle')}>
+          {SELECTION_MODES.map(({ mode, icon, key }) => (
+            <Button
+              key={mode}
+              type="button"
+              size="icon"
+              variant={engine.selectionMode === mode ? 'default' : 'secondary'}
+              title={t(key)}
+              aria-pressed={engine.selectionMode === mode}
+              onClick={() => engine.setSelectionMode(mode)}
+            >
+              <i className={`fa-solid fa-${icon}`} />
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {showSelectionMode && (showContiguous || showTolerance) && <span className="toolbar-divider" aria-hidden="true" />}
+
+      {showContiguous && (
+        <>
+          <label className="mini-toggle" title={t('status.wandContiguousTitle')}>
+            <Checkbox checked={engine.wandContiguous} onCheckedChange={(v) => engine.setWandContiguous(!!v)} />
+            <Label>{t('status.wandContiguous')}</Label>
+          </label>
+          <span className="toolbar-divider" aria-hidden="true" />
+        </>
+      )}
+
+      {showSprayDensity && (
+        <div className="mini-toggle brush-size-control" title={t('status.sprayDensityTitle')}>
+          <Label htmlFor="spray-density-range">{t('status.sprayDensity')}</Label>
+          <input
+            id="spray-density-range"
+            type="range"
+            min={MIN_SPRAY_DENSITY}
+            max={MAX_SPRAY_DENSITY}
+            step={0.25}
+            value={engine.sprayDensity}
+            onChange={(e) => engine.setSprayDensity(Number(e.target.value))}
+            className="brush-size-slider"
+          />
+          <span className="brush-size-unit">{engine.sprayDensity.toFixed(2).replace(/0$/, '')}x</span>
         </div>
       )}
 

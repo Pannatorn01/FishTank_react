@@ -27,6 +27,7 @@ import type {
   ResizeAnchor,
   ResizeMode,
   SelectionBox,
+  SelectionMode,
   Sprite,
   SpriteType,
   SymmetryMode,
@@ -91,9 +92,11 @@ export const MAX_BRUSH_SIZE = 20;
  *  comparable "stroke width" concept, so they're deliberately left out. */
 export const BRUSH_SIZE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'spray', 'line', 'rect', 'ellipse', 'curve']);
 const SPRAY_INTERVAL_MS = 55;
+export const MIN_SPRAY_DENSITY = 0.25;
+export const MAX_SPRAY_DENSITY = 3;
 const TOOL_KEYS: Record<string, ToolName> = {
   b: 'pen', e: 'eraser', f: 'fill', i: 'eyedropper', l: 'line', u: 'curve', r: 'rect', c: 'ellipse',
-  a: 'spray', k: 'gradient', m: 'select', v: 'move',
+  a: 'spray', k: 'gradient', m: 'select', q: 'lasso', w: 'magicWand', v: 'move',
 };
 /** Tools where a right-click has an alternate meaning (erase, or reversed gradient) instead of opening the browser context menu. */
 const ERASABLE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient']);
@@ -240,6 +243,22 @@ class PixelEditorEngine {
   /** 0-100: how far a fill can spread across similar-but-not-identical colors (see floodFill's
    *  colorsMatch) - 0 keeps the original exact-match flood fill. */
   fillTolerance = 0;
+  /** Magic Wand: whether a click selects only the region connected to the clicked pixel (the default)
+   *  or every matching pixel in the layer. Holding Shift has always done the latter for one click, but
+   *  a modifier nobody can see isn't a setting - this is the same thing as a checkbox that stays put
+   *  (see ToolOptionsBar), with Shift left in place as the per-click override. */
+  wandContiguous = true;
+  /** What the marquee / lasso / Magic Wand do to the existing selection - see SelectionMode. Sticky, so
+   *  building a multi-part selection doesn't mean holding a modifier for every one of a dozen clicks;
+   *  Shift (add) and Alt (subtract) still override it for a single click or drag. */
+  selectionMode: SelectionMode = 'new';
+  /** Resolved once at gesture start (sticky mode + whatever modifiers were held then) and used again on
+   *  release - reading the live modifier state at release instead would flip the mode mid-drag if the
+   *  user let go of Shift before the mouse button. */
+  private draftSelectionMode: SelectionMode = 'new';
+  /** Spray: dots laid down per tick, as a multiple of the default (which scales with brush size - see
+   *  sprayTick). Under 1 it stipples slowly enough to build up an edge; over 1 it fills fast. */
+  sprayDensity = 1;
   /** Ordered (Bayer 4x4) dither between `color` and `gradientColor` instead of a flat fill - for the
    *  gradient tool (see gradientCellsPreview) and as a "dither brush" texture for pen/spray/shapes
    *  (see applyBrushAt). */
@@ -319,6 +338,9 @@ class PixelEditorEngine {
    *  (and isn't itself gated by it): this needs to work mid-stroke, mid-shape-drag, etc. without
    *  disturbing whatever the primary button is doing, the same way it works in Paint/Photoshop/Pixilart. */
   private middlePanActive = false;
+  /** The mouse buttons held when the current gesture started (MouseEvent.buttons bitmask) - see
+   *  onPointerMove's second-button abort. 0 between gestures. */
+  private gestureButtons = 0;
   /** Last pointer position (client px) seen during a middle-pan drag, to derive each move's delta -
    *  null the rest of the time. */
   private middlePanLast: { x: number; y: number } | null = null;
@@ -346,6 +368,10 @@ class PixelEditorEngine {
   private reactNotify: () => void = () => {};
   private notifyRafId: number | null = null;
   private windowListeners: Array<() => void> = [];
+  /** Captured right before a gesture's own pushUndo (see pushGestureUndo) so that entry can be rolled
+   *  straight back off the stack - with the dirty flag and the redo stack it clobbered - if the gesture
+   *  turns out to change nothing or gets cancelled. null whenever no such entry is outstanding. */
+  private gestureUndoState: { dirty: boolean; redo: Snapshot[] } | null = null;
 
   init(notify: () => void): void {
     // rAF-coalesced, not a direct call to `notify` - a fast pointer (pen/spray tools especially,
@@ -559,6 +585,11 @@ class PixelEditorEngine {
 
   setTool(tool: ToolName): void {
     if (tool === this.tool) return;
+    // A tool can be switched from the rail or the keyboard while a gesture is still technically in
+    // flight - a pointer capture lost to a system dialog, a touch that ended off-canvas. Settle it
+    // against the tool that started it rather than leaving half-finished state (a shape start cell, a
+    // lifted move buffer) for the incoming tool's handlers to interpret as their own.
+    if (this.painting) this.resetGestureState();
     if (this.tool === 'curve' && this.curvePhase) this.commitCurve();
     if (this.tool === 'spray') this.stopSprayTimer();
     this.tool = tool;
@@ -723,6 +754,21 @@ class PixelEditorEngine {
 
   setFillTolerance(v: number): void {
     this.fillTolerance = Math.min(100, Math.max(0, Math.round(v)));
+    this.reactNotify();
+  }
+
+  setWandContiguous(v: boolean): void {
+    this.wandContiguous = v;
+    this.reactNotify();
+  }
+
+  setSelectionMode(mode: SelectionMode): void {
+    this.selectionMode = mode;
+    this.reactNotify();
+  }
+
+  setSprayDensity(v: number): void {
+    this.sprayDensity = Math.min(MAX_SPRAY_DENSITY, Math.max(MIN_SPRAY_DENSITY, v));
     this.reactNotify();
   }
 
@@ -1461,7 +1507,17 @@ class PixelEditorEngine {
     const tag = (document.activeElement && document.activeElement.tagName) || '';
     if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) return;
     if (!this.active) return;
-    if (this.painting) return;
+    if (this.painting) {
+      // Esc is the one key that has to get through mid-gesture: it's the way out of a drag that started
+      // in the wrong place, and without it the only escape from one is finishing the shape and undoing
+      // it afterwards. Everything else stays blocked so a stray keypress can't swap tools or colors out
+      // from under a stroke in progress.
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this.cancelGesture();
+      }
+      return;
+    }
 
     const key = e.key.toLowerCase();
     if ((e.ctrlKey || e.metaKey) && key === 'z' && !e.shiftKey) {
@@ -1636,6 +1692,8 @@ class PixelEditorEngine {
     if (this.resizeHandle) this.commitResize();
     if (this.rotateOrigin) this.commitRotate();
     this.painting = false;
+    this.gestureButtons = 0;
+    this.draftSelectionMode = 'new';
     this.lastPaintCell = null;
     this.shapeStart = null;
     // redrawShapePreview(null), not a bare field assignment - an interrupted shape/curve drag can
@@ -1680,6 +1738,59 @@ class PixelEditorEngine {
     this.gradientEnd = null;
     this.gradientPreview = null;
     this.stopSprayTimer();
+  }
+
+  /** pushUndo, plus enough bookkeeping to take the entry back off the stack again - see
+   *  gestureUndoState/rollbackGestureUndo. Every gesture that can be cancelled or turn out to be a
+   *  no-op goes through this instead of pushUndo directly. */
+  private pushGestureUndo(): void {
+    this.gestureUndoState = { dirty: this.dirty, redo: this.redoStack };
+    this.pushUndo();
+  }
+
+  /** Undoes the *bookkeeping* of the current gesture's pushUndo and hands back the snapshot it took, so
+   *  the caller can either restore it (a cancel) or drop it (a gesture that changed nothing). Restores
+   *  the dirty flag and the redo stack pushUndo overwrote, so a cancelled gesture doesn't leave the
+   *  sprite marked unsaved or a perfectly good redo history thrown away. Returns null when the gesture
+   *  never pushed one (a selection drag, say, which touches no pixels). */
+  private rollbackGestureUndo(): Snapshot | null {
+    const before = this.gestureUndoState;
+    this.gestureUndoState = null;
+    if (!before) return null;
+    const snap = this.undoStack.pop() ?? null;
+    this.dirty = before.dirty;
+    this.redoStack = before.redo;
+    return snap;
+  }
+
+  /**
+   * Aborts the gesture in progress and puts the canvas back the way it was before it started - Esc
+   * while dragging, or a right-click part-way through a left-button drag. Every drawing gesture takes
+   * its undo snapshot up front (see pushGestureUndo), so "back the way it was" is exactly that
+   * snapshot, and rolling it off the stack as well keeps a cancelled gesture out of the undo history
+   * entirely rather than leaving behind a step that undoes nothing. Returns false when there was
+   * nothing in flight to cancel.
+   */
+  cancelGesture(): boolean {
+    if (!this.painting && !this.curvePhase) return false;
+    const snap = this.rollbackGestureUndo();
+    // Read before resetGestureState, which commits a floating move back into the frame: the snapshot
+    // below then replaces those frames wholesale, so both paths land on the pre-gesture pixels.
+    const sel = this.selection;
+    const lasso = this.lassoPoints;
+    const mask = this.selectionMask;
+    this.resetGestureState();
+    if (snap) {
+      this.applyHistoryEntry(snap);
+      // restoreSnapshot drops the selection, because an undo can change the canvas out from under it.
+      // A cancelled gesture can't have - it's the same canvas it was a moment ago - so the selection
+      // the user was working inside comes back rather than being collateral damage of backing out.
+      this.selection = sel;
+      this.lassoPoints = lasso;
+      this.selectionMask = mask;
+    }
+    this.refresh();
+    return true;
   }
 
   private pxFromEvent(e: { clientX: number; clientY: number }): { px: number; py: number } | null {
@@ -1746,12 +1857,21 @@ class PixelEditorEngine {
     return true;
   }
 
+  /** Whether a painting tool (pen/eraser/line/rect/ellipse/curve/fill/spray/gradient) may touch this
+   *  cell: everywhere when there's no active selection, otherwise only inside it - a settled selection
+   *  protects everything outside it from every drawing tool, not just the ones that made it, mirroring
+   *  every other raster editor's "select then paint" convention. */
+  private paintAllowed(x: number, y: number): boolean {
+    if (!this.selection) return true;
+    return this.isInsideSelection({ x, y });
+  }
+
   /** `copy` leaves the source pixels where they are instead of lifting them, so the drag deposits a
    *  duplicate - Photoshop's Ctrl/Cmd+drag on a selection. Everything downstream (the float buffer, the
    *  live preview, the commit) is identical either way; the only difference is whether the source
    *  region is cleared here. */
   private startMoveGesture(cell: Cell, copy = false): void {
-    this.pushUndo();
+    this.pushGestureUndo();
     this.painting = true;
     const { width, height } = this.current;
     const frame = this.activeCells();
@@ -2039,8 +2159,14 @@ class PixelEditorEngine {
           const relY = y + 0.5 - cy;
           const srcRelX = relX * cos + relY * sin;
           const srcRelY = -relX * sin + relY * cos;
-          const srcX = Math.min(w - 1, Math.max(0, Math.floor(srcRelX + cx - origin.x0)));
-          const srcY = Math.min(h - 1, Math.max(0, Math.floor(srcRelY + cy - origin.y0)));
+          const srcX = Math.floor(srcRelX + cx - origin.x0);
+          const srcY = Math.floor(srcRelY + cy - origin.y0);
+          // Skipped, not clamped to the edge. A destination cell in the corners of the rotated
+          // bounding box maps back outside the source rectangle entirely - there is no pixel there to
+          // rotate. Clamping handed those cells the nearest edge pixel instead, which smeared the
+          // artwork's border outward into all four corners of the box (the more so the further from a
+          // multiple of 90 degrees the angle was) and painted pixels the selection never contained.
+          if (srcX < 0 || srcY < 0 || srcX >= w || srcY >= h) continue;
           const color = source[srcY][srcX];
           if (color) cells.push({ x, y, color });
         }
@@ -2048,6 +2174,38 @@ class PixelEditorEngine {
     }
     const box: SelectionBox = bx1 >= bx0 && by1 >= by0 ? { x0: bx0, y0: by0, x1: bx1, y1: by1 } : origin;
     return { cells, box };
+  }
+
+  /**
+   * The selection mask after `angle`, built the same way computeRotatePreview builds the rotated
+   * pixels: walk every cell of the rotated bounding box, inverse-rotate its center back into the
+   * original box, and keep it when the cell it lands on was selected. Sharing that one mapping is the
+   * whole point - any independent derivation drifts from where the pixels actually went. `box` is the
+   * rotated bounding box computeRotatePreview returned (already clamped to the canvas), and a plain
+   * rectangular selection (no mask) counts as "every cell of rotateOrigin selected".
+   */
+  private rotatedSelectionMask(angle: number, box: SelectionBox): Set<string> {
+    const origin = this.rotateOrigin!;
+    const w = origin.x1 - origin.x0 + 1;
+    const h = origin.y1 - origin.y0 + 1;
+    const cx = origin.x0 + w / 2;
+    const cy = origin.y0 + h / 2;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const source = this.selectionMask;
+    const mask = new Set<string>();
+    for (let y = box.y0; y <= box.y1; y++) {
+      for (let x = box.x0; x <= box.x1; x++) {
+        const relX = x + 0.5 - cx;
+        const relY = y + 0.5 - cy;
+        const srcX = Math.floor(relX * cos + relY * sin + cx);
+        const srcY = Math.floor(-relX * sin + relY * cos + cy);
+        if (srcX < origin.x0 || srcX > origin.x1 || srcY < origin.y0 || srcY > origin.y1) continue;
+        if (source && !source.has(`${srcX},${srcY}`)) continue;
+        mask.add(`${x},${y}`);
+      }
+    }
+    return mask;
   }
 
   private commitRotate(): void {
@@ -2058,30 +2216,14 @@ class PixelEditorEngine {
         if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = c.color;
       });
     }
-    // Keep a lasso's outline/mask in sync with the same rotation just applied to its pixels - the
-    // same forward rotation (by rotateAngle, about rotateOrigin's center) computeRotatePreview used to
-    // place each dest pixel, or a subsequent move/copy would use stale, pre-rotation mask coordinates.
-    if (this.lassoPoints && this.rotateOrigin) {
-      const origin = this.rotateOrigin;
-      const cx = origin.x0 + (origin.x1 - origin.x0 + 1) / 2;
-      const cy = origin.y0 + (origin.y1 - origin.y0 + 1) / 2;
-      const cos = Math.cos(this.rotateAngle);
-      const sin = Math.sin(this.rotateAngle);
-      this.lassoPoints = this.lassoPoints.map((p) => {
-        const rx = p.x - cx;
-        const ry = p.y - cy;
-        return { x: Math.round(cx + rx * cos - ry * sin), y: Math.round(cy + rx * sin + ry * cos) };
-      });
-      this.selectionMask = this.polygonMask(this.lassoPoints);
-    } else if (this.selectionMask) {
-      // No traced outline to rotate along with the pixels (a Magic Wand selection whose mask couldn't
-      // be safely represented as one polygon - see applyMagicWandAt's own doc comment): there's no
-      // shape description to resample at the new angle, only a discrete set of cells, and rotating a
-      // scattered cell set isn't well-defined the way rotating a traced silhouette is. Falling back to
-      // "the whole (now-rotated) bounding box is selected" is a plain, safe simplification - not as
-      // precise as before, but never leaves selectionMask silently pointing at stale, pre-rotation
-      // positions the way leaving it untouched here would.
-      this.selectionMask = null;
+    // Re-derive the selection from the rotated *pixels* rather than rotating the shape description.
+    // This used to spin each of the outline's own vertices and round them back to whole cells, which
+    // at the scale a pixel-boundary outline actually has (unit-length stair steps) turned a clean
+    // silhouette into a scrambled, self-crossing scribble - and left the border describing something
+    // other than the pixels that had just moved. rotatedSelectionMask instead reuses the exact mapping
+    // computeRotatePreview used for the pixels, so mask, outline and artwork cannot disagree.
+    if (this.rotateOrigin && this.selection && this.rotateAngle !== 0) {
+      this.applySelectionMask(this.rotatedSelectionMask(this.rotateAngle, this.selection), 'new');
     }
     this.rotateOrigin = null;
     this.rotateSource = null;
@@ -2116,8 +2258,13 @@ class PixelEditorEngine {
   selectionOverlayBox(): { x0: number; y0: number; x1: number; y1: number; handles: { name: HandleName; x: number; y: number }[] } | null {
     // A lasso selection draws its own polygon outline instead (see selectionLassoOutline) - a
     // rectangular border/handles around its bounding box would misrepresent what's actually selected.
-    if (!this.selection || this.selectionDraft || this.lassoPoints) return null;
-    if (!SELECTION_AWARE_TOOLS.has(this.tool)) return null;
+    // Stays visible regardless of the active tool - a selection still constrains painting (see
+    // paintAllowed) while e.g. the Pen is active, so hiding its border there would leave no way to see
+    // what's actually protected while drawing.
+    // While a rotate is in flight the traced outline is hidden (it still describes the pre-rotation
+    // shape - see selectionLassoOutline), so the plain box around what is being rotated stands in for
+    // it and the user can still see what is turning.
+    if (!this.selection || this.selectionDraft || (this.lassoPoints && !this.rotateOrigin)) return null;
     const cellPx = this.effectiveCellPx();
     const box = this.moveBuffer ? shiftBox(this.selection, this.moveDelta) : this.selection;
     const x0 = box.x0 * cellPx;
@@ -2129,7 +2276,7 @@ class PixelEditorEngine {
     // Resize handles imply a rectangular scale, so they only render for the Select tool itself - not
     // while Move (or Lasso) is active, which would show a handle whose own drag start is a no-op.
     const handles: { name: HandleName; x: number; y: number }[] =
-      this.tool === 'select'
+      this.tool === 'select' && !this.rotateOrigin
         ? [
             { name: 'nw', x: x0, y: y0 }, { name: 'n', x: mx, y: y0 }, { name: 'ne', x: x1, y: y0 },
             { name: 'w', x: x0, y: my }, { name: 'e', x: x1, y: my },
@@ -2142,12 +2289,41 @@ class PixelEditorEngine {
   /** Where PixelSelectionOverlay.tsx should draw a lasso selection's own outline (marching ants along
    *  the actual lassoed shape, not its bounding box) - the freeform counterpart to selectionOverlayBox
    *  above. Live-tracks an in-progress move the same way that does. */
-  selectionLassoOutline(): { points: string } | null {
-    if (!this.lassoPoints || this.selectionDraft || !SELECTION_AWARE_TOOLS.has(this.tool)) return null;
+  selectionLassoOutline(): { loops: string[] } | null {
+    // Stays visible regardless of the active tool - see selectionOverlayBox's matching note. Hidden
+    // for the duration of a rotate drag, though: these points describe the shape at its pre-rotation
+    // angle, and re-tracing them on every pointer move would cost a full mask walk per frame for an
+    // outline that is settled - correctly, from the rotated pixels themselves - the moment the drag
+    // ends (see commitRotate).
+    if (!this.lassoPoints || this.selectionDraft || this.rotateOrigin) return null;
     const cellPx = this.effectiveCellPx();
     const { dx, dy } = this.moveBuffer ? this.moveDelta : { dx: 0, dy: 0 };
-    const points = this.lassoPoints.map((p) => `${(p.x + dx + 0.5) * cellPx},${(p.y + dy + 0.5) * cellPx}`).join(' ');
-    return { points };
+    // No +0.5: lassoPoints are grid-line corners (see maskBoundaryEdges), so a corner maps straight to
+    // the pixel edge it sits on. Adding half a cell - as this did while it assumed cell-index points,
+    // the way the in-progress freehand path in lassoDraftOutline genuinely is - drew the marching ants
+    // through the middle of the boundary pixels instead of around them, leaving the border visibly
+    // off by half a pixel from the selection it describes.
+    // One closed polygon per loop, not one path through all of them: traceMaskOutline stitches an
+    // outer silhouette and its holes (or several disjoint blobs) into a single bridged point list
+    // because polygonMask has to be able to rebuild the mask from it, but drawing that list as one
+    // polygon also draws the bridges - a stray line cutting straight across the selection into the
+    // middle of a hole, which is exactly the kind of "border that doesn't fit" this is meant to show.
+    // The bridges all radiate from one hub point (see traceMaskOutline), so splitting the list wherever
+    // it returns to that hub hands back the original loops - a boundary vertex belongs to exactly one
+    // loop, so no loop can pass back through the hub by coincidence.
+    const hub = this.lassoPoints[0];
+    const loops: string[] = [];
+    let current: string[] = [];
+    this.lassoPoints.forEach((p, i) => {
+      if (i > 0 && p.x === hub.x && p.y === hub.y) {
+        if (current.length > 1) loops.push(current.join(' '));
+        current = [];
+        return;
+      }
+      current.push(`${(p.x + dx) * cellPx},${(p.y + dy) * cellPx}`);
+    });
+    if (current.length > 1) loops.push(current.join(' '));
+    return loops.length ? { loops } : null;
   }
 
   /** The in-progress freeform path while dragging out a new lasso selection - an open polyline, unlike
@@ -2263,6 +2439,9 @@ class PixelEditorEngine {
       return;
     }
     if (e.button === 2 && !ERASABLE_TOOLS.has(this.tool)) return;
+    // Which buttons this gesture began with, so onPointerMove can tell a *newly* pressed one from the
+    // one already holding the drag together - see its second-button check.
+    this.gestureButtons = e.buttons;
 
     const cell = this.cellFromEvent(e);
     if (!cell) return;
@@ -2280,7 +2459,11 @@ class PixelEditorEngine {
     }
 
     if (this.tool === 'select') {
-      if (this.isInsideSelection(cell)) {
+      // Shift = add, Alt = subtract, for this one drag (the Photoshop marquee modifiers) - neither key
+      // means anything else on this tool, so there is nothing to collide with. Without a modifier the
+      // sticky mode from the options bar decides.
+      this.draftSelectionMode = e.altKey ? 'subtract' : e.shiftKey ? 'add' : this.selectionMode;
+      if (this.draftSelectionMode === 'new' && this.isInsideSelection(cell)) {
         this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
         return;
       }
@@ -2294,7 +2477,8 @@ class PixelEditorEngine {
     }
 
     if (this.tool === 'lasso') {
-      if (this.isInsideSelection(cell)) {
+      this.draftSelectionMode = e.altKey ? 'subtract' : e.shiftKey ? 'add' : this.selectionMode;
+      if (this.draftSelectionMode === 'new' && this.isInsideSelection(cell)) {
         this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
         return;
       }
@@ -2305,11 +2489,22 @@ class PixelEditorEngine {
     }
 
     if (this.tool === 'magicWand') {
+      // Shift stays the per-click "every matching pixel in the layer" override on top of the sticky
+      // Contiguous toggle, so the modifier keeps working for anyone who already knows it.
+      const global = e.shiftKey || !this.wandContiguous;
+      // Subtract - held Alt, or the sticky mode - always means "take the clicked region out of the
+      // selection", even when that region is part of the existing selection (the common case: shrinking
+      // a selection by clicking inside it). Hence checked before isInsideSelection, which would
+      // otherwise route the click into a move/copy gesture instead.
+      if (e.altKey || this.selectionMode === 'subtract') {
+        this.applyMagicWandAt(cell, global, 'subtract');
+        return;
+      }
       if (this.isInsideSelection(cell)) {
         this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
         return;
       }
-      this.applyMagicWandAt(cell, e.shiftKey);
+      this.applyMagicWandAt(cell, global, e.ctrlKey || e.metaKey || this.selectionMode === 'add' ? 'add' : 'new');
       return;
     }
 
@@ -2331,7 +2526,7 @@ class PixelEditorEngine {
         this.redrawShapePreview(this.mirroredExpand(this.quadraticBezierCells(this.curveStart!, this.curveControl, this.curveEnd!)));
         return;
       }
-      this.pushUndo();
+      this.pushGestureUndo();
       this.painting = true;
       this.curveStart = cell;
       this.curveEnd = cell;
@@ -2341,7 +2536,7 @@ class PixelEditorEngine {
       return;
     }
 
-    this.pushUndo();
+    this.pushGestureUndo();
     this.painting = true;
     this.eraseOverride = e.button === 2;
 
@@ -2353,18 +2548,28 @@ class PixelEditorEngine {
       const frame = this.activeCells();
       const { width, height } = this.current;
       const fillColor = this.eraseOverride ? null : this.color;
+      let changed = 0;
       if (e.shiftKey) {
         // Shift+click = global replace: every pixel in the layer matching the clicked color (within
         // tolerance), not just the contiguous region a plain click would flood-fill.
         const target = frame[cell.y * width + cell.x];
-        this.globalReplace(frame, target, fillColor, this.fillTolerance);
+        changed = this.globalReplace(frame, width, target, fillColor, this.fillTolerance);
       } else {
         this.mirrorCells(cell.x, cell.y).forEach((m) => {
-          this.floodFill(frame, width, height, m.x, m.y, frame[m.y * width + m.x], fillColor, this.fillTolerance);
+          changed += this.floodFill(frame, width, height, m.x, m.y, frame[m.y * width + m.x], fillColor, this.fillTolerance);
         });
       }
-      if (fillColor) this.addSavedColor(fillColor);
-      this.refresh();
+      if (changed === 0) {
+        // Clicking a pixel that is already the fill color - or one outside the selection, where nothing
+        // may be painted at all - repaints nothing, so the undo entry pushed a moment ago would be a
+        // history step that undoes nothing. Taking it back is the difference between Ctrl+Z reversing
+        // the last thing actually drawn and it reversing a stray click first.
+        this.rollbackGestureUndo();
+        this.reactNotify();
+      } else {
+        if (fillColor) this.addSavedColor(fillColor);
+        this.refresh();
+      }
     } else if (this.tool === 'spray') {
       this.sprayPointerCell = cell;
       this.sprayTick();
@@ -2404,6 +2609,15 @@ class PixelEditorEngine {
       // so the canvas can't be dragged out of sight entirely. panBy writes the transform straight to
       // the DOM (no React render per pointermove) - see applyPanToDom.
       this.panBy(dx, dy);
+      return;
+    }
+    // A second mouse button pressed part-way through a drag aborts it (the Paint/Aseprite convention),
+    // rather than the drag carrying on regardless and committing whatever it had. This has to be caught
+    // here and not in onPointerDown: a pointerdown fires only for the *first* button of a press, and
+    // pressing another one while the pointer is already down arrives as an ordinary pointermove with an
+    // extra bit set in `buttons` - there is no second pointerdown to hook.
+    if (this.painting && (e.buttons & ~this.gestureButtons & 0b111) !== 0) {
+      this.cancelGesture();
       return;
     }
     if (!this.painting) {
@@ -2517,6 +2731,7 @@ class PixelEditorEngine {
     }
     if (!this.painting) return;
     this.painting = false;
+    this.gestureButtons = 0;
     this.stopSprayTimer();
 
     if (this.moveBuffer) {
@@ -2548,9 +2763,17 @@ class PixelEditorEngine {
 
     if (this.tool === 'select') {
       const d = this.selectionDraft;
-      this.selection = d && (d.x0 !== d.x1 || d.y0 !== d.y1) ? d : null;
-      this.lassoPoints = null;
-      this.selectionMask = null;
+      const dragged = d != null && (d.x0 !== d.x1 || d.y0 !== d.y1);
+      if (this.draftSelectionMode !== 'new') {
+        // add/subtract turn the marquee into a mask and merge it, so a rectangular drag can extend or
+        // carve out a lasso/wand selection just as well as one of its own.
+        if (dragged && d) this.applySelectionMask(this.rectMask(d), this.draftSelectionMode);
+      } else {
+        this.selection = dragged ? d : null;
+        this.lassoPoints = null;
+        this.selectionMask = null;
+      }
+      this.draftSelectionMode = 'new';
       this.selectStart = null;
       this.selectionDraft = null;
       // reactNotify(), not refresh() - settling a selection is still pure metadata (see
@@ -2564,15 +2787,24 @@ class PixelEditorEngine {
       const pts = this.lassoDraftPoints;
       this.lassoDraftPoints = null;
       const mask = pts && pts.length >= 3 ? this.polygonMask(pts) : null;
-      if (pts && mask && mask.size > 0) {
-        this.selection = this.boundingBoxOfPoints(pts);
-        this.lassoPoints = pts;
-        this.selectionMask = mask;
+      if (this.draftSelectionMode !== 'new') {
+        // A too-short path (a click rather than a drag) merges nothing and, unlike the 'new' case
+        // below, must not clear what is already selected - a click means "clear" only when it is
+        // replacing the selection.
+        if (mask && mask.size > 0) this.applySelectionMask(mask, this.draftSelectionMode);
+      } else if (mask && mask.size > 0) {
+        // The settled outline is traced from the mask rather than being the raw hand-drawn path: that
+        // path runs through cell centers and cuts across the very pixels it selected, so drawing it
+        // put the border half a pixel off whichever pixels ended up inside. Tracing the mask lands the
+        // border exactly on their edges - and it is the same outline the Magic Wand produces, so both
+        // tools describe a settled selection the same way.
+        this.applySelectionMask(mask, 'new');
       } else {
         this.selection = null;
         this.lassoPoints = null;
         this.selectionMask = null;
       }
+      this.draftSelectionMode = 'new';
       this.reactNotify();
       return;
     }
@@ -2589,7 +2821,7 @@ class PixelEditorEngine {
         const frame = this.activeCells();
         const { width, height } = this.current;
         preview.forEach((c) => {
-          if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = c.color;
+          if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height && this.paintAllowed(c.x, c.y)) frame[c.y * width + c.x] = c.color;
         });
         this.addSavedColor(this.color);
         this.addSavedColor(this.gradientColor);
@@ -2613,7 +2845,7 @@ class PixelEditorEngine {
       // respecting repaint of the region the (fillRect-approximated) live preview covered.
       const rects = this.cellsDirtyRects(this.shapePreviewCells, null);
       this.shapePreviewCells.forEach((c) => {
-        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = shapeColor;
+        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height && this.paintAllowed(c.x, c.y)) frame[c.y * width + c.x] = shapeColor;
       });
       if (shapeColor) this.addSavedColor(shapeColor);
       this.shapeStart = null;
@@ -2886,7 +3118,7 @@ class PixelEditorEngine {
       const { width, height } = this.current;
       const color = this.eraseOverride ? null : this.color;
       this.shapePreviewCells.forEach((c) => {
-        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) frame[c.y * width + c.x] = color;
+        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height && this.paintAllowed(c.x, c.y)) frame[c.y * width + c.x] = color;
       });
       if (color) this.addSavedColor(color);
     }
@@ -2914,14 +3146,14 @@ class PixelEditorEngine {
     const frame = this.activeCells();
     const color = this.currentPaintColor();
     const radius = this.brushSize + 1;
-    const dots = radius;
+    const dots = Math.max(1, Math.round(radius * this.sprayDensity));
     for (let i = 0; i < dots; i++) {
       const angle = Math.random() * Math.PI * 2;
       const r = Math.sqrt(Math.random()) * radius;
       const x = Math.round(this.sprayPointerCell.x + Math.cos(angle) * r);
       const y = Math.round(this.sprayPointerCell.y + Math.sin(angle) * r);
       this.mirrorCells(x, y).forEach((m) => {
-        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height) {
+        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height && this.paintAllowed(m.x, m.y)) {
           frame[m.y * width + m.x] = this.ditherEnabled && color ? ditherColorAt(m.x, m.y, color, this.gradientColor, 0.5) : color;
         }
       });
@@ -3028,7 +3260,7 @@ class PixelEditorEngine {
     const dither = this.ditherEnabled && color !== null;
     this.brushCellsAt(x, y).forEach((cell) => {
       this.mirrorCells(cell.x, cell.y).forEach((m) => {
-        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height) {
+        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height && this.paintAllowed(m.x, m.y)) {
           frame[m.y * width + m.x] = dither ? ditherColorAt(m.x, m.y, color!, this.gradientColor, 0.5) : color;
         }
       });
@@ -3302,8 +3534,8 @@ class PixelEditorEngine {
     target: string | null,
     fillColor: string | null,
     tolerance = 0
-  ): void {
-    if (this.colorsMatch(target, fillColor, tolerance)) return;
+  ): number {
+    if (this.colorsMatch(target, fillColor, tolerance)) return 0;
     const reference = tolerance > 0 ? frame.slice() : frame;
     const visited = tolerance > 0 ? new Uint8Array(width * height) : null;
     // Packed 1D indices on a plain number[] stack, not [number, number] tuples - avoids allocating
@@ -3312,12 +3544,21 @@ class PixelEditorEngine {
     // checked before pushing (not after popping), so an out-of-range neighbor never round-trips
     // through the stack at all.
     const stack: number[] = [y * width + x];
+    // How many cells this actually repainted, so a click that changes nothing (an already-filled
+    // region, or one wholly outside the selection) can have its undo entry rolled back - see the fill
+    // branch of onPointerDown.
+    let changed = 0;
     if (visited) visited[y * width + x] = 1;
     while (stack.length) {
       const idx = stack.pop()!;
       if (!this.colorsMatch(reference[idx], target, tolerance)) continue;
-      frame[idx] = fillColor;
       const cx = idx % width;
+      const cy = (idx - cx) / width;
+      // A selection boundary blocks the flood the same way a color mismatch does - it stops the fill
+      // from crossing into (or painting) protected pixels outside it, instead of leaking through.
+      if (!this.paintAllowed(cx, cy)) continue;
+      if (frame[idx] !== fillColor) changed++;
+      frame[idx] = fillColor;
       const tryPush = (idx2: number) => {
         if (!visited) {
           stack.push(idx2);
@@ -3331,15 +3572,23 @@ class PixelEditorEngine {
       if (idx + width < width * height) tryPush(idx + width);
       if (idx - width >= 0) tryPush(idx - width);
     }
+    return changed;
   }
 
   /** Shift+click on the fill tool: replaces every pixel in the layer matching `target` (within
    *  tolerance), not just the contiguous region floodFill would reach - a global find-and-replace. */
-  private globalReplace(frame: Frame, target: string | null, fillColor: string | null, tolerance: number): void {
+  private globalReplace(frame: Frame, width: number, target: string | null, fillColor: string | null, tolerance: number): number {
     const reference = frame.slice();
+    let changed = 0;
     for (let i = 0; i < reference.length; i++) {
-      if (this.colorsMatch(reference[i], target, tolerance)) frame[i] = fillColor;
+      if (!this.colorsMatch(reference[i], target, tolerance)) continue;
+      const cx = i % width;
+      const cy = (i - cx) / width;
+      if (!this.paintAllowed(cx, cy)) continue;
+      if (frame[i] !== fillColor) changed++;
+      frame[i] = fillColor;
     }
+    return changed;
   }
 
   /** Magic Wand's plain-click behavior: the same connected, tolerance-aware walk as floodFill above,
@@ -3384,6 +3633,19 @@ class PixelEditorEngine {
     return mask;
   }
 
+  /** Materializes whatever the current selection is (a plain rectangular box with no mask, or an
+   *  already-sparse mask) into an explicit `"x,y"` cell set - what Magic Wand's Ctrl/Alt combine modes
+   *  need as their starting point, since a plain marquee selection has no mask of its own to union or
+   *  subtract against. */
+  private maskFromSelection(): Set<string> {
+    if (this.selectionMask) return new Set(this.selectionMask);
+    const mask = new Set<string>();
+    if (!this.selection) return mask;
+    const { x0, y0, x1, y1 } = this.selection;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) mask.add(`${x},${y}`);
+    return mask;
+  }
+
   /** Bounding box of a sparse `"x,y"` cell mask (see selectionMask) - the Magic Wand's counterpart to
    *  boundingBoxOfPoints, used the same way: as the settled selection's `selection` box. */
   private boundingBoxOfMask(mask: Set<string>): SelectionBox {
@@ -3410,10 +3672,8 @@ class PixelEditorEngine {
    * reconstructs only 1 of the 4 cells. Emitting the actual grid-line corner each boundary side sits
    * on (one cell over from the boundary cell itself, on the appropriate side) is what makes
    * polygonMask reconstruct the exact original mask - verified the same way, this time getting all 4
-   * cells back. The trade is a half-cell rendering inset in selectionLassoOutline (points are grid
-   * corners, but rendering still adds +0.5 assuming a cell-index point, same as it does for a
-   * hand-drawn lasso's own points) - cosmetic, and worth it for a Magic Wand selection actually
-   * surviving a move/rotate/nudge with the exact pixels it started with.
+   * cells back. selectionLassoOutline renders these points as-is, with no half-cell offset, so the
+   * border drawn from them sits exactly on the boundary pixels' outer edges.
    */
   private maskBoundaryEdges(mask: Set<string>): { from: Cell; to: Cell }[] {
     const edges: { from: Cell; to: Cell }[] = [];
@@ -3515,25 +3775,75 @@ class PixelEditorEngine {
    *  same mask (see traceMaskOutline's own doc comment for the one case it can't) - otherwise it's left
    *  null, which still shows/acts as a correct (if plain, bounding-box-only) selection outline; only
    *  the lasso-style traced shape is sacrificed, never mask accuracy for the immediate selection
-   *  itself, which is set directly from `mask` either way. */
-  private applyMagicWandAt(cell: Cell, global: boolean): void {
+   *  itself, which is set directly from `mask` either way.
+   *
+   *  `combine` layers repeated clicks into one selection instead of always replacing it: 'add' (held
+   *  Ctrl/Cmd) unions the newly-clicked region into whatever's already selected - the standard way to
+   *  select several same-colored blobs (e.g. every fin on a multi-colored fish) that a single click,
+   *  or even Shift's "every matching pixel in the layer" global mode, can't reach when they're
+   *  different colors. 'subtract' (held Alt) instead removes the clicked region from the existing
+   *  selection - carving out a mistakenly-included patch without starting over. Neither mode needs
+   *  `pushUndo` - like a plain wand click, adjusting a selection doesn't touch a pixel. */
+  private applyMagicWandAt(cell: Cell, global: boolean, combine: 'new' | 'add' | 'subtract' = 'new'): void {
     const frame = this.activeCells();
     const { width, height } = this.current;
     const target = frame[cell.y * width + cell.x];
-    const mask = global
+    const clicked = global
       ? this.globalSelectMask(frame, width, target, this.fillTolerance)
       : this.floodSelectMask(frame, width, height, cell.x, cell.y, target, this.fillTolerance);
+
+    this.applySelectionMask(clicked, combine);
+    this.reactNotify();
+  }
+
+  /** Merges a freshly made selection mask into whatever is already selected per `mode`, then settles
+   *  the result into the selection box / mask / outline trio the overlay and every selection-aware
+   *  operation read. Shared by the Magic Wand, the lasso and (in add/subtract mode) the rectangular
+   *  marquee, so "add to the selection" means the same thing and produces the same kind of selection
+   *  whichever tool drew the new piece. */
+  private applySelectionMask(clicked: Set<string>, mode: SelectionMode): void {
+    let mask: Set<string>;
+    if (mode === 'add') {
+      mask = this.maskFromSelection();
+      clicked.forEach((key) => mask.add(key));
+    } else if (mode === 'subtract') {
+      mask = this.maskFromSelection();
+      clicked.forEach((key) => mask.delete(key));
+    } else {
+      mask = clicked;
+    }
+
     if (mask.size === 0) {
       this.selection = null;
       this.lassoPoints = null;
       this.selectionMask = null;
-    } else {
-      this.selection = this.boundingBoxOfMask(mask);
-      this.selectionMask = mask;
-      const outline = this.traceMaskOutline(mask);
-      this.lassoPoints = outline.length > 0 && this.masksEqual(this.polygonMask(outline), mask) ? outline : null;
+      return;
     }
-    this.reactNotify();
+    const box = this.boundingBoxOfMask(mask);
+    this.selection = box;
+    // A mask that fills its own bounding box completely *is* a plain rectangular marquee, so it is
+    // stored as one: no per-cell mask to carry around, and the resize handles (which only render for a
+    // rectangle - see selectionOverlayBox) stay available. Rotating a rectangle by a multiple of 90
+    // degrees lands here, as does a Magic Wand click on a rectangular block of color.
+    if (mask.size === (box.x1 - box.x0 + 1) * (box.y1 - box.y0 + 1)) {
+      this.selectionMask = null;
+      this.lassoPoints = null;
+      return;
+    }
+    this.selectionMask = mask;
+    const outline = this.traceMaskOutline(mask);
+    this.lassoPoints = outline.length > 0 && this.masksEqual(this.polygonMask(outline), mask) ? outline : null;
+  }
+
+  /** Every cell of a rectangular marquee as a mask, so an add/subtract marquee drag can go through the
+   *  same merge path as a lasso or wand selection (see applySelectionMask). A plain 'new' marquee stays
+   *  a mask-less rectangle - that is the cheap, common case and nothing about it needs per-cell keys. */
+  private rectMask(box: SelectionBox): Set<string> {
+    const mask = new Set<string>();
+    for (let y = box.y0; y <= box.y1; y++) {
+      for (let x = box.x0; x <= box.x1; x++) mask.add(`${x},${y}`);
+    }
+    return mask;
   }
 
   // --- rendering ---

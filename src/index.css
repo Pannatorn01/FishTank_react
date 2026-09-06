@@ -683,6 +683,10 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   border-right: 2px solid var(--bevel-dark);
   white-space: nowrap;
 }
+/* The selection-mode segmented control (ToolOptionsBar.tsx): three icon buttons that behave as one
+ * control - which of the three is lit is the whole message - so they sit flush together instead of
+ * spaced like three independent buttons. */
+.selection-mode-control { gap: 2px; }
 
 .pixel-canvas-wrap {
   position: relative;

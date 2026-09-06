@@ -124,7 +124,9 @@ export function PixelSelectionOverlay({ engine }: { engine: PixelEditorEngine })
       )}
       {lassoOutline && (
         <svg className="pixel-select-stalk-svg" width={width * cellPx} height={height * cellPx}>
-          <polygon points={lassoOutline.points} className="pixel-select-lasso-outline" />
+          {lassoOutline.loops.map((points, i) => (
+            <polygon key={i} points={points} className="pixel-select-lasso-outline" />
+          ))}
         </svg>
       )}
       {curveHandle && (
