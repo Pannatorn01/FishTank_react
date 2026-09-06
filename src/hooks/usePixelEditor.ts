@@ -186,6 +186,16 @@ class PixelEditorEngine {
   savedColors: string[] = [];
   painting = false;
   lastPaintCell: Cell | null = null;
+  /** Where the last freehand pen/eraser stroke ended, kept *across* strokes so a following Shift+click
+   *  can draw a straight line from there - the Photoshop/Aseprite convention for chaining segments
+   *  without switching to the Line tool. Distinct from lastPaintCell, which only lives for the duration
+   *  of one stroke. Bounds-checked at use rather than cleared everywhere, since the canvas can be
+   *  resized or a different sprite loaded under it. */
+  lastStrokeEndCell: Cell | null = null;
+  /** True while Alt is held with a paint tool active - see ALT_PICK_TOOLS. Alt has always temporarily
+   *  sampled a color on click, but nothing said so until the click had already happened; this drives the
+   *  eyedropper cursor on .pixel-canvas-wrap so the mode is visible while the key is down. */
+  altPickActive = false;
   shapeStart: Cell | null = null;
   shapePreviewCells: Cell[] | null = null;
   shapeFilled = false;
@@ -384,6 +394,9 @@ class PixelEditorEngine {
       this.middlePanActive = false;
       this.middlePanLast = null;
       this.spacePanActive = false;
+      // A keyup that happens while the window is blurred never reaches this listener, so the modifier
+      // would otherwise stay latched on until the next press.
+      this.setAltPick(false);
       if (this.canvas) this.canvas.style.cursor = '';
       if (!this.painting) return;
       this.resetGestureState();
@@ -550,6 +563,9 @@ class PixelEditorEngine {
     if (this.tool === 'spray') this.stopSprayTimer();
     this.tool = tool;
     if (this.canvas && !SELECTION_AWARE_TOOLS.has(tool)) this.canvas.style.cursor = '';
+    // Re-evaluated against the new tool: Alt means nothing on e.g. the Select tool, so the eyedropper
+    // hint must not survive a switch onto one.
+    if (this.altPickActive && !ALT_PICK_TOOLS.has(tool)) this.altPickActive = false;
     this.reactNotify();
   }
 
@@ -1422,6 +1438,10 @@ class PixelEditorEngine {
   // --- keyboard ---
 
   onKeyDown(e: KeyboardEvent): void {
+    // Not gated on the focus check below: Alt is a modifier, not a command, and the cursor should say
+    // "this will sample a color" the moment it's held regardless of what happens to be focused.
+    // Deliberately no preventDefault - that would suppress the browser's own Alt shortcuts.
+    if (e.key === 'Alt') this.setAltPick(true);
     const tag = (document.activeElement && document.activeElement.tagName) || '';
     if (['INPUT', 'SELECT', 'TEXTAREA'].includes(tag)) return;
     if (!this.active) return;
@@ -1517,10 +1537,20 @@ class PixelEditorEngine {
   }
 
   private onKeyUp(e: KeyboardEvent): void {
+    if (e.key === 'Alt') this.setAltPick(false);
     if (e.key === ' ') {
       this.spacePanActive = false;
       if (!this.middlePanActive && this.canvas) this.canvas.style.cursor = '';
     }
+  }
+
+  /** Only notifies React when the flag actually flips - a held-down Alt repeats keydown at the OS's
+   *  key-repeat rate, and each one would otherwise schedule a render that changes nothing. */
+  private setAltPick(on: boolean): void {
+    const next = on && ALT_PICK_TOOLS.has(this.tool);
+    if (next === this.altPickActive) return;
+    this.altPickActive = next;
+    this.reactNotify();
   }
 
   /** Ctrl+A: select the whole canvas - switches to the Select tool if a non-selection tool was active,
@@ -1700,7 +1730,11 @@ class PixelEditorEngine {
     return true;
   }
 
-  private startMoveGesture(cell: Cell): void {
+  /** `copy` leaves the source pixels where they are instead of lifting them, so the drag deposits a
+   *  duplicate - Photoshop's Ctrl/Cmd+drag on a selection. Everything downstream (the float buffer, the
+   *  live preview, the commit) is identical either way; the only difference is whether the source
+   *  region is cleared here. */
+  private startMoveGesture(cell: Cell, copy = false): void {
     this.pushUndo();
     this.painting = true;
     const { width, height } = this.current;
@@ -1712,7 +1746,7 @@ class PixelEditorEngine {
         if (this.selectionMask && !this.selectionMask.has(`${x},${y}`)) continue;
         const c = frame[y * width + x];
         if (c) cells.push({ x, y, color: c });
-        frame[y * width + x] = null;
+        if (!copy) frame[y * width + x] = null;
       }
     }
     this.moveBuffer = { cells };
@@ -2231,7 +2265,7 @@ class PixelEditorEngine {
 
     if (this.tool === 'select') {
       if (this.isInsideSelection(cell)) {
-        this.startMoveGesture(cell);
+        this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
         return;
       }
       this.painting = true;
@@ -2245,7 +2279,7 @@ class PixelEditorEngine {
 
     if (this.tool === 'lasso') {
       if (this.isInsideSelection(cell)) {
-        this.startMoveGesture(cell);
+        this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
         return;
       }
       this.painting = true;
@@ -2256,7 +2290,7 @@ class PixelEditorEngine {
 
     if (this.tool === 'magicWand') {
       if (this.isInsideSelection(cell)) {
-        this.startMoveGesture(cell);
+        this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
         return;
       }
       this.applyMagicWandAt(cell, e.shiftKey);
@@ -2264,7 +2298,7 @@ class PixelEditorEngine {
     }
 
     if (this.tool === 'move') {
-      this.startMoveGesture(cell);
+      this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
       return;
     }
 
@@ -2324,10 +2358,24 @@ class PixelEditorEngine {
       this.gradientEnd = cell;
       this.drawGradientPreviewOverlay();
     } else {
-      this.lastPaintCell = null;
+      // Shift+click resumes from where the last stroke ended, as a straight line (paintCell's own
+      // `isMove` path already interpolates from lastPaintCell with Bresenham - the same code that keeps
+      // a fast drag from leaving gaps). Dragging afterwards continues freehand from the new point, so
+      // repeated Shift+clicks chain segments the way the Line tool would without leaving the pen.
+      const anchor = e.shiftKey ? this.strokeChainAnchor() : null;
+      this.lastPaintCell = anchor;
       this.beginStroke();
-      this.paintCell(cell.x, cell.y);
+      this.paintCell(cell.x, cell.y, anchor !== null);
     }
+  }
+
+  /** lastStrokeEndCell, but only when it still points at a cell this canvas actually has - a resize,
+   *  trim or sprite load can leave it outside. */
+  private strokeChainAnchor(): Cell | null {
+    const a = this.lastStrokeEndCell;
+    if (!a || this.tool !== 'pen' && this.tool !== 'eraser') return null;
+    const { width, height } = this.current;
+    return a.x >= 0 && a.y >= 0 && a.x < width && a.y < height ? a : null;
   }
 
   onPointerMove(e: React.PointerEvent<HTMLCanvasElement>): void {
@@ -2424,7 +2472,23 @@ class PixelEditorEngine {
       const end = e.shiftKey ? this.constrainShapeEnd(this.shapeStart, cell) : cell;
       this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(this.shapeStart, end)));
     } else if (this.tool === 'pen' || this.tool === 'eraser') {
-      this.paintCell(cell.x, cell.y, true);
+      // Coalesced events are the positions the OS actually sampled between two browser frames, which a
+      // fast flick can spread over a lot of distance. paintCell already Bresenhams between consecutive
+      // points, so nothing is ever *missing* without them - but a fast curve replayed through its
+      // intermediate samples bends where it was drawn to bend instead of being chorded into one long
+      // straight segment between frames. Falls back to the single event where unsupported.
+      const coalesced = typeof e.nativeEvent.getCoalescedEvents === 'function' ? e.nativeEvent.getCoalescedEvents() : [];
+      if (coalesced.length > 1) {
+        // cellFromEvent only needs clientX/clientY, and its getBoundingClientRect() call is cheap to
+        // repeat here: painting writes to the canvas bitmap, which invalidates no layout, so the
+        // browser answers the rest of the loop from the same cached box.
+        coalesced.forEach((ce) => {
+          const c = this.cellFromEvent(ce);
+          if (c) this.paintCell(c.x, c.y, true);
+        });
+      } else {
+        this.paintCell(cell.x, cell.y, true);
+      }
     }
   }
 
@@ -2549,6 +2613,10 @@ class PixelEditorEngine {
     // full-repaint redraw already ran on the last stroke step / on mousedown) - nothing here changes a
     // pixel, so this only needs a React re-render (e.g. for canUndo()/dirty-flag-driven UI), not another
     // full drawGrid().
+    // Read before lastPaintCell is cleared just below, and remembered across strokes so the next
+    // Shift+click can draw a line from here - see strokeChainAnchor. Only the freehand tools set it:
+    // fill and spray have no meaningful "end".
+    if ((this.tool === 'pen' || this.tool === 'eraser') && this.lastPaintCell) this.lastStrokeEndCell = this.lastPaintCell;
     this.lastPaintCell = null;
     this.strokeSnapshot = null;
     this.strokePoints = [];

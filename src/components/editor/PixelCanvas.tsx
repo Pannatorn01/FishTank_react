@@ -76,6 +76,9 @@ export function PixelCanvas({ engine }: { engine: PixelEditorEngine }) {
       ref={wrapRef}
       className="pixel-canvas-wrap"
       data-tool={engine.tool}
+      // Overrides the tool's own cursor while Alt is held, so "release to go back to drawing" is
+      // visible rather than something you find out by clicking - see altPickActive.
+      data-alt-pick={engine.altPickActive || undefined}
       onPointerDown={(e) => {
         if (e.target === e.currentTarget) engine.deselect();
       }}
