@@ -52,9 +52,8 @@ export type ToolName =
   | 'gradient'
   | 'select'
   | 'lasso'
-  | 'move'
-  | 'shade'
-  | 'replace';
+  | 'magicWand'
+  | 'move';
 
 /** 'diagonal' mirrors across both diagonals through the (draggable) symmetry axis point - good for
  *  starfish/coral shapes; 'radial' rotates 90/180/270° around that same point instead of mirroring. */

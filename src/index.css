@@ -564,32 +564,38 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 /* ---------- Editor ---------- */
 .editor-shell { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; }
 
+/* .left-rail keeps its original width - it also hosts ColorPalette below the tool rail, which still
+ * needs room for its swatch grid/select/preset controls. Only .tool-rail itself (the Aseprite-style
+ * single icon-wide column) is narrow, and it hugs the left edge instead of stretching to fill. */
 .left-rail { flex: 0 0 190px; min-width: 165px; display: flex; flex-direction: column; gap: 5px; overflow-y: auto; overflow-x: hidden; }
-.tool-group { display: flex; flex-direction: column; gap: 3px; }
-.tool-group-label {
-  font-size: 0.65rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--pixel-muted);
-  padding-left: 2px;
-}
-.tool-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1.75rem);
-  justify-content: center;
-  gap: 3px;
+/* The bordered/beveled box spans the whole sidebar width (stretch) so the space beside the narrow
+ * icon column reads as this toolbar's own chrome, not bare unstyled page background - only the icons
+ * themselves (.tool-rail-icons) stay a single column hugging the left edge. */
+.tool-rail {
+  display: flex;
+  align-self: stretch;
   background: var(--pixel-panel);
   border: 2px solid var(--bevel-dark);
   box-shadow: 4px 4px 0 var(--bevel-dark);
-  padding: 8px;
+  padding: 5px 4px;
 }
+.tool-rail-icons {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 38px;
+}
+/* Thin horizontal rule separating draw / shape / selection clusters within the single column. */
+.tool-divider { width: 100%; height: 2px; margin: 3px 0; background: var(--bevel-dark); box-shadow: 0 1px 0 var(--bevel-light); }
+
 /* The active tool needs a much clearer signal than the accent-color background swap alone gives it on
  * its own - some themes' accent color reads as low-contrast against the surrounding secondary buttons.
  * Reuses .pixel-raised's own :active look (see its definition) held permanently rather than only while
  * the mouse is down, plus a bright ring that doesn't depend on the theme accent's own contrast - so the
  * selected tool reads as "pressed in" and outlined regardless of hue. data-variant is set by the Button
  * component itself (see button.tsx), so this needs no extra class from ToolRail.tsx. */
-.tool-grid button[data-variant="default"] {
+.tool-rail button[data-variant="default"] {
   border-top-color: var(--bevel-dark);
   border-left-color: var(--bevel-dark);
   border-bottom-color: var(--bevel-light);
@@ -597,7 +603,49 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   transform: translate(1px, 1px);
   box-shadow: 0 0 0 2px var(--pixel-highlight, #fff8dc);
 }
-.tool-grid button[data-variant="default"]:hover { transform: translate(1px, 1px); }
+.tool-rail button[data-variant="default"]:hover { transform: translate(1px, 1px); }
+
+/* Aseprite's tiny corner triangle hint that a button is a flyout group with more tools underneath -
+ * CSS-only via a diagonal border split, no extra asset. */
+.tool-flyout-trigger { position: relative; }
+.tool-flyout-trigger::after {
+  content: '';
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0 0 5px 5px;
+  border-color: transparent transparent var(--pixel-highlight, #fff8dc) transparent;
+  pointer-events: none;
+}
+
+.tool-flyout-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  min-width: 130px;
+  z-index: 50;
+}
+.tool-flyout-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--pixel-panel);
+  color: var(--pixel-text-strong, inherit);
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+}
+.tool-flyout-item:hover { background: var(--pixel-accent-hover); }
+.tool-flyout-item[data-active] { background: var(--pixel-accent-hover); box-shadow: inset 0 0 0 1px var(--pixel-highlight, #fff8dc); }
+.tool-flyout-item i { width: 1rem; text-align: center; }
+
 .tool-actions { display: flex; gap: 3px; }
 .tool-actions > * { flex: 1; }
 
@@ -1579,9 +1627,20 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 /* ---------- Mobile ---------- */
 @media (max-width: 800px) {
   .editor-shell { flex-direction: column; }
-  .left-rail { flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; max-height: none; overflow: visible; }
-  .tool-grid { grid-template-columns: repeat(6, 1fr); flex: 1 1 260px; }
-  .tool-actions { flex: 0 0 auto; }
+  /* width:100% (not the old shrink-to-fit "flex:0 0 auto") - .left-rail must actually be bound to the
+   * column's real available width for flex-wrap anywhere inside it to have anything to wrap against;
+   * otherwise every descendant just sizes to its own content and .left-rail balloons past the viewport,
+   * which - combined with the overflow:visible below (kept so popovers aren't clipped) - is exactly what
+   * let .tool-actions spill past the edge instead of actually wrapping onto a new line. */
+  .left-rail { flex: 0 0 auto; min-width: 0; width: 100%; flex-direction: row; flex-wrap: wrap; max-height: none; overflow: visible; }
+  /* flex: 1 1 100% - always takes a full row of .left-rail's now-real width, so .tool-rail-icons below
+   * has a concrete width to wrap its buttons against instead of sizing to their un-wrapped total. */
+  .tool-rail { flex: 1 1 100%; min-width: 0; align-self: stretch; width: auto; }
+  .tool-rail-icons { flex-direction: row; flex-wrap: wrap; justify-content: flex-start; width: 100%; }
+  .tool-divider { width: 2px; height: 1.75rem; margin: 0 3px; }
+  /* Forced onto its own full-width row rather than sharing one with .tool-rail, so Undo/Redo can never
+   * end up squeezed past the visible edge regardless of how much horizontal space the icon column takes. */
+  .tool-actions { flex: 1 1 100%; margin-top: 4px; }
   .palette-panel { flex: 1 1 200px; }
   .palette { grid-template-columns: repeat(8, 1fr); }
   .side-panel { flex: 0 0 auto; min-width: 0; }

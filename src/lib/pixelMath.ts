@@ -212,8 +212,7 @@ export interface Hsv {
   v: number;
 }
 
-/** Moved here from ColorPicker.tsx so the Shade tool (see usePixelEditor.ts) can reuse the same
- *  hex<->HSV conversion instead of duplicating it. */
+/** Hex<->HSV conversion used by ColorPicker.tsx's own HSV color wheel/slider UI. */
 export function hsvToHex(h: number, s: number, v: number): string {
   const c = v * s;
   const x = c * (1 - Math.abs(((h / 60) % 2) - 1));

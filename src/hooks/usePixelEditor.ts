@@ -5,9 +5,7 @@ import {
   ditherColorAt,
   flipFrameH,
   flipFrameV,
-  hexToHsv,
   hexToRgb,
-  hsvToHex,
   inEllipseLocal,
   layersDiffRegion,
   normalizeBox,
@@ -73,25 +71,24 @@ export const MAX_BRUSH_SIZE = 20;
  *  `brushSize` to thicken their outline (see computeShapeCells), and curve thickens its own path the
  *  same way (see quadraticBezierCells/thickenPath) - gradient and the selection tools have no
  *  comparable "stroke width" concept, so they're deliberately left out. */
-export const BRUSH_SIZE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'spray', 'line', 'rect', 'ellipse', 'curve', 'shade', 'replace']);
+export const BRUSH_SIZE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'spray', 'line', 'rect', 'ellipse', 'curve']);
 const SPRAY_INTERVAL_MS = 55;
-/** HSV value (0-1) nudged per Shade-tool stroke step - see applyShadeAt. */
-const SHADE_STEP = 0.08;
 const TOOL_KEYS: Record<string, ToolName> = {
   b: 'pen', e: 'eraser', f: 'fill', i: 'eyedropper', l: 'line', u: 'curve', r: 'rect', c: 'ellipse',
-  a: 'spray', k: 'gradient', m: 'select', v: 'move', d: 'shade', w: 'replace',
+  a: 'spray', k: 'gradient', m: 'select', v: 'move',
 };
 /** Tools where a right-click has an alternate meaning (erase, or reversed gradient) instead of opening the browser context menu. */
-const ERASABLE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient', 'shade']);
+const ERASABLE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient']);
 /** Tools where holding Alt temporarily samples a color instead of the tool's normal action. */
-const ALT_PICK_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient', 'shade', 'replace']);
-/** Tools that create/edit a selection - rectangular marquee and freeform lasso are two ways to make
- *  the same kind of selection (see selectionMask/lassoPoints), so they share all of its chrome/rules. */
-const SELECTION_TOOLS = new Set<ToolName>(['select', 'lasso']);
+const ALT_PICK_TOOLS = new Set<ToolName>(['pen', 'eraser', 'line', 'curve', 'rect', 'ellipse', 'fill', 'spray', 'gradient']);
+/** Tools that create/edit a selection - rectangular marquee, freeform lasso, and Magic Wand's
+ *  color-matched region are three ways to make the same kind of selection (see
+ *  selectionMask/lassoPoints), so they share all of its chrome/rules. */
+const SELECTION_TOOLS = new Set<ToolName>(['select', 'lasso', 'magicWand']);
 /** SELECTION_TOOLS plus 'move' - the selection border (marching ants) and its move-cursor hint stay
  *  visible/active while the Move tool is selected too, not just while actively editing the selection
  *  shape, so switching to Move to drag a selection doesn't make it look like nothing is selected. */
-const SELECTION_AWARE_TOOLS = new Set<ToolName>(['select', 'lasso', 'move']);
+const SELECTION_AWARE_TOOLS = new Set<ToolName>(['select', 'lasso', 'magicWand', 'move']);
 
 export type HandleName = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e';
 /** Size (px) of a resize handle's square - exported for PixelSelectionOverlay.tsx, which draws the
@@ -177,8 +174,9 @@ class PixelEditorEngine {
   selection: SelectionBox | null = null;
   selectStart: Cell | null = null;
   selectionDraft: SelectionBox | null = null;
-  /** Freeform outline for a lasso-made selection (closed polygon, canvas cell coords) - null for a
-   *  plain rectangular marquee selection, where the whole `selection` box counts as selected. Kept in
+  /** Freeform outline for a lasso- or Magic-Wand-made selection (closed polygon, canvas cell coords,
+   *  possibly several disjoint loops bridged into one - see traceMaskOutline) - null for a plain
+   *  rectangular marquee selection, where the whole `selection` box counts as selected. Kept in
    *  sync with `selection`/`selectionMask` by every op that moves/shifts a selection. */
   lassoPoints: Cell[] | null = null;
   /** In-progress freeform path while dragging out a new lasso selection - promoted to `lassoPoints`
@@ -188,7 +186,8 @@ class PixelEditorEngine {
    *  (a rectangular marquee selection). Sparse (`"x,y"` keys) rather than a full width×height grid
    *  since a selection is typically a small fraction of a large canvas. Centralizes freeform-selection
    *  awareness in captureSelectionPixels/clearFrameRegion/startMoveGesture/nudgeSelection, so move,
-   *  resize, rotate, and copy all naturally respect a lasso's actual shape instead of its bounding box. */
+   *  resize, rotate, and copy all naturally respect a lasso's or Magic Wand's actual shape instead of
+   *  its bounding box. */
   selectionMask: Set<string> | null = null;
   resizeHandle: HandleName | null = null;
   resizeOrigin: SelectionBox | null = null;
@@ -225,9 +224,6 @@ class PixelEditorEngine {
   /** Shows the composited preview tiled 3x3 instead of once, to spot seams on a 'background'-type
    *  sprite meant to repeat (see tickPreview/PreviewPanel.tsx). */
   tiledPreview = false;
-  /** Sampled once at the start of a 'replace' tool stroke: only cells still exactly this color get
-   *  repainted as the stroke continues (see applyReplaceAt) - undefined the rest of the time. */
-  private replaceTarget: string | null | undefined = undefined;
   /** Per-tool brush size (pen/eraser/spray each remember their own - see brushSizeToolKey/BRUSH_SIZE_TOOLS),
    *  persisted so a size picked in one session survives a reload. */
   private brushSizes: Record<string, number> = {};
@@ -1438,6 +1434,8 @@ class PixelEditorEngine {
     if (this.lassoPoints) {
       this.lassoPoints = this.lassoPoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
       this.selectionMask = this.polygonMask(this.lassoPoints);
+    } else if (this.selectionMask) {
+      this.selectionMask = this.shiftMask(this.selectionMask, dx, dy);
     }
     this.moveBuffer = null;
     this.moveStartCell = null;
@@ -1481,7 +1479,6 @@ class PixelEditorEngine {
     this.eraseOverride = false;
     this.strokeSnapshot = null;
     this.strokePoints = [];
-    this.replaceTarget = undefined;
     if (this.curvePhase === 'drag-end' || this.curveDraggingControl) {
       this.curveStart = null;
       this.curveEnd = null;
@@ -1736,8 +1733,24 @@ class PixelEditorEngine {
     if (this.lassoPoints) {
       this.lassoPoints = this.lassoPoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
       this.selectionMask = this.polygonMask(this.lassoPoints);
+    } else if (this.selectionMask) {
+      this.selectionMask = this.shiftMask(this.selectionMask, dx, dy);
     }
     this.refresh();
+  }
+
+  /** Translates every cell of a sparse `"x,y"` selection mask by (dx, dy) - the precise, shape-agnostic
+   *  counterpart to shifting lassoPoints and re-deriving the mask via polygonMask, used by
+   *  nudgeSelection/commitMove when there's no lassoPoints outline to shift instead (a Magic Wand
+   *  selection whose mask couldn't be safely represented as one traced+bridged polygon - see
+   *  applyMagicWandAt's own doc comment). */
+  private shiftMask(mask: Set<string>, dx: number, dy: number): Set<string> {
+    const shifted = new Set<string>();
+    mask.forEach((key) => {
+      const [xs, ys] = key.split(',');
+      shifted.add(`${Number(xs) + dx},${Number(ys) + dy}`);
+    });
+    return shifted;
   }
 
   private buildResizePreview(source: (string | null)[][], origBox: SelectionBox, newBox: SelectionBox): MoveBufferCell[] {
@@ -1873,6 +1886,15 @@ class PixelEditorEngine {
         return { x: Math.round(cx + rx * cos - ry * sin), y: Math.round(cy + rx * sin + ry * cos) };
       });
       this.selectionMask = this.polygonMask(this.lassoPoints);
+    } else if (this.selectionMask) {
+      // No traced outline to rotate along with the pixels (a Magic Wand selection whose mask couldn't
+      // be safely represented as one polygon - see applyMagicWandAt's own doc comment): there's no
+      // shape description to resample at the new angle, only a discrete set of cells, and rotating a
+      // scattered cell set isn't well-defined the way rotating a traced silhouette is. Falling back to
+      // "the whole (now-rotated) bounding box is selected" is a plain, safe simplification - not as
+      // precise as before, but never leaves selectionMask silently pointing at stale, pre-rotation
+      // positions the way leaving it untouched here would.
+      this.selectionMask = null;
     }
     this.rotateOrigin = null;
     this.rotateSource = null;
@@ -2095,6 +2117,15 @@ class PixelEditorEngine {
       return;
     }
 
+    if (this.tool === 'magicWand') {
+      if (this.isInsideSelection(cell)) {
+        this.startMoveGesture(cell);
+        return;
+      }
+      this.applyMagicWandAt(cell, e.shiftKey);
+      return;
+    }
+
     if (this.tool === 'move') {
       this.startMoveGesture(cell);
       return;
@@ -2158,10 +2189,6 @@ class PixelEditorEngine {
     } else {
       this.lastPaintCell = null;
       this.beginStroke();
-      if (this.tool === 'replace') {
-        const { width } = this.current;
-        this.replaceTarget = this.activeCells()[cell.y * width + cell.x];
-      }
       this.paintCell(cell.x, cell.y);
     }
   }
@@ -2267,7 +2294,7 @@ class PixelEditorEngine {
     if (this.shapeStart) {
       const end = e.shiftKey ? this.constrainShapeEnd(this.shapeStart, cell) : cell;
       this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(this.shapeStart, end)));
-    } else if (this.tool === 'pen' || this.tool === 'eraser' || this.tool === 'shade' || this.tool === 'replace') {
+    } else if (this.tool === 'pen' || this.tool === 'eraser') {
       this.paintCell(cell.x, cell.y, true);
     }
   }
@@ -2397,7 +2424,6 @@ class PixelEditorEngine {
     this.strokeSnapshot = null;
     this.strokePoints = [];
     this.eraseOverride = false;
-    this.replaceTarget = undefined;
     this.reactNotify();
   }
 
@@ -2824,57 +2850,7 @@ class PixelEditorEngine {
     this.strokePoints.splice(n - 2, 1);
   }
 
-  /** Shade tool: nudges existing pixels' HSV value up (lighten) or down (darken) instead of replacing
-   *  their color outright - `darken` comes from eraseOverride (a right-click drag darkens). Transparent
-   *  cells are left alone; there's nothing to "shade" there. */
-  private applyShadeAt(x: number, y: number, darken: boolean): void {
-    const { width, height } = this.current;
-    const frame = this.activeCells();
-    const delta = darken ? -SHADE_STEP : SHADE_STEP;
-    this.brushCellsAt(x, y).forEach((cell) => {
-      this.mirrorCells(cell.x, cell.y).forEach((m) => {
-        if (m.x < 0 || m.y < 0 || m.x >= width || m.y >= height) return;
-        const idx = m.y * width + m.x;
-        const existing = frame[idx];
-        if (!existing) return;
-        const hsv = hexToHsv(existing);
-        frame[idx] = hsvToHex(hsv.h, hsv.s, Math.min(1, Math.max(0, hsv.v + delta)));
-      });
-    });
-  }
-
-  /** Replace Color tool: only repaints cells that still exactly match the color sampled at stroke start
-   *  (see replaceTarget/onPointerDown) - so dragging over the canvas recolors every pixel of that one
-   *  color it touches, leaving everything else untouched, like a targeted find-and-replace. Unlike
-   *  Shade, Replace has no right-click ("erase") behavior (see tool.replace.desc/ERASABLE_TOOLS) - it
-   *  always paints `this.color`. */
-  private applyReplaceAt(x: number, y: number): void {
-    if (this.replaceTarget === undefined) return;
-    const { width, height } = this.current;
-    const frame = this.activeCells();
-    const newColor = this.color;
-    const target = this.replaceTarget;
-    this.brushCellsAt(x, y).forEach((cell) => {
-      this.mirrorCells(cell.x, cell.y).forEach((m) => {
-        if (m.x < 0 || m.y < 0 || m.x >= width || m.y >= height) return;
-        const idx = m.y * width + m.x;
-        if (frame[idx] === target) frame[idx] = newColor;
-      });
-    });
-  }
-
   private strokeStep(x: number, y: number): void {
-    if (this.tool === 'shade') {
-      this.applyShadeAt(x, y, this.eraseOverride);
-      this.lastPaintCell = { x, y };
-      return;
-    }
-    if (this.tool === 'replace') {
-      this.applyReplaceAt(x, y);
-      this.lastPaintCell = { x, y };
-      if (this.color) this.addSavedColor(this.color);
-      return;
-    }
     const color = this.currentPaintColor();
     this.applyBrushAt(x, y, color);
     if (this.brushSize === 1) {
@@ -3146,6 +3122,200 @@ class PixelEditorEngine {
     for (let i = 0; i < reference.length; i++) {
       if (this.colorsMatch(reference[i], target, tolerance)) frame[i] = fillColor;
     }
+  }
+
+  /** Magic Wand's plain-click behavior: the same connected, tolerance-aware walk as floodFill above,
+   *  but collecting matching cells into a selection mask instead of repainting them - the selection
+   *  counterpart to floodFill the way this whole tool is the selection counterpart to Fill. Always
+   *  tracks `visited` (unlike floodFill, which only needs to for tolerance > 0): floodFill can skip it
+   *  at tolerance 0 because repainting a cell to `fillColor` makes it stop matching `target` on
+   *  re-visit, but this never mutates `frame`, so an unvisited already-selected cell would otherwise be
+   *  re-queued by every one of its neighbors. */
+  private floodSelectMask(frame: Frame, width: number, height: number, x: number, y: number, target: string | null, tolerance: number): Set<string> {
+    const mask = new Set<string>();
+    const visited = new Uint8Array(width * height);
+    const stack: number[] = [y * width + x];
+    visited[y * width + x] = 1;
+    while (stack.length) {
+      const idx = stack.pop()!;
+      if (!this.colorsMatch(frame[idx], target, tolerance)) continue;
+      mask.add(`${idx % width},${Math.floor(idx / width)}`);
+      const cx = idx % width;
+      const tryPush = (idx2: number) => {
+        if (!visited[idx2]) {
+          visited[idx2] = 1;
+          stack.push(idx2);
+        }
+      };
+      if (cx + 1 < width) tryPush(idx + 1);
+      if (cx - 1 >= 0) tryPush(idx - 1);
+      if (idx + width < width * height) tryPush(idx + width);
+      if (idx - width >= 0) tryPush(idx - width);
+    }
+    return mask;
+  }
+
+  /** Shift+click on Magic Wand: every pixel in the layer matching `target` (within tolerance), not
+   *  just the region floodSelectMask would reach from the clicked cell - mirrors globalReplace above,
+   *  the Fill tool's own Shift+click convention. */
+  private globalSelectMask(frame: Frame, width: number, target: string | null, tolerance: number): Set<string> {
+    const mask = new Set<string>();
+    for (let i = 0; i < frame.length; i++) {
+      if (this.colorsMatch(frame[i], target, tolerance)) mask.add(`${i % width},${Math.floor(i / width)}`);
+    }
+    return mask;
+  }
+
+  /** Bounding box of a sparse `"x,y"` cell mask (see selectionMask) - the Magic Wand's counterpart to
+   *  boundingBoxOfPoints, used the same way: as the settled selection's `selection` box. */
+  private boundingBoxOfMask(mask: Set<string>): SelectionBox {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    mask.forEach((key) => {
+      const [xs, ys] = key.split(',');
+      const x = Number(xs);
+      const y = Number(ys);
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    });
+    return { x0, y0, x1, y1 };
+  }
+
+  /**
+   * Every unit boundary edge of a cell mask, in grid-line coordinates (0..width/height - the corner
+   * where cell (x,y)'s own corners sit, not a cell index) rather than cell coordinates: polygonMask
+   * decides whether cell (x,y) is selected by checking whether its *center* (x+0.5, y+0.5) falls
+   * inside the traced polygon, so a polygon built from cell coordinates directly (as if the boundary
+   * cells themselves were the vertices) ends up exactly one cell short on the far/bottom side of
+   * whatever it encloses - confirmed by tracing a plain 2x2 block that way and finding polygonMask
+   * reconstructs only 1 of the 4 cells. Emitting the actual grid-line corner each boundary side sits
+   * on (one cell over from the boundary cell itself, on the appropriate side) is what makes
+   * polygonMask reconstruct the exact original mask - verified the same way, this time getting all 4
+   * cells back. The trade is a half-cell rendering inset in selectionLassoOutline (points are grid
+   * corners, but rendering still adds +0.5 assuming a cell-index point, same as it does for a
+   * hand-drawn lasso's own points) - cosmetic, and worth it for a Magic Wand selection actually
+   * surviving a move/rotate/nudge with the exact pixels it started with.
+   */
+  private maskBoundaryEdges(mask: Set<string>): { from: Cell; to: Cell }[] {
+    const edges: { from: Cell; to: Cell }[] = [];
+    mask.forEach((key) => {
+      const [xs, ys] = key.split(',');
+      const x = Number(xs);
+      const y = Number(ys);
+      if (!mask.has(`${x},${y - 1}`)) edges.push({ from: { x, y }, to: { x: x + 1, y } });
+      if (!mask.has(`${x + 1},${y}`)) edges.push({ from: { x: x + 1, y }, to: { x: x + 1, y: y + 1 } });
+      if (!mask.has(`${x},${y + 1}`)) edges.push({ from: { x: x + 1, y: y + 1 }, to: { x, y: y + 1 } });
+      if (!mask.has(`${x - 1},${y}`)) edges.push({ from: { x, y: y + 1 }, to: { x, y } });
+    });
+    return edges;
+  }
+
+  /**
+   * Chains maskBoundaryEdges' unordered edge soup into closed loops by following each edge's `to`
+   * point to the next edge that starts there. Every vertex on a raster mask's boundary has exactly one
+   * outgoing and one incoming edge by construction (each grid-line segment is the border of exactly
+   * one boundary cell on the selected side), so this always resolves into whole simple closed loops
+   * with nothing left over: one per outer silhouette, and - for free, needing no special-casing - one
+   * per interior hole, automatically wound the opposite way round (an unselected cell's neighbors emit
+   * their shared edges in the mirror-image direction of an outer boundary), which is exactly what lets
+   * an even-odd fill (see polygonMask) or the default nonzero SVG fill rule render/reconstruct a hole
+   * as a hole rather than filled-in.
+   */
+  private chainBoundaryEdges(edges: { from: Cell; to: Cell }[]): Cell[][] {
+    const byStart = new Map<string, { from: Cell; to: Cell }[]>();
+    edges.forEach((e) => {
+      const key = `${e.from.x},${e.from.y}`;
+      const list = byStart.get(key);
+      if (list) list.push(e);
+      else byStart.set(key, [e]);
+    });
+    const used = new Set<{ from: Cell; to: Cell }>();
+    const loops: Cell[][] = [];
+    edges.forEach((start) => {
+      if (used.has(start)) return;
+      const loop: Cell[] = [];
+      let current = start;
+      while (!used.has(current)) {
+        used.add(current);
+        loop.push(current.from);
+        const candidates = byStart.get(`${current.to.x},${current.to.y}`) ?? [];
+        const next = candidates.find((e) => !used.has(e));
+        if (!next) break;
+        current = next;
+      }
+      loops.push(loop);
+    });
+    return loops;
+  }
+
+  /**
+   * Combines every boundary loop (see chainBoundaryEdges - an outer silhouette plus any holes, or
+   * several disjoint loops for a global Shift+click match spanning multiple blobs) into the single
+   * closed point list lassoPoints expects. A single loop is used as-is; two or more are stitched into
+   * one path via "keyhole" bridges radiating from the first loop's own start point (the "hub"): each
+   * other loop is spliced in as its own closed lap, entered and exited through the exact same hub
+   * point (bridging every extra loop through one shared hub, rather than threading loop 1 -> 2 -> 3 ->
+   * ... -> back to 1, is what makes this generalize to any number of loops instead of just two).
+   *
+   * In principle a bridge edge, walked once out and once back, contributes either zero or two
+   * scanline crossings at any given y in polygonMask's even-odd count, which cancels out and renders
+   * as an invisible zero-width seam - and that holds up whenever the bridge only ever passes through
+   * rows where the real geometry it's bridging also has crossings of its own (true for a hole, always
+   * inside its own outer loop's row span). It does NOT reliably hold for two loops separated by rows
+   * neither one touches (a global Shift+click match spanning genuinely disjoint blobs): the bridge's
+   * pair of identical, coincident crossings on an otherwise-empty row can misround into a spurious
+   * 1-cell-wide sliver (confirmed by reconstructing a two-disjoint-2x2-blocks case this way and getting
+   * 11 cells back instead of 8). applyMagicWandAt verifies the round trip and discards this outline
+   * rather than risk that, so this function itself doesn't need to tell the safe and unsafe cases apart.
+   */
+  private traceMaskOutline(mask: Set<string>): Cell[] {
+    const loops = this.chainBoundaryEdges(this.maskBoundaryEdges(mask)).filter((loop) => loop.length > 0);
+    if (loops.length <= 1) return loops[0] ?? [];
+    const hub = loops[0][0];
+    const path: Cell[] = [...loops[0], hub];
+    for (let i = 1; i < loops.length; i++) path.push(...loops[i], loops[i][0], hub);
+    return path;
+  }
+
+  private masksEqual(a: Set<string>, b: Set<string>): boolean {
+    if (a.size !== b.size) return false;
+    for (const key of a) if (!b.has(key)) return false;
+    return true;
+  }
+
+  /** Magic Wand: click to select the region of pixels matching the clicked cell's color - the
+   *  selection equivalent of what the Fill tool does for painting, reusing the exact same
+   *  tolerance/matching rules (see colorsMatch/floodSelectMask/globalSelectMask). Shift+click selects
+   *  every matching pixel in the layer (global) rather than just the contiguous blob touching the
+   *  clicked cell, mirroring the Fill tool's own Shift+click convention exactly. Populates
+   *  selection/selectionMask/lassoPoints the same way settling a Lasso selection does (see
+   *  onPointerUp's 'lasso' branch) so the rest of the selection machinery - the overlay, move/rotate,
+   *  copy/cut, Delete-to-clear - treats it identically.
+   *
+   *  lassoPoints is only kept when polygonMask(traceMaskOutline(mask)) round-trips back to the exact
+   *  same mask (see traceMaskOutline's own doc comment for the one case it can't) - otherwise it's left
+   *  null, which still shows/acts as a correct (if plain, bounding-box-only) selection outline; only
+   *  the lasso-style traced shape is sacrificed, never mask accuracy for the immediate selection
+   *  itself, which is set directly from `mask` either way. */
+  private applyMagicWandAt(cell: Cell, global: boolean): void {
+    const frame = this.activeCells();
+    const { width, height } = this.current;
+    const target = frame[cell.y * width + cell.x];
+    const mask = global
+      ? this.globalSelectMask(frame, width, target, this.fillTolerance)
+      : this.floodSelectMask(frame, width, height, cell.x, cell.y, target, this.fillTolerance);
+    if (mask.size === 0) {
+      this.selection = null;
+      this.lassoPoints = null;
+      this.selectionMask = null;
+    } else {
+      this.selection = this.boundingBoxOfMask(mask);
+      this.selectionMask = mask;
+      const outline = this.traceMaskOutline(mask);
+      this.lassoPoints = outline.length > 0 && this.masksEqual(this.polygonMask(outline), mask) ? outline : null;
+    }
+    this.reactNotify();
   }
 
   // --- rendering ---

@@ -294,7 +294,7 @@ export function CanvasStatusBar({ engine, type }: { engine: PixelEditorEngine; t
         </SelectContent>
       </Select>
 
-      {engine.tool === 'fill' && (
+      {(engine.tool === 'fill' || engine.tool === 'magicWand') && (
         <div className="mini-toggle brush-size-control" title={t('status.fillToleranceTitle')}>
           <Label htmlFor="fill-tolerance-range">{t('status.fillTolerance')}</Label>
           <input
