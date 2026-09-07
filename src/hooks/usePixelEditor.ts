@@ -9,7 +9,6 @@ import {
   hexToRgb,
   inEllipseLocal,
   layersDiffRegion,
-  normalizeBox,
   paintLayers,
   rgbToHex,
   rotateFrame,
@@ -23,6 +22,9 @@ import { createPenTool } from '@/lib/tools/tools/penTool';
 import { createShapeTool } from '@/lib/tools/tools/shapeTool';
 import { createMagicWandTool, resolveWandCombine } from '@/lib/tools/tools/magicWandTool';
 import { createMoveTool } from '@/lib/tools/tools/moveTool';
+import { createSelectTool } from '@/lib/tools/tools/selectTool';
+import { createLassoTool } from '@/lib/tools/tools/lassoTool';
+import { resolveMarqueeMode } from '@/lib/tools/selectionMask';
 import type { Gesture, GestureResult, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '@/lib/tools/types';
 import type {
   CanvasBackground,
@@ -142,7 +144,13 @@ const TOOL_REGISTRY: Partial<Record<ToolName, Tool>> = {
   ellipse: createShapeTool('ellipse'),
   magicWand: createMagicWandTool(),
   move: createMoveTool(),
+  select: createSelectTool(),
+  lasso: createLassoTool(),
 };
+/** Tools whose gestures never touch a pixel - adjusting a selection isn't an edit, so
+ *  `beginToolGesture` skips `pushGestureUndo()` for these entirely (matches `applyMagicWandAt`'s own
+ *  doc comment, which the same reasoning always applied to Select/Lasso's marquee/lasso drags too). */
+const NO_UNDO_TOOLS = new Set<ToolName>(['magicWand', 'select', 'lasso']);
 
 export type HandleName = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e';
 /** Size (px) of a resize handle's square - exported for PixelSelectionOverlay.tsx, which draws the
@@ -263,7 +271,6 @@ class PixelEditorEngine {
   rotateAngle = 0;
   rotatePreview: MoveBufferCell[] | null = null;
   moveBuffer: { cells: MoveBufferCell[] } | null = null;
-  moveStartCell: Cell | null = null;
   moveDelta = { dx: 0, dy: 0 };
   clipboard: { w: number; h: number; rows: (string | null)[][] } | null = null;
   symmetry: SymmetryMode = 'none';
@@ -285,10 +292,6 @@ class PixelEditorEngine {
    *  building a multi-part selection doesn't mean holding a modifier for every one of a dozen clicks;
    *  Shift (add) and Alt (subtract) still override it for a single click or drag. */
   selectionMode: SelectionMode = 'new';
-  /** Resolved once at gesture start (sticky mode + whatever modifiers were held then) and used again on
-   *  release - reading the live modifier state at release instead would flip the mode mid-drag if the
-   *  user let go of Shift before the mouse button. */
-  private draftSelectionMode: SelectionMode = 'new';
   /** Spray: dots laid down per tick, as a multiple of the default (which scales with brush size - see
    *  sprayTick). Under 1 it stipples slowly enough to build up an edge; over 1 it fills fast. */
   sprayDensity = 1;
@@ -1746,7 +1749,6 @@ class PixelEditorEngine {
       this.selectionMask = this.shiftMask(this.selectionMask, dx, dy);
     }
     this.moveBuffer = null;
-    this.moveStartCell = null;
     this.moveDelta = { dx: 0, dy: 0 };
     this.gestureBaseBitmap = null;
     this.refresh();
@@ -1777,7 +1779,6 @@ class PixelEditorEngine {
     if (this.rotateOrigin) this.commitRotate();
     this.painting = false;
     this.gestureButtons = 0;
-    this.draftSelectionMode = 'new';
     this.lastPaintCell = null;
     this.shapeStart = null;
     // redrawShapePreview(null), not a bare field assignment - an interrupted shape/curve drag can
@@ -1790,7 +1791,6 @@ class PixelEditorEngine {
     this.selectionDraft = null;
     this.lassoDraftPoints = null;
     this.moveBuffer = null;
-    this.moveStartCell = null;
     this.moveDelta = { dx: 0, dy: 0 };
     this.resizeHandle = null;
     this.resizeOrigin = null;
@@ -1948,32 +1948,6 @@ class PixelEditorEngine {
   private paintAllowed(x: number, y: number): boolean {
     if (!this.selection) return true;
     return this.isInsideSelection({ x, y });
-  }
-
-  /** `copy` leaves the source pixels where they are instead of lifting them, so the drag deposits a
-   *  duplicate - Photoshop's Ctrl/Cmd+drag on a selection. Everything downstream (the float buffer, the
-   *  live preview, the commit) is identical either way; the only difference is whether the source
-   *  region is cleared here. */
-  private startMoveGesture(cell: Cell, copy = false): void {
-    this.pushGestureUndo();
-    this.painting = true;
-    const { width, height } = this.current;
-    const frame = this.activeCells();
-    const box = this.selection || { x0: 0, y0: 0, x1: width - 1, y1: height - 1 };
-    const cells: MoveBufferCell[] = [];
-    for (let y = box.y0; y <= box.y1; y++) {
-      for (let x = box.x0; x <= box.x1; x++) {
-        if (this.selectionMask && !this.selectionMask.has(`${x},${y}`)) continue;
-        const c = frame[y * width + x];
-        if (c) cells.push({ x, y, color: c });
-        if (!copy) frame[y * width + x] = null;
-      }
-    }
-    this.moveBuffer = { cells };
-    this.moveStartCell = cell;
-    this.moveDelta = { dx: 0, dy: 0 };
-    this.cacheGestureBaseBitmap();
-    this.refresh();
   }
 
   /** Snapshots everything except the moving layer's cleared-out source region onto gestureBaseBitmap,
@@ -2547,15 +2521,14 @@ class PixelEditorEngine {
     return { cell, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey || e.metaKey, button: e.button, chainFrom };
   }
 
-  /** Starts a migrated tool's gesture: pushes the undo snapshot (skipped for Magic Wand, which - like
-   *  the original `applyMagicWandAt` - never touches a pixel, see resolveWandCombine's own doc comment
-   *  and `rollbackGestureUndo`'s "returns null when the gesture never pushed one" case for why that's
-   *  safe to just skip rather than push-then-always-rollback), then immediately replays the same event
-   *  through `onPointerMove` once - every migrated tool's original behavior painted/previewed
-   *  immediately on mousedown (see e.g. `redrawShapePreview` at the top of the old line/rect/ellipse
-   *  branch), not just starting from the first pointermove. */
+  /** Starts a migrated tool's gesture: pushes the undo snapshot (skipped for NO_UNDO_TOOLS, which never
+   *  touch a pixel - see `rollbackGestureUndo`'s "returns null when the gesture never pushed one" case
+   *  for why that's safe to just skip rather than push-then-always-rollback), then immediately replays
+   *  the same event through `onPointerMove` once - every migrated tool's original behavior painted/
+   *  previewed immediately on mousedown (see e.g. `redrawShapePreview` at the top of the old line/rect/
+   *  ellipse branch), not just starting from the first pointermove. */
   private beginToolGesture(tool: Tool, tpe: ToolPointerEvent): void {
-    if (tool.name !== 'magicWand') this.pushGestureUndo();
+    if (!NO_UNDO_TOOLS.has(tool.name)) this.pushGestureUndo();
     this.painting = true;
     const ctx = this.buildToolContext();
     const gesture = tool.beginGesture(tpe, ctx);
@@ -2581,6 +2554,21 @@ class PixelEditorEngine {
       preview.ops.forEach((op) => {
         if (op.x >= 0 && op.y >= 0 && op.x < width && op.y < height) frame[op.y * width + op.x] = op.color;
       });
+    }
+    if (preview.selectionDraft !== undefined) {
+      // Select's live marquee - pure metadata (PixelSelectionOverlay.tsx reads `selectionDraft`
+      // directly), never touches the canvas bitmap, so only a React re-render is needed - matches the
+      // original's own `reactNotify(), not refresh()` reasoning (usePixelEditor.ts:2891-2895 pre-
+      // migration).
+      this.selectionDraft = preview.selectionDraft;
+      this.reactNotify();
+      return;
+    }
+    if (preview.lassoDraftPoints !== undefined) {
+      // Lasso's live freeform path - same reasoning as selectionDraft above.
+      this.lassoDraftPoints = preview.lassoDraftPoints;
+      this.reactNotify();
+      return;
     }
     if (preview.movePreview) {
       this.moveBuffer = { cells: preview.movePreview.cells.map((c) => ({ x: c.x, y: c.y, color: c.color })) };
@@ -2626,10 +2614,11 @@ class PixelEditorEngine {
     }
     const hadColor = result.ops.some((op) => op.color !== null);
     this.moveBuffer = null;
-    this.moveStartCell = null;
     this.moveDelta = { dx: 0, dy: 0 };
     this.gestureBaseBitmap = null;
     this.lastGesturePreviewRects = null;
+    this.selectionDraft = null;
+    this.lassoDraftPoints = null;
     this.lastPaintCell = null;
     this.strokeSnapshot = null;
     this.strokePoints = [];
@@ -2701,39 +2690,23 @@ class PixelEditorEngine {
       this.beginToolGesture(TOOL_REGISTRY.magicWand!, tpe);
       return;
     }
+    // Select/Lasso share one routing rule (different from Magic Wand's above): only a click that
+    // resolves to 'new' AND lands inside the existing selection starts a Move - 'add'/'subtract'
+    // always start a fresh marquee/lasso drag instead, even from inside the selection (see
+    // resolveMarqueeMode's own doc comment and the original usePixelEditor.ts:2710-2738 this ports).
+    if (this.tool === 'select' || this.tool === 'lasso') {
+      const tpe = this.toolPointerEvent(e);
+      const mode = resolveMarqueeMode(tpe, this.selectionMode);
+      if (mode === 'new' && this.isInsideSelection(cell)) {
+        this.beginToolGesture(TOOL_REGISTRY.move!, tpe);
+        return;
+      }
+      this.beginToolGesture(TOOL_REGISTRY[this.tool]!, tpe);
+      return;
+    }
     const registryTool = TOOL_REGISTRY[this.tool];
     if (registryTool) {
       this.beginToolGesture(registryTool, this.toolPointerEvent(e));
-      return;
-    }
-
-    if (this.tool === 'select') {
-      // Shift = add, Alt = subtract, for this one drag (the Photoshop marquee modifiers) - neither key
-      // means anything else on this tool, so there is nothing to collide with. Without a modifier the
-      // sticky mode from the options bar decides.
-      this.draftSelectionMode = e.altKey ? 'subtract' : e.shiftKey ? 'add' : this.selectionMode;
-      if (this.draftSelectionMode === 'new' && this.isInsideSelection(cell)) {
-        this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
-        return;
-      }
-      this.painting = true;
-      this.selectStart = cell;
-      this.selectionDraft = { x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y };
-      // reactNotify(), not refresh() - a marquee-in-progress is pure metadata (see onPointerMove's
-      // same substitution for the reasoning); starting one doesn't touch a single pixel either.
-      this.reactNotify();
-      return;
-    }
-
-    if (this.tool === 'lasso') {
-      this.draftSelectionMode = e.altKey ? 'subtract' : e.shiftKey ? 'add' : this.selectionMode;
-      if (this.draftSelectionMode === 'new' && this.isInsideSelection(cell)) {
-        this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
-        return;
-      }
-      this.painting = true;
-      this.lassoDraftPoints = [cell];
-      this.reactNotify();
       return;
     }
 
@@ -2877,43 +2850,7 @@ class PixelEditorEngine {
       return;
     }
 
-    if (this.moveBuffer) {
-      if (!this.moveStartCell) return;
-      // Unclamped - lets the selection be dragged fully outside the canvas, Paint-style, instead
-      // of freezing in place the moment the pointer crosses the canvas edge.
-      const uc = this.cellFromEventUnclamped(e);
-      this.moveDelta = { dx: uc.x - this.moveStartCell.x, dy: uc.y - this.moveStartCell.y };
-      // refresh(), not drawGrid() - the DOM rotate handle (PixelSelectionOverlay.tsx) reads
-      // selectionRotateHandle(), which now tracks this move via moveDelta, but only on a React
-      // re-render (reactNotify()); without it the handle would freeze at its pre-drag position for
-      // the whole move gesture, same bug as the rotate-drag case this mirrors.
-      this.refresh();
-      return;
-    }
-
     const cell = this.cellFromEvent(e);
-
-    if (this.tool === 'select') {
-      if (!cell || !this.selectStart) return;
-      this.selectionDraft = normalizeBox(this.selectStart, cell);
-      // reactNotify(), not refresh() - the marquee border is a DOM element now (PixelSelectionOverlay.tsx
-      // reads selectionDraft directly), so this only needs a React re-render to track the drag live, same
-      // as the settled-selection border/handles already do - dragging out a marquee never touches a pixel,
-      // so the full clear+repaint refresh() would otherwise do here is pure waste, and on a large canvas
-      // (e.g. a 1400x900 background) was the same kind of per-move stutter as an unbounded shape preview.
-      this.reactNotify();
-      return;
-    }
-
-    if (this.tool === 'lasso') {
-      if (!cell || !this.lassoDraftPoints) return;
-      const last = this.lassoDraftPoints[this.lassoDraftPoints.length - 1];
-      if (!last || last.x !== cell.x || last.y !== cell.y) this.lassoDraftPoints.push(cell);
-      // reactNotify(), not refresh() - the in-progress path is a DOM <polyline> (PixelSelectionOverlay.tsx
-      // reads lassoDraftOutline directly), same reasoning as the marquee draft above.
-      this.reactNotify();
-      return;
-    }
 
     if (this.tool === 'curve') {
       if (!cell) return;
@@ -2998,11 +2935,6 @@ class PixelEditorEngine {
       return;
     }
 
-    if (this.moveBuffer) {
-      this.commitMove();
-      return;
-    }
-
     if (this.tool === 'curve') {
       if (this.curvePhase === 'drag-end') {
         if (this.curveStart && this.curveEnd && (this.curveStart.x !== this.curveEnd.x || this.curveStart.y !== this.curveEnd.y)) {
@@ -3025,53 +2957,6 @@ class PixelEditorEngine {
       return;
     }
 
-    if (this.tool === 'select') {
-      const d = this.selectionDraft;
-      const dragged = d != null && (d.x0 !== d.x1 || d.y0 !== d.y1);
-      if (this.draftSelectionMode !== 'new') {
-        // add/subtract turn the marquee into a mask and merge it, so a rectangular drag can extend or
-        // carve out a lasso/wand selection just as well as one of its own.
-        if (dragged && d) this.applySelectionMask(this.rectMask(d), this.draftSelectionMode);
-      } else {
-        this.selection = dragged ? d : null;
-        this.lassoPoints = null;
-        this.selectionMask = null;
-      }
-      this.draftSelectionMode = 'new';
-      this.selectStart = null;
-      this.selectionDraft = null;
-      // reactNotify(), not refresh() - settling a selection is still pure metadata (see
-      // onPointerMove's marquee-drag substitution above); the settled border/handles it now switches
-      // to are DOM too (PixelSelectionOverlay.tsx's `box`, from selectionOverlayBox()).
-      this.reactNotify();
-      return;
-    }
-
-    if (this.tool === 'lasso') {
-      const pts = this.lassoDraftPoints;
-      this.lassoDraftPoints = null;
-      const mask = pts && pts.length >= 3 ? this.polygonMask(pts) : null;
-      if (this.draftSelectionMode !== 'new') {
-        // A too-short path (a click rather than a drag) merges nothing and, unlike the 'new' case
-        // below, must not clear what is already selected - a click means "clear" only when it is
-        // replacing the selection.
-        if (mask && mask.size > 0) this.applySelectionMask(mask, this.draftSelectionMode);
-      } else if (mask && mask.size > 0) {
-        // The settled outline is traced from the mask rather than being the raw hand-drawn path: that
-        // path runs through cell centers and cuts across the very pixels it selected, so drawing it
-        // put the border half a pixel off whichever pixels ended up inside. Tracing the mask lands the
-        // border exactly on their edges - and it is the same outline the Magic Wand produces, so both
-        // tools describe a settled selection the same way.
-        this.applySelectionMask(mask, 'new');
-      } else {
-        this.selection = null;
-        this.lassoPoints = null;
-        this.selectionMask = null;
-      }
-      this.draftSelectionMode = 'new';
-      this.reactNotify();
-      return;
-    }
 
     if (this.tool === 'gradient') {
       // The exact per-cell color array (gradientCellsPreview) is only computed here, once, on commit -
@@ -4049,17 +3934,6 @@ class PixelEditorEngine {
     this.selectionMask = mask;
     const outline = this.traceMaskOutline(mask);
     this.lassoPoints = outline.length > 0 && this.masksEqual(this.polygonMask(outline), mask) ? outline : null;
-  }
-
-  /** Every cell of a rectangular marquee as a mask, so an add/subtract marquee drag can go through the
-   *  same merge path as a lasso or wand selection (see applySelectionMask). A plain 'new' marquee stays
-   *  a mask-less rectangle - that is the cheap, common case and nothing about it needs per-cell keys. */
-  private rectMask(box: SelectionBox): Set<string> {
-    const mask = new Set<string>();
-    for (let y = box.y0; y <= box.y1; y++) {
-      for (let x = box.x0; x <= box.x1; x++) mask.add(`${x},${y}`);
-    }
-    return mask;
   }
 
   // --- rendering ---

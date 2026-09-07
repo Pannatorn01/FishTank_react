@@ -106,6 +106,14 @@ export interface ToolPreview {
    *  own doc comment at :3459 explaining why it deliberately isn't dirty-rect-scoped) keeps rendering
    *  it, instead of this new architecture reinventing that optimization. */
   movePreview?: { cells: { x: number; y: number; color: string }[]; dx: number; dy: number };
+  /** Select only: live marquee box while dragging - metadata mirrored straight into the engine's own
+   *  `selectionDraft` field for `PixelSelectionOverlay.tsx` to read (a DOM-drawn dashed rect, not
+   *  canvas). `null` while a drag is active but produces no box yet is distinct from "not this tool" -
+   *  use `undefined` for the latter (see applyToolPreview's own doc comment on how these are told
+   *  apart). Never touches the canvas bitmap - a marquee drag doesn't paint anything. */
+  selectionDraft?: SelectionBox | null;
+  /** Lasso only: live freeform path while dragging - mirrored into `lassoDraftPoints` the same way. */
+  lassoDraftPoints?: Cell[] | null;
 }
 
 export interface Gesture {
