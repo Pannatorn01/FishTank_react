@@ -49,7 +49,7 @@ export function PixelEditorPanel({
   layoutApi: EditorLayoutApi;
 }) {
   const { t } = useLanguage();
-  const { layout, movePanel, setZoneSize, setPanelHeight } = layoutApi;
+  const { layout, movePanel, setZoneSize, setPanelHeight, setColumnWidth } = layoutApi;
   /** Which panel is mid-drag, so every dock can offer itself as a drop target while one is moving. */
   const [dragging, setDragging] = useState<DockPanelId | null>(null);
 
@@ -105,6 +105,7 @@ export function PixelEditorPanel({
       zone={zone}
       size={layout.sizes[zone]}
       columns={layout.zones[zone]}
+      columnWidths={layout.columnWidths}
       dragging={dragging}
       onDropPanel={(panel, target, dropTarget) => {
         movePanel(panel, target, dropTarget);
@@ -112,9 +113,11 @@ export function PixelEditorPanel({
       }}
       onResize={(px) => setZoneSize(zone, px)}
       onPanelResize={setPanelHeight}
+      onColumnResize={setColumnWidth}
       renderPanel={renderPanel}
       resizeLabel={t('dock.resize')}
       panelResizeLabel={t('dock.resizePanel')}
+      columnResizeLabel={t('dock.resizeColumn')}
       newColumnLabel={t('dock.newColumn')}
       emptyHint={t('dock.dropHere')}
     />

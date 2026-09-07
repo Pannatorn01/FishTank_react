@@ -579,7 +579,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
  * it and no way to scroll to the rest. */
 /* The gap is what separates the docks from the canvas now that no bar does - wide enough to read as
  * space between two boxes, and wide enough to hold the invisible resize edge (see .dock-resize-edge). */
-.editor-shell { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; overflow-y: auto; }
+.editor-shell { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 0; overflow: auto; }
 /* Paired with the above: the canvas area keeps a usable height instead of being squeezed to nothing to
  * make everything fit, and whatever no longer fits goes below the fold where it can be scrolled to. */
 .editor-main { display: flex; align-items: stretch; gap: 8px; flex: 1 1 auto; min-height: 85vh; }
@@ -592,8 +592,44 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 /* A dock holds one or more columns side by side (see useEditorLayout's DockColumns): one column is the
  * familiar single strip, two turn a wide dock into two readable stacks instead of one long scroll.
  * Each column scrolls on its own, so a long layer list doesn't push the column beside it around. */
-.dock-zone-columns { display: flex; flex-direction: row; gap: 5px; flex: 1 1 auto; min-width: 0; min-height: 0; }
-.dock-column { display: flex; flex-direction: column; gap: 5px; flex: 1 1 0; min-width: 0; min-height: 0; overflow: auto; }
+.dock-zone-columns { display: flex; flex-direction: row; gap: 5px; flex: 1 1 auto; min-width: 0; min-height: 0; overflow-x: auto; }
+/* min-width, not 0: a column narrower than this can't lay its panel contents out at all - the controls
+ * inside stop fitting and every panel grows its own scrollbar. Adding a column widens the whole dock
+ * instead (see movePanel in useEditorLayout), so a second column arrives at full width rather than
+ * halving the first one; the horizontal scroll below is only reached if the dock is then dragged
+ * narrower by hand. */
+/* No fixed minimum any more: a column is as wide as the panels in it need (their own min-widths below),
+ * and shares the dock's leftover width from there. Forcing every column to the same 9.25rem is what made
+ * six of them overflow a dock and put a scrollbar under the whole thing. */
+/* The explicit min-width is needed *because* of overflow-x: hidden - hiding overflow makes a flex item's
+ * automatic minimum size 0, so without this a column would happily shrink a few px below the panel
+ * inside it and grow the scrollbar this was all meant to avoid. Narrow columns opt out below. */
+.dock-column { display: flex; flex-direction: column; gap: 5px; flex: 1 1 auto; min-width: 7.75rem; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+/* A column of nothing but icon-button panels (Tools, Transform) is laid out one button wide and takes no
+ * share of the leftover space - the buttons are the same size either way, so the extra width was only
+ * ever empty card. */
+/* data-narrow is sizing only: where such a column starts, and - via min-width: 0 - how far back down its
+ * divider is allowed to squeeze it. The compact *look* is a separate attribute below, because the two
+ * answer different questions: what's in this column, versus how wide is it right now. */
+.dock-column[data-narrow] { flex: 0 0 auto; width: 3.6rem; min-width: 0; }
+/* Applied by actual width (see COMPACT_COLUMN_REM in EditorDock.tsx), so widening a column brings its
+ * titles back and narrowing any column takes them away - rather than one kind of column being stuck
+ * looking like a strip no matter how much room it's given. */
+.dock-column[data-compact] .dock-panel-header { justify-content: center; gap: 2px; padding: 4px 2px; }
+.dock-column[data-compact] .dock-panel-title { display: none; }
+.dock-column[data-compact] .dock-panel-body { padding: 4px 3px; }
+/* Anything with a text label beside a control (Transform's "all frames") stacks and wraps at this
+ * width instead of holding the card open to the label's full length - the label is what would otherwise
+ * push a one-button-wide column back into a horizontal scrollbar. */
+.dock-column[data-compact] .mini-toggle { flex-wrap: wrap; justify-content: center; gap: 2px; }
+.dock-column[data-compact] .mini-toggle label {
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
+  font-size: 0.56rem;
+  line-height: 1.15;
+}
+.dock-column[data-compact] .transform-buttons { grid-template-columns: 1fr; }
 .editor-shell[data-dock-dragging] .dock-column[data-drop-active] {
   outline: 2px solid var(--pixel-accent);
   outline-offset: -2px;
@@ -603,6 +639,10 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
  * resize edge. */
 .dock-panel-divider { flex: 0 0 6px; margin: -1px 0; background: transparent; cursor: row-resize; }
 .dock-panel-divider:hover, .dock-panel-divider:focus-visible { background: var(--pixel-accent); outline: none; }
+/* The same grab area as .dock-panel-divider, turned sideways: sits in the gap between two side-by-side
+   columns (see ColumnDivider in EditorDock.tsx) and sets the width of the column to its left. */
+.dock-column-divider { flex: 0 0 6px; align-self: stretch; margin: 0 -1px; background: transparent; cursor: col-resize; }
+.dock-column-divider:hover, .dock-column-divider:focus-visible { background: var(--pixel-accent); outline: none; }
 /* Drop here to open a new column at this position. Only rendered during a drag (see NewColumnStrip). */
 .dock-new-column {
   display: flex;
@@ -621,6 +661,11 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 /* flex: 0 0 auto - the bottom dock keeps the height it was given instead of being shrunk by a tight
  * shell. Letting it shrink is what left the library as a bare header: the panel was still "there",
  * just squeezed to nothing. */
+/* flex: 0 0 auto everywhere - a dock keeps the width (or height) it was given instead of being squeezed
+ * by a tight row. Letting the side docks shrink meant their columns were pushed a few px below their own
+ * minimum, and those few px are exactly what put a scrollbar back under a column. The canvas column is
+ * the one that gives up space, which is what it has a min-width of its own for. */
+.dock-zone[data-zone="left"], .dock-zone[data-zone="right"] { flex: 0 0 auto; }
 .dock-zone[data-zone="bottom"] { flex: 0 0 auto; }
 
 /* A dock everything has been dragged out of collapses to a thin strip - still a place, so a panel can
@@ -648,21 +693,22 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   color: var(--pixel-muted);
 }
 
+/* min-width per panel rather than per column: it's the contents that decide how narrow a card can get,
+ * and the column takes its own minimum from whatever it holds. */
 .dock-panel {
   display: flex;
   flex-direction: column;
-  flex: 0 0 auto;
-  min-height: 0;
-  min-width: 0;
+  flex: 1 0 auto;
+  /* min-height: 0; */
+  min-width: 7.75rem;
   background: var(--pixel-panel);
   border: 2px solid var(--bevel-dark);
   box-shadow: 4px 4px 0 var(--bevel-dark);
 }
-/* The three that earn the leftover space: a longer layer list, more palette swatches, more of the
- * library visible at once. The rest are content-sized, so folding one open never squeezes these flat. */
-.dock-panel[data-panel-id="layers"],
-.dock-panel[data-panel-id="palette"],
-.dock-panel[data-panel-id="library"] { flex: 1 1 0; min-height: 64px; }
+/* Every panel is as tall as its contents need. Stretching a few of them to share the leftover space is
+ * what forced their contents into an inner scroll box once the space ran out; the column scrolls
+ * instead now, and each card shows all of itself. */
+.dock-panel[data-panel-id="tools"], .dock-panel[data-panel-id="transform"] { min-width: 2.4rem; }
 .dock-panel[data-collapsed] { flex: 0 0 auto; }
 .dock-panel[data-dragging] { opacity: 0.45; }
 .dock-zone[data-zone="bottom"] .dock-column { min-width: 180px; }
@@ -695,7 +741,14 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   cursor: pointer;
 }
 .dock-panel-collapse:hover { opacity: 1; }
-.dock-panel-body { display: flex; flex-direction: column; gap: 5px; padding: 6px; min-height: 0; overflow: auto; }
+/* No scrollbar of its own: a panel is as wide as its column and as tall as its contents, which wrap to
+ * fit (see the reflow rules for each panel below). One scroller per column - the column itself - rather
+ * than a scrollbar inside a scrollbar inside a card, where neither one is obviously the thing that
+ * moves what you were looking for. */
+.dock-panel-body { display: flex; flex-direction: column; gap: 5px; padding: 6px; min-height: 0; overflow: visible; }
+/* The one exception: a panel whose height was set by dragging its divider keeps that height, so its own
+ * contents are what scroll inside it - that is what asking for a fixed-size box means. */
+.dock-panel[data-fixed-height] > .dock-panel-body { overflow-y: auto; overflow-x: hidden; }
 .dock-panel[data-collapsed] > .dock-panel-header { border-bottom-color: transparent; }
 
 /* Absolutely positioned, so it takes no layout space of its own: it lives in the gap between the dock
@@ -739,10 +792,10 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 }
 .tool-rail button[data-variant="default"]:hover { transform: translate(1px, 1px); }
 
-.tool-actions { display: flex; gap: 3px; }
+.tool-actions { display: flex; flex-wrap: wrap; gap: 3px; }
 .tool-actions > * { flex: 1; }
 
-.canvas-column { flex: 1 1 0; min-width: 220px; min-height: 0; display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
+.canvas-column { flex: 1 1 0; min-width: 420px; min-height: 0; display: flex; flex-direction: column; gap: 5px; overflow: hidden; }
 
 /* overflow: hidden, not auto - a native scrollbar appearing or disappearing here (which the canvas
  * crossing the wrap's size mid-zoom, or a window resize, can do at any moment) changes the content
@@ -1076,7 +1129,8 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 
 .frame-row {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: start;
   gap: 5px;
   flex-wrap: wrap;
   background: var(--pixel-panel);
@@ -1084,7 +1138,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   box-shadow: 3px 3px 0 var(--bevel-dark);
   padding: 7px;
 }
-.frame-strip { display: flex; gap: 6px; flex-wrap: wrap; }
+.frame-strip { display: flex; gap: 6px; flex-wrap: wrap; margin-right: auto; }
 .frame-badge-wrap { position: relative; cursor: grab; align-items: center; }
 .frame-badge-wrap.dragging { opacity: 0.4; cursor: grabbing; }
 .frame-badge-wrap.drag-over .frame-thumb { border-color: var(--pixel-highlight); box-shadow: 0 0 0 2px rgba(255, 204, 0, 0.5); }
@@ -1142,8 +1196,8 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .onion-panel label { font-size: 0.66rem; letter-spacing: 0.02em; }
 .onion-hint { font-size: 0.6rem; opacity: 0.65; line-height: 1.3; }
 .onion-depths { display: flex; flex-direction: column; gap: 3px; }
-.onion-depth { display: flex; align-items: center; gap: 4px; }
-.onion-depth-label { font-size: 0.66rem; flex: 1; }
+.onion-depth { display: flex; align-items: center; flex-wrap: wrap; gap: 3px 4px; }
+.onion-depth-label { font-size: 0.66rem; flex: 1 1 3.5rem; min-width: 0; }
 /* The same red/blue the canvas tints those frames with (ONION_TINT_BEFORE/AFTER in usePixelEditor.ts)
  * - the legend for what's on the canvas, so "Before"/"After" don't have to be decoded from the words
  * alone while drawing. */
@@ -1165,15 +1219,19 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 }
 .onion-stepper button:hover:not(:disabled) { background: var(--pixel-accent-hover); }
 .onion-stepper button:disabled { opacity: 0.35; cursor: not-allowed; }
-.onion-row { display: flex; align-items: center; gap: 4px; }
-.onion-row input[type="range"] { flex: 1; min-width: 0; height: 12px; accent-color: var(--pixel-accent); }
+/* Every row here wraps rather than being squeezed: in a narrow column the label takes the first line
+ * and its control the next, which is readable, where the old one-line-or-nothing layout just pushed
+ * the control out of sight behind a scrollbar. */
+.onion-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
+.onion-row > label { min-width: 0; }
+.onion-row input[type="range"] { flex: 1 1 4.5rem; min-width: 0; height: 12px; accent-color: var(--pixel-accent); }
 .onion-value { font-size: 0.62rem; min-width: 2.2em; text-align: right; opacity: 0.85; }
 /* Inside a stepper the value sits between the two buttons, so it wants to be centered and no wider
    than a single digit needs - the 2.2em right-aligned default above is for the % readout. */
 .onion-stepper .onion-value { min-width: 1.1em; text-align: center; }
-.onion-select { flex: 1; min-width: 0; font-size: 0.62rem; padding: 1px 2px; }
+.onion-select { flex: 1 1 4.5rem; min-width: 0; font-size: 0.62rem; padding: 1px 2px; }
 
-.layer-list { display: flex; flex-direction: column; gap: 3px; }
+.layer-list { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .layer-row {
   display: flex;
   flex-direction: column;
@@ -1187,8 +1245,16 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .layer-row.active { border-color: var(--pixel-highlight); background: rgba(255, 204, 0, 0.12); }
 .layer-row.dragging { opacity: 0.4; }
 .layer-row.drag-over { border-color: var(--pixel-highlight); box-shadow: 0 0 0 1px rgba(255, 204, 0, 0.5); }
-.layer-row-main { display: flex; align-items: center; gap: 4px; }
-.layer-row-actions { display: flex; align-items: center; gap: 4px; padding-left: calc(0.9rem + 4px + 26px + 4px); }
+.layer-row-main { display: flex; align-items: center; gap: 4px; min-width: 0; }
+/* Only the row you're working with shows its second line of buttons. Every layer carrying a permanent
+ * action row doubled the height of the whole list, which is what made a handful of layers need a
+ * scrollbar; the active row (and whichever one is under the pointer or holds focus) still shows them,
+ * so nothing is more than a hover away. Indented to line up under the layer name when there's room,
+ * wrapping before it would push its own buttons out of the card. */
+.layer-row-actions { display: none; align-items: center; flex-wrap: wrap; gap: 4px; padding-left: calc(0.9rem + 4px + 26px + 4px); }
+.layer-row.active .layer-row-actions,
+.layer-row:hover .layer-row-actions,
+.layer-row:focus-within .layer-row-actions { display: flex; }
 .layer-row button {
   padding: 0;
   border: none;
@@ -1211,7 +1277,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   background-size: 6px 6px;
   border: 1px solid var(--pixel-dark-2);
 }
-.layer-name { flex: 1; font-size: 0.66rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer-name { flex: 1 1 0; min-width: 0; font-size: 0.66rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .layer-name-input {
   flex: 1;
   min-width: 0;
@@ -1244,7 +1310,7 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   border-top-color: var(--bevel-light);
   border-left-color: var(--bevel-light);
 }
-.preview-speed { display: flex; align-items: center; gap: 5px; font-size: 0.66rem; }
+.preview-speed { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 4px; font-size: 0.66rem; }
 .preview-speed input { width: 3.2rem; height: 1.3rem; font-family: "VT323", monospace; font-size: 0.9rem; padding: 0 3px; border-width: 2px; }
 .preview-speed-unit { color: var(--pixel-muted); }
 
@@ -1256,7 +1322,11 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 }
 .preview-panel .mini-toggle label, .transform-panel .mini-toggle label { font-size: 0.66rem; letter-spacing: 0.02em; }
 
-.palette { display: grid; grid-template-columns: repeat(auto-fill, 18px); grid-auto-rows: 18px; gap: 3px; justify-content: center; align-content: start; flex: 1; min-height: 0; overflow-y: auto; }
+/* No scroll area of its own: the saved swatches simply flow on, and the panel body around them is what
+ * scrolls. A narrow column used to give this grid its own inner scrollbar, which ate a swatch's worth
+ * of width, squeezed the "Clear unused" button under it, and left two nested scrollbars stacked in one
+ * card. auto-fill keeps the row length matched to whatever width the column actually has. */
+.palette { display: grid; grid-template-columns: repeat(auto-fill, 18px); grid-auto-rows: 18px; gap: 3px; justify-content: center; align-content: start; flex: 0 0 auto; min-height: 0; }
 .swatch {
   width: 100%;
   aspect-ratio: 1;
@@ -1293,7 +1363,10 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .gradient-target-swap:hover { color: var(--pixel-text-strong); }
 
 .color-picker { display: flex; flex-direction: column; align-items: stretch; gap: 5px; width: 100%; }
-.sv-square { position: relative; width: 100%; aspect-ratio: 1; border: 2px solid var(--bevel-dark); border-top-color: var(--bevel-light); border-left-color: var(--bevel-light); }
+/* Capped: in a wide column a square picker grows as tall as the column is wide, pushing the swatches
+ * (the part people actually reach for) off the bottom. It stops being square past that point, which
+ * costs nothing - it's a gradient, not an image. */
+.sv-square { position: relative; width: 100%; aspect-ratio: 1; max-height: 9rem; border: 2px solid var(--bevel-dark); border-top-color: var(--bevel-light); border-left-color: var(--bevel-light); }
 .hue-bar { position: relative; width: 100%; height: 12px; border: 2px solid var(--bevel-dark); border-top-color: var(--bevel-light); border-left-color: var(--bevel-light); }
 .sv-square canvas, .hue-bar canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
 .sv-thumb {
@@ -1445,7 +1518,9 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 /* A docked panel's own header already names it (see DockPanel), so the panel's internal title row
    keeps only its buttons - see LayerPanel's `showTitle`. */
 .panel-title[data-actions-only] { justify-content: flex-end; border-bottom: 0; padding-bottom: 0; margin-bottom: 0; }
-.transform-buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; }
+/* auto-fit, not a fixed four: in a narrow column the four transforms fall into two rows of two rather
+ * than shrinking past the point of being clickable (or overflowing the card). */
+.transform-buttons { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
 
 .frame-controls button, .canvas-status-bar button, .canvas-meta-bar button { font-size: 0.7rem; }
 .tool-grid button { font-size: 0.75rem; }
@@ -1480,8 +1555,8 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .library-tab:disabled { opacity: 0.4; cursor: default; }
 .library-tab-count { font-size: 0.58rem; opacity: 0.75; font-variant-numeric: tabular-nums; }
 .library-empty { margin: 0; align-self: center; font-size: 0.68rem; color: var(--pixel-muted); }
-/* Scrolls inside the panel rather than growing it - the dock's height is the user's to set. */
-.library-grid { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start; overflow: auto; min-height: 0; flex: 1 1 auto; }
+/* Wraps and grows; the dock's column is what scrolls if the whole row of cards doesn't fit. */
+.library-grid { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start; min-height: 0; flex: 0 0 auto; }
 .library-card {
   position: relative;
   background: var(--pixel-panel-hover);

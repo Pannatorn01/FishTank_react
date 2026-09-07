@@ -1,5 +1,5 @@
 import { Fragment, useRef, useState, type ReactNode } from 'react';
-import type { DockColumns, DockDropTarget, DockPanelId, DockZone } from '@/hooks/useEditorLayout';
+import { columnKey, rootRemPx, type DockColumns, type DockDropTarget, type DockPanelId, type DockZone } from '@/hooks/useEditorLayout';
 
 /** Shared with the old SidePanelSection so a collapse state set before this existed still applies. */
 const COLLAPSE_PREFIX = 'fishtank.sidePanel.collapsed.';
@@ -58,6 +58,9 @@ export function DockPanel({
       data-panel-id={id}
       data-collapsed={collapsed || undefined}
       data-dragging={dragging || undefined}
+      // Marks the panel as "this box is the size I asked for", which is what lets its own contents
+      // scroll inside it - see .dock-panel[data-fixed-height] in index.css.
+      data-fixed-height={height && !collapsed ? '' : undefined}
       // A collapsed panel is only its header, so a height set while it was open must not hold an empty
       // box open at that size.
       style={height && !collapsed ? { flex: `0 0 ${height}px` } : undefined}
@@ -98,7 +101,7 @@ function PanelDivider({
 }: {
   panel: DockPanelId;
   label: string;
-  onResize: (panel: DockPanelId, px: number) => void;
+  onResize: (panel: DockPanelId, px: number | null) => void;
 }) {
   const start = useRef<{ y: number; height: number } | null>(null);
 
@@ -134,7 +137,15 @@ function PanelDivider({
       onPointerCancel={() => {
         start.current = null;
       }}
+      // Double-click hands the panel above back to automatic sizing - the undo for a drag that went too
+      // far, without having to inch it back by hand.
+      onDoubleClick={() => onResize(panel, null)}
       onKeyDown={(e) => {
+        if (e.key === 'Escape' || e.key === 'Backspace' || e.key === 'Delete') {
+          e.preventDefault();
+          onResize(panel, null);
+          return;
+        }
         const step = e.shiftKey ? 24 : 8;
         const dir = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
         if (!dir) return;
@@ -145,11 +156,24 @@ function PanelDivider({
   );
 }
 
+/** Panels whose contents are a grid of icon buttons, so they lose nothing by being one button wide.
+ *  A column holding only these is laid out narrow (see .dock-column[data-narrow]) instead of taking the
+ *  same width as one holding the palette or the layer list - which is what let six columns fit across a
+ *  dock that previously had to scroll sideways. */
+const NARROW_PANELS = new Set<DockPanelId>(['tools', 'transform']);
+
+/** Below this width (in rem) a column drops its panel titles and tightens its padding down to just the
+ *  icons - see .dock-column[data-compact] in index.css. Measured against the width the column actually
+ *  has rather than what's in it, so a Tools column dragged wider gets its title back, and any column
+ *  squeezed down to a strip loses one. */
+const COMPACT_COLUMN_REM = 7;
+
 /** One column of a dock: panels stacked top to bottom, with a resize divider between each pair. */
 function DockColumn({
   zone,
   index,
   panels,
+  width,
   dragging,
   onDropPanel,
   onPanelResize,
@@ -159,13 +183,21 @@ function DockColumn({
   zone: DockZone;
   index: number;
   panels: DockPanelId[];
+  /** Set once the divider to this column's right has been dragged (see ColumnDivider); until then the
+   *  column keeps whatever the stylesheet gives it - narrow for an icon-only column, content-width
+   *  otherwise (see .dock-column[data-narrow] in index.css). */
+  width?: number;
   dragging: DockPanelId | null;
   onDropPanel: (panel: DockPanelId, zone: DockZone, target: DockDropTarget) => void;
-  onPanelResize: (panel: DockPanelId, px: number) => void;
+  onPanelResize: (panel: DockPanelId, px: number | null) => void;
   renderPanel: (id: DockPanelId) => ReactNode;
   resizeLabel: string;
 }) {
   const [over, setOver] = useState(false);
+  const narrow = panels.length > 0 && panels.every((id) => NARROW_PANELS.has(id));
+  // With no width of its own a column renders at its default, which for a narrow one is the single
+  // button strip - so that's the case the composition still decides.
+  const compact = width != null ? width < COMPACT_COLUMN_REM * rootRemPx() : narrow;
 
   /** Which panel the dragged one should land above, from where the pointer is relative to the panels
    *  already here - so dropping between two of them puts it between them, not always at the end. */
@@ -180,7 +212,16 @@ function DockColumn({
   return (
     <div
       className="dock-column"
+      // Two separate things, deliberately. `narrow` is about *sizing* and comes from what the column
+      // holds: a column of nothing but icon buttons opens one button wide and is allowed to be dragged
+      // that far back down. `compact` is about *styling* and comes from the width the column actually
+      // has, so widening one brings its titles back instead of leaving it looking like a strip forever.
+      data-narrow={narrow ? '' : undefined}
+      data-compact={compact ? '' : undefined}
       data-drop-active={over || undefined}
+      // An explicit width wins over the narrow/wide defaults either way, the same way DockPanel's own
+      // height override does - inline style beats a stylesheet rule of any specificity.
+      style={width ? { flex: `0 0 ${width}px` } : undefined}
       onDragOver={(e) => {
         if (!dragging) return;
         e.preventDefault();
@@ -255,6 +296,79 @@ function NewColumnStrip({
 }
 
 /**
+ * The grab area between two side-by-side columns - the horizontal counterpart to PanelDivider, resizing
+ * width instead of height. Dragging it sets the width of the column to its *left*; the column(s) after
+ * it are unaffected and simply take whatever the dock's own resulting size leaves them (see
+ * setColumnWidth, which grows or shrinks the dock's outer edge by the same amount rather than robbing a
+ * neighbour of its space). Only rendered when nothing is being dragged - mid-drag this same strip of
+ * space is a NewColumnStrip instead, since "insert a new column here" and "resize the column here" are
+ * two different things to want from one gap and only one can use the pointer at a time.
+ */
+function ColumnDivider({
+  columnKey: key,
+  zone,
+  label,
+  onResize,
+}: {
+  columnKey: string;
+  zone: DockZone;
+  label: string;
+  onResize: (key: string, zone: DockZone, px: number | null) => void;
+}) {
+  const start = useRef<{ x: number; width: number } | null>(null);
+
+  /** The rendered width of the column to the left, read from the DOM rather than tracked in state:
+   *  until its first drag a column has no stored width at all, only whatever it sized itself to. */
+  const widthOfLeft = (el: HTMLElement): number => {
+    const prev = el.previousElementSibling as HTMLElement | null;
+    return prev ? prev.getBoundingClientRect().width : 0;
+  };
+
+  return (
+    <div
+      className="dock-column-divider"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      title={label}
+      tabIndex={0}
+      onPointerDown={(e) => {
+        if (e.button !== 0 && e.pointerType === 'mouse') return;
+        e.preventDefault();
+        start.current = { x: e.clientX, width: widthOfLeft(e.currentTarget) };
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        if (!start.current) return;
+        onResize(key, zone, start.current.width + (e.clientX - start.current.x));
+      }}
+      onPointerUp={(e) => {
+        start.current = null;
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+      }}
+      onPointerCancel={() => {
+        start.current = null;
+      }}
+      // Double-click hands the column back to automatic sizing - the undo for a drag that went too far,
+      // without having to inch it back by hand.
+      onDoubleClick={() => onResize(key, zone, null)}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' || e.key === 'Backspace' || e.key === 'Delete') {
+          e.preventDefault();
+          onResize(key, zone, null);
+          return;
+        }
+        const step = e.shiftKey ? 24 : 8;
+        const dir = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+        if (!dir) return;
+        e.preventDefault();
+        onResize(key, zone, widthOfLeft(e.currentTarget) + dir * step);
+      }}
+    />
+  );
+}
+
+/**
  * One of the three docks: a row of columns, plus the edge you drag to resize the whole dock. The zone
  * itself is the fallback drop target - a drop that misses every column lands in the last one.
  */
@@ -262,26 +376,34 @@ export function DockZoneView({
   zone,
   size,
   columns,
+  columnWidths,
   dragging,
   onDropPanel,
   onResize,
   onPanelResize,
+  onColumnResize,
   renderPanel,
   resizeLabel,
   panelResizeLabel,
+  columnResizeLabel,
   newColumnLabel,
   emptyHint,
 }: {
   zone: DockZone;
   size: number;
   columns: DockColumns;
+  /** Explicit widths for columns whose divider has been dragged (see useEditorLayout's columnWidths),
+   *  keyed the same way (columnKey) - looked up per column below. */
+  columnWidths: Partial<Record<string, number>>;
   dragging: DockPanelId | null;
   onDropPanel: (panel: DockPanelId, zone: DockZone, target: DockDropTarget) => void;
   onResize: (px: number) => void;
-  onPanelResize: (panel: DockPanelId, px: number) => void;
+  onPanelResize: (panel: DockPanelId, px: number | null) => void;
+  onColumnResize: (key: string, zone: DockZone, px: number | null) => void;
   renderPanel: (id: DockPanelId) => ReactNode;
   resizeLabel: string;
   panelResizeLabel: string;
+  columnResizeLabel: string;
   newColumnLabel: string;
   emptyHint: string;
 }) {
@@ -329,13 +451,22 @@ export function DockZoneView({
               zone={zone}
               index={i}
               panels={panels}
+              width={columnWidths[columnKey(panels)]}
               dragging={dragging}
               onDropPanel={onDropPanel}
               onPanelResize={onPanelResize}
               renderPanel={renderPanel}
               resizeLabel={panelResizeLabel}
             />
-            <NewColumnStrip zone={zone} index={i + 1} dragging={dragging} onDropPanel={onDropPanel} label={newColumnLabel} />
+            {dragging ? (
+              <NewColumnStrip zone={zone} index={i + 1} dragging={dragging} onDropPanel={onDropPanel} label={newColumnLabel} />
+            ) : (
+              // Only between two real columns - the strip that opens a brand new one (above) only makes
+              // sense while a panel is actually being dragged onto it.
+              i < columns.length - 1 && (
+                <ColumnDivider columnKey={columnKey(panels)} zone={zone} label={columnResizeLabel} onResize={onColumnResize} />
+              )
+            )}
           </Fragment>
         ))}
         {dragging && empty && <div className="dock-zone-hint">{emptyHint}</div>}

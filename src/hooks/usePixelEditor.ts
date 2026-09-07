@@ -46,7 +46,7 @@ export const DEFAULT_PALETTE_COLORS = [
   '#1a1a1a', '#ffffff', '#e74c3c', '#ff7043', '#f5c518', '#8bc34a', '#1e88e5', '#5e35b1',
 ];
 
-const FRAME_LIMIT = 5;
+const FRAME_LIMIT = 15;
 const LAYER_LIMIT = storage.LAYER_LIMIT;
 const BASE_CELL_PX = 16;
 /** Quick-pick presets for the zoom field's dropdown - purely UI shortcuts now, not the internal
