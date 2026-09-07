@@ -1,0 +1,304 @@
+import { Container, FillGradient, Graphics, Sprite } from 'pixi.js';
+import { OVAL_TOP_CUT_MAX, OVAL_TOP_CUT_MIN, ROUNDED_RADIUS_MAX, ROUNDED_RADIUS_MIN, type TankEngine } from '@/hooks/useTank';
+import type { Instance, SelectionBox, Sprite as SpriteData, TankShape } from '@/lib/types';
+import { textureFor } from './textureCache';
+
+/** Kept identical to the constants of the same name in useTank.ts's Canvas2D draw() - this file is
+ *  a second, independent renderer of the exact same scene (see docs/PIXI_MIGRATION_PLAN.md P1), so
+ *  every color/size here is copied on purpose, not re-derived, to make an eyeballed diff against the
+ *  original trivial if either one is ever changed. */
+const WATER_TOP = 0x7fd7e8;
+const WATER_BOTTOM = 0x0f6f97;
+const OUTLINE_COLOR = 0x1c2436;
+const OUTLINE_WIDTH = 5;
+const SELECTION_COLOR = 0xffeb3b;
+const ZONE_SELECTED_COLOR = 0x78ffa0;
+const ZONE_SELECTED_ALPHA = 0.9;
+const MARQUEE_COLOR = 0xffeb3b;
+const MARQUEE_FILL_ALPHA = 0.15;
+const ZONE_DRAFT_COLOR = 0x4ade80;
+const ZONE_DRAFT_FILL_ALPHA = 0.15;
+const DISPLAY_SCALE = 4;
+const OVAL_ARC_SEGMENTS = 64;
+
+function spriteDims(sprite: SpriteData): { width: number; height: number } {
+  return { width: sprite.width || 16, height: sprite.height || 16 };
+}
+
+/**
+ * Traces the exact same swim-area silhouette as TankEngine's private shapePath() (useTank.ts) onto a
+ * Pixi Graphics context instead of a Path2D - used both as the water/instance layer's mask (replacing
+ * ctx.clip()) and, traced a second time, as the visible glass outline (replacing ctx.stroke()). Kept
+ * in lockstep with shapePath()'s math on purpose: an oval's flat-top cut is reproduced by sampling
+ * the same parametric ellipse equation shapePath solves analytically, since Pixi's Graphics has no
+ * partial-ellipse-arc primitive to call directly (only a full ellipse) - polygon-approximated at
+ * OVAL_ARC_SEGMENTS points, which reads as a smooth curve at every tank size this app supports.
+ */
+function traceShape(g: Graphics, shape: TankShape, w: number, h: number, cornerRadiusFrac: number, ovalTopCutFrac: number): void {
+  if (shape === 'oval') {
+    const cx = w / 2;
+    const cy = h / 2;
+    const rx = Math.max(0, w / 2);
+    const ry = Math.max(0, h / 2);
+    const t = Math.max(OVAL_TOP_CUT_MIN, Math.min(OVAL_TOP_CUT_MAX, ovalTopCutFrac));
+    if (t <= 0.001 || ry <= 0) {
+      g.ellipse(cx, cy, rx, ry);
+      return;
+    }
+    const s = Math.max(-0.999, Math.min(0.999, 2 * t - 1));
+    const thetaRight = Math.asin(s);
+    const thetaLeft = Math.PI - thetaRight;
+    const topCutY = cy + ry * s;
+    const xRight = cx + rx * Math.cos(thetaRight);
+    const xLeft = cx - rx * Math.cos(thetaRight);
+    const points: number[] = [xLeft, topCutY, xRight, topCutY];
+    for (let i = 1; i <= OVAL_ARC_SEGMENTS; i++) {
+      const theta = thetaRight + ((thetaLeft - thetaRight) * i) / OVAL_ARC_SEGMENTS;
+      points.push(cx + rx * Math.cos(theta), cy + ry * Math.sin(theta));
+    }
+    g.poly(points, true);
+  } else if (shape === 'rounded') {
+    const frac = Math.max(ROUNDED_RADIUS_MIN, Math.min(ROUNDED_RADIUS_MAX, cornerRadiusFrac));
+    const r = Math.max(0, Math.min(Math.min(w, h) * frac, w / 2, h / 2));
+    g.roundRect(0, 0, w, h, r);
+  } else {
+    g.rect(0, 0, w, h);
+  }
+}
+
+/** Manual dashed rectangle - Pixi's Graphics stroke has no dash-pattern option (unlike Canvas2D's
+ *  setLineDash), so the marquee/zone-draft rectangles' dashed border is reproduced edge-by-edge as
+ *  short line segments. Dash/gap lengths match the Canvas2D call site's setLineDash([6, 4]). */
+function dashedRectPath(g: Graphics, x0: number, y0: number, x1: number, y1: number, dash = 6, gap = 4): void {
+  const edges: [number, number, number, number][] = [
+    [x0, y0, x1, y0],
+    [x1, y0, x1, y1],
+    [x1, y1, x0, y1],
+    [x0, y1, x0, y0],
+  ];
+  for (const [ex0, ey0, ex1, ey1] of edges) {
+    const dx = ex1 - ex0;
+    const dy = ey1 - ey0;
+    const len = Math.hypot(dx, dy);
+    const ux = dx / len;
+    const uy = dy / len;
+    let pos = 0;
+    while (pos < len) {
+      const segLen = Math.min(dash, len - pos);
+      const sx = ex0 + ux * pos;
+      const sy = ey0 + uy * pos;
+      const ex = ex0 + ux * (pos + segLen);
+      const ey = ey0 + uy * (pos + segLen);
+      g.moveTo(sx, sy).lineTo(ex, ey);
+      pos += dash + gap;
+    }
+  }
+}
+
+interface InstanceView {
+  container: Container;
+  sprite: Sprite;
+  outline: Graphics;
+}
+
+/** Everything one call to createTankScene() owns - all torn down together by destroy(). Mirrors
+ *  TankEngine's own draw() one-to-one (see the mapping table in docs/PIXI_MIGRATION_PLAN.md §4) but
+ *  reads the engine's live, already-simulated state each frame rather than owning any simulation
+ *  itself - P1 is a display-layer swap only, not a rewrite of state/physics/input (all of which stay
+ *  exactly where they are in useTank.ts). */
+export interface TankSceneHandle {
+  /** Repaints everything from the engine's current state - call once per animation frame. */
+  render(engine: TankEngine): void;
+  destroy(): void;
+}
+
+export function createTankScene(stage: Container): TankSceneHandle {
+  const root = new Container();
+  const mask = new Graphics();
+  const water = new Graphics();
+  const backgroundSprite = new Sprite();
+  const waterline = new Graphics();
+  const zoneBelowLayer = new Container();
+  const instanceLayer = new Container();
+  const overlayLayer = new Container();
+  const outline = new Graphics();
+
+  backgroundSprite.visible = false;
+  backgroundSprite.anchor.set(0.5);
+
+  root.addChild(water, backgroundSprite, waterline, zoneBelowLayer, instanceLayer, overlayLayer);
+  root.mask = mask;
+  stage.addChild(root, outline);
+
+  const waterGradient = new FillGradient({
+    type: 'linear',
+    start: { x: 0, y: 0 },
+    end: { x: 0, y: 1 },
+    colorStops: [
+      { offset: 0, color: WATER_TOP },
+      { offset: 1, color: WATER_BOTTOM },
+    ],
+  });
+
+  const instanceViews = new Map<string, InstanceView>();
+  let lastShapeKey = '';
+  let lastWaterSizeKey = '';
+
+  function ensureInstanceView(id: string): InstanceView {
+    let v = instanceViews.get(id);
+    if (!v) {
+      const container = new Container();
+      const sprite = new Sprite();
+      sprite.anchor.set(0.5);
+      const outlineG = new Graphics();
+      container.addChild(sprite, outlineG);
+      instanceLayer.addChild(container);
+      v = { container, sprite, outline: outlineG };
+      instanceViews.set(id, v);
+    }
+    return v;
+  }
+
+  function pruneInstanceViews(liveIds: Set<string>): void {
+    for (const [id, v] of instanceViews) {
+      if (!liveIds.has(id)) {
+        v.container.destroy({ children: true });
+        instanceViews.delete(id);
+      }
+    }
+  }
+
+  function drawZoneRect(
+    parent: Container,
+    zone: SelectionBox,
+    strokeColor: number,
+    strokeAlpha: number,
+    fillAlpha?: number,
+    dashed = false,
+  ): void {
+    const g = new Graphics();
+    const { x0, y0, x1, y1 } = zone;
+    const w = x1 - x0;
+    const h = y1 - y0;
+    if (fillAlpha !== undefined) {
+      g.rect(x0, y0, w, h).fill({ color: strokeColor, alpha: fillAlpha });
+    }
+    if (dashed) {
+      dashedRectPath(g, x0, y0, x1, y1);
+    } else {
+      g.rect(x0, y0, w, h);
+    }
+    g.stroke({ width: 1.5, color: strokeColor, alpha: strokeAlpha, join: 'round' });
+    parent.addChild(g);
+  }
+
+  function updateInstanceView(v: InstanceView, inst: Instance, sprite: SpriteData, selected: boolean): void {
+    const { width, height } = spriteDims(sprite);
+    const pw = width * DISPLAY_SCALE;
+    const ph = height * DISPLAY_SCALE;
+    const renderY = inst.y + (inst.kind === 'fish' && !inst.isDragging ? Math.sin(inst.bobPhase) * 3 : 0);
+    const frameIndex = inst.frameIndex % sprite.frames.length;
+
+    v.container.visible = inst.visible;
+    if (!inst.visible) return;
+
+    v.container.position.set(inst.x + pw / 2, renderY + ph / 2);
+    v.sprite.texture = textureFor(sprite, frameIndex);
+    const flipSign = inst.kind === 'fish' && inst.dir < 0 ? -1 : 1;
+    v.sprite.width = pw;
+    v.sprite.height = ph;
+    v.sprite.scale.x = Math.abs(v.sprite.scale.x) * flipSign;
+
+    v.outline.clear();
+    if (selected) {
+      v.outline.rect(-pw / 2 - 2, -ph / 2 - 2, pw + 4, ph + 4).stroke({ width: 2, color: SELECTION_COLOR });
+    }
+  }
+
+  function render(engine: TankEngine): void {
+    const w = engine.canvas?.width ?? 0;
+    const h = engine.canvas?.height ?? 0;
+    if (w <= 0 || h <= 0) {
+      root.visible = false;
+      outline.visible = false;
+      return;
+    }
+    root.visible = true;
+    outline.visible = true;
+
+    const shapeKey = `${engine.tankShape}:${w}:${h}:${engine.tankCornerRadiusFrac}:${engine.tankOvalTopCutFrac}`;
+    if (shapeKey !== lastShapeKey) {
+      lastShapeKey = shapeKey;
+      mask.clear();
+      traceShape(mask, engine.tankShape, w, h, engine.tankCornerRadiusFrac, engine.tankOvalTopCutFrac);
+      mask.fill(0xffffff);
+      outline.clear();
+      traceShape(outline, engine.tankShape, w, h, engine.tankCornerRadiusFrac, engine.tankOvalTopCutFrac);
+      outline.stroke({ width: OUTLINE_WIDTH, color: OUTLINE_COLOR, join: 'round' });
+    }
+
+    const waterSizeKey = `${w}:${h}`;
+    if (waterSizeKey !== lastWaterSizeKey) {
+      lastWaterSizeKey = waterSizeKey;
+      water.clear().rect(0, 0, w, h).fill(waterGradient);
+      const waterlineH = Math.max(3, h * 0.02);
+      waterline.clear().rect(0, 0, w, waterlineH).fill({ color: 0xffffff, alpha: 0.35 });
+    }
+
+    const bgSprite = engine.backgroundSpriteId
+      ? engine.sprites.find((s) => s.id === engine.backgroundSpriteId && s.type === 'background')
+      : null;
+    if (bgSprite) {
+      const { width: sw, height: sh } = spriteDims(bgSprite);
+      backgroundSprite.texture = textureFor(bgSprite, 0);
+      backgroundSprite.width = sw * DISPLAY_SCALE * engine.backgroundTransform.scale;
+      backgroundSprite.height = sh * DISPLAY_SCALE * engine.backgroundTransform.scale;
+      backgroundSprite.position.set(engine.backgroundTransform.x, engine.backgroundTransform.y);
+      backgroundSprite.rotation = engine.backgroundTransform.rotation;
+      backgroundSprite.visible = true;
+    } else {
+      backgroundSprite.visible = false;
+    }
+
+    zoneBelowLayer.removeChildren();
+    if (engine.selectedZone) {
+      drawZoneRect(zoneBelowLayer, engine.selectedZone, ZONE_SELECTED_COLOR, ZONE_SELECTED_ALPHA);
+    }
+
+    const order = engine.visibleDrawOrder();
+    const liveIds = new Set<string>();
+    order.forEach((inst) => {
+      const sprite = engine.spriteFor(inst);
+      if (!sprite) return;
+      liveIds.add(inst.id);
+      const v = ensureInstanceView(inst.id);
+      const selected = inst.id === engine.selectedId || !!engine.marqueeIds?.includes(inst.id);
+      updateInstanceView(v, inst, sprite, selected);
+    });
+    pruneInstanceViews(liveIds);
+    // One full reorder pass matching `order` exactly - cheap (setChildIndex on an already-correct
+    // slot is a no-op check inside Pixi) and avoids the subtlety of trying to diff old vs new order
+    // incrementally.
+    order.forEach((inst, i) => {
+      const v = instanceViews.get(inst.id);
+      if (v) instanceLayer.setChildIndex(v.container, Math.min(i, instanceLayer.children.length - 1));
+    });
+
+    overlayLayer.removeChildren();
+    if (engine.marqueeRect) {
+      drawZoneRect(overlayLayer, engine.marqueeRect, MARQUEE_COLOR, 1, MARQUEE_FILL_ALPHA, true);
+    }
+    if (engine.zoneDraftRect) {
+      drawZoneRect(overlayLayer, engine.zoneDraftRect, ZONE_DRAFT_COLOR, 1, ZONE_DRAFT_FILL_ALPHA, true);
+    }
+  }
+
+  function destroy(): void {
+    instanceViews.forEach((v) => v.container.destroy({ children: true }));
+    instanceViews.clear();
+    root.destroy({ children: true });
+    outline.destroy();
+  }
+
+  return { render, destroy };
+}

@@ -442,8 +442,8 @@ age > lifespan                              → ตาย
 | Plan | ✅ done | 2026-09-07 | — | เอกสารนี้ |
 | Q&A §9 | ✅ done | 2026-09-07 | — | ผู้ใช้ตอบครบ 11 ข้อ — ดู §9/§9.1/§9.2 |
 | P0 Spike | ✅ done | 2026-09-07 | (pending) | ดู §11 — คมเท่า Canvas2D, bundle ~145KB gzip (< 400KB), dynamic-import ไม่กระทบ main bundle |
-| P1 Pixi render parity | ⬜ not started | | | **ถัดไป** |
-| P2 room+bg เข้า scene | ⬜ not started | | | |
+| P1 Pixi render parity | ✅ done | 2026-09-07 | (pending) | ดู §12 — pixel-diff ผ่านทั้ง 3 ทรง, flag `?tankRenderer=pixi`/`VITE_TANK_RENDERER`, main bundle ไม่โต (dynamic import) |
+| P2 room+bg เข้า scene | ⬜ not started | | | **ถัดไป** |
 | P3 แยก model/sim/render | ⬜ not started | | | |
 | P4 ฉากห้อง + สลับโหมด | ⬜ not started | | | รอ asset ห้องจากผู้ใช้ (§9.2) — ทำโครงไปก่อนได้ |
 | P5 กลไกเลี้ยง | ⬜ not started | | | **ไม่ blocked แล้ว** — ค่า balance เริ่มต้นอยู่ §9.1 |
@@ -488,3 +488,84 @@ npm run dev -- --port 5199
 1. ลบ `src/tank/render/dev/` ทั้งโฟลเดอร์ + ลบ branch `?pixi=1` ใน `main.tsx` กลับไปเป็นโค้ดเดิม
 2. ใช้ `pixiApp.ts` + `textureCache.ts` ที่มีอยู่แล้วต่อได้เลย ไม่ต้องเขียนใหม่
 3. โหลด Pixi renderer ของตู้ผ่าน dynamic `import()` ใน `TankCanvas.tsx` (ตาม flag `VITE_TANK_RENDERER`) เพื่อรักษาเรื่อง "bundle หลักไม่โต" ที่เพิ่งพิสูจน์ได้ใน P0
+
+---
+
+## 12. P1 Render Parity — ผลลัพธ์ (2026-09-07)
+
+**สรุป: parity ผ่านทุกเกณฑ์ → ไปต่อ P2 ได้**
+
+### ไฟล์ที่เพิ่ม/แก้
+
+```
+src/tank/render/rendererMode.ts      ใหม่ - อ่าน flag (?tankRenderer= > VITE_TANK_RENDERER > 'canvas2d')
+src/tank/render/tankScene.ts         ใหม่ - Pixi scene builder, mirror ของ useTank.ts's draw() ทีละบรรทัด
+src/tank/render/TankPixiLayer.tsx    ใหม่ - React wrapper คุม Application lifecycle + rAF loop ของมันเอง
+src/tank/render/pixiApp.ts           แก้ - เพิ่ม CreatePixiAppOptions (autoDensity toggle) ให้ tank ใช้ resolution:1
+                                       แทนที่จะบังคับ devicePixelRatio+autoDensity แบบที่ P0 preview เคยใช้
+src/hooks/useTank.ts                 แก้ - แตก computeDrawOrder() ออกจาก draw() + เพิ่ม visibleDrawOrder()
+                                       (public, read-only) ให้ Pixi renderer เรียกใช้ตรรกะ raised-z-order
+                                       เดียวกันโดยไม่ต้อง copy โค้ดส่วนนั้นซ้ำ - draw() เองพฤติกรรมไม่เปลี่ยน
+src/components/tank/TankCanvas.tsx   แก้ - อ่าน flag ครั้งเดียวตอน mount, canvas เดิมยังคง mount+draw
+                                       เสมอ (ยังเป็น source of truth ของ hit-test/export) แค่ opacity:0
+                                       เมื่อ pixi mode + วาง <TankPixiLayer> ทับ (lazy-loaded)
+src/index.css                        แก้ - .tank-canvas-hidden, .tank-pixi-host, .tank-pixi-canvas
+docs/PIXI_MIGRATION_PLAN.md          แก้ - เอกสารนี้
+```
+
+### สถาปัตยกรรมที่เลือก (สำคัญ - ต้องเข้าใจก่อนแตะ P2)
+
+**Canvas2D `<canvas>` ยัง mount และวาดอยู่เสมอ ไม่ว่าโหมดไหน** - ไม่ใช่แค่จอแสดงผล มันคือ source of truth
+ของ hit-test/pointer coordinate math/export (`compositeScene()` อ่านจาก `this.canvas` ตรง ๆ) ซึ่ง P1 ตั้งใจไม่แตะ
+เลยตามหลักการ "parity ก่อน ไม่รื้อ logic" ในโหมด `pixi`, canvas ตัวนี้แค่โดนทำให้มองไม่เห็น (`opacity:0` -
+**ไม่ใช่** `display:none`/`visibility:hidden` ซึ่งจะทำให้หยุดรับ pointer event) แล้ววาง `TankPixiLayer` ทับด้วย
+`pointer-events:none` ให้ input ทะลุไปหา canvas ที่มองไม่เห็นแต่ยังทำงานอยู่เหมือนเดิม
+
+ผลคือ **ทุกอย่างที่ P1 ไม่ได้ตั้งใจแตะ (input, undo, export, persist) ทำงานเหมือนเดิม 100% เพราะโค้ดพวกนั้นไม่ถูก
+เปลี่ยนแม้แต่บรรทัดเดียว** - ยืนยันด้วย regression suite เดิมทั้งหมดผ่าน (ดูด้านล่าง)
+
+**Pixi coordinate space = tank-logical px ตรง ๆ** - ไม่ใช่ screen/CSS px: `TankPixiLayer` เรียก
+`app.renderer.resize(engine.canvas.width, engine.canvas.height)` (ขนาด logical, ไม่คูณ effectiveScale)
+แล้วปล่อยให้ CSS (`width:100%;height:100%` - กฎเดียวกับที่ `.tank-canvas` ใช้อยู่แล้ว) เป็นตัว stretch จอแสดงผลไป
+เป็นขนาดหน้าจอจริง เหมือนที่ Canvas2D canvas เคยทำมาตลอด - ผลคือ `root` container ไม่ต้อง `.scale()` อะไรเลย,
+`Instance.x/y` ใช้ได้ตรง ๆ ไม่ต้องแปลงหน่วย (`resolution:1`, `autoDensity:false` - ปรับ `pixiApp.ts` ให้รับ
+options พวกนี้แทนที่จะ hardcode แบบ P0 preview)
+
+### วิธี re-verify ด้วยตัวเอง
+```bash
+npm run dev -- --port 5199
+# canvas2d (ค่า default) - ไม่มีอะไรเปลี่ยน:
+open http://localhost:5199/
+# pixi - เทียบด้วยตา (วาด/วางสไปรท์ก่อน แล้วลองทั้ง 3 ทรงตู้ rectangle/rounded/oval):
+open http://localhost:5199/?tankRenderer=pixi
+```
+
+### ผลตรวจ (pixel-diff จริง ไม่ใช่แค่ตาดู - ดูวิธีทำใน §12.1)
+
+| สิ่งที่เทียบ | diffPixels / 1.26M px | หมายเหตุ |
+|---|---|---|
+| Rectangle (น้ำ+เส้นขอบ+background sprite, ปลาซ่อนไว้) | 2,980 (0.24%) | diff เกาะอยู่ที่เส้นขอบ (AA sub-pixel เท่านั้น - ดู diff map §12.1) น้ำ/gradient/background sprite ตรงเป๊ะ |
+| Oval (มีตัดขอบบนแบบ flat-top) | 2,975 (0.24%) | polygon-approximation 64 จุดของเส้นโค้งวงรีเรียบพอ ไม่เห็นรอยหยัก |
+| Rounded corners | 2,731 (0.22%) | `roundRect()` ของ Pixi ตรงกับ radius เดียวกันทุกมุมพอดี |
+| Selection outline (กรอบเหลือง) | ตรวจด้วยตา | กรอบไม่บิดเบี้ยวตอนปลาว่ายกลับทิศ (พิสูจน์ container/outline แยกจาก sprite flip ถูกต้อง) |
+| Flip (ปลาว่ายซ้าย) | ตรวจด้วยตา | สไปรท์ mirror ถูกทิศ, selection box ไม่ถูก mirror ตาม (ตรงกับ Canvas2D ที่วาดกรอบ "หลัง restore()") |
+| Bundle size | main +0 byte, `pixi` chunk 71KB gzip | โหลดเฉพาะตอนเลือก pixi mode จริง ๆ |
+| Tab switch × 6 รอบ | canvas count คงที่ (14 ทั้งก่อน/หลัง) | ไม่มี leak, `TankPixiLayer`'s cleanup effect ทำลาย app/scene ครบ |
+| Regression suite เดิม | ผ่านหมด | zoom lockstep, room decor lockstep+drag, tank layers รวมลิสต์, pen/eraser, dock drag/scroll |
+
+### 12.1 วิธี pixel-diff (เผื่อ session ใหม่อยากตรวจซ้ำ)
+ไม่มี pixel-diff library ในโปรเจกต์ - ใช้ Playwright's headless browser เอง draw ภาพ 2 รูปลง canvas
+แล้ว `getImageData` เทียบ per-pixel (threshold รวม RGB diff > 10 = นับว่าต่าง) วิธีนี้ไม่ต้องเพิ่ม dependency
+สคริปต์ตัวอย่างอยู่ใน git history ของ commit นี้ (ไม่ commit เข้า repo เพราะเป็นเครื่องมือ debug ชั่วคราว)
+- ผลลัพธ์ diff map (visualize เป็นภาพแดง=ต่าง/เทา=เหมือน) ยืนยันว่า diff ทั้งหมดอยู่ที่เส้นขอบ stroke บาง ๆ
+  1-2px เท่านั้น (ปกติมากสำหรับเทียบ Canvas2D software rasterizer กับ Pixi/WebGL rasterizer คนละตัว - ไม่ใช่
+  บั๊ก) ไม่มี diff ในพื้นน้ำ, background sprite, หรือตำแหน่ง/ขนาดของอะไรเลย
+
+### ข้อจำกัดที่รู้ตัว (ไม่ใช่บั๊ก แค่ P1 ยังไม่ครอบคลุม - รอ P3/P4)
+- Marquee/zone-draft dashed-rectangle ไม่ได้ pixel-diff ทดสอบจริง (สร้าง manual dash-segment helper ไว้ใน
+  `tankScene.ts`'s `dashedRectPath()` แล้ว แต่ยังไม่ได้ตั้ง scenario ทดสอบ marquee-drag ใน Pixi mode -
+  ทำได้ตอน P3 ที่ input เริ่มย้ายมาเป็น Pixi-native)
+- ยังไม่ได้ทดสอบ tank ที่มี room decor + background พร้อมกันตอน pixi mode (ทดสอบแยกกันคนละ scenario)
+- Group/schooling fish (หลายตัวว่ายเป็นฝูง) ยังไม่ได้ทดสอบใน pixi mode โดยเฉพาะ - z-order ของ raised-while-
+  dragging ทดสอบผ่าน `visibleDrawOrder()` ที่ Canvas2D ใช้เอง (regression suite เดิมยืนยัน draw() พฤติกรรม
+  ไม่เปลี่ยน) แต่ยังไม่ได้ยืนยัน "มองด้วยตา" ว่า Pixi วาด raised order ถูกจริงตอนลากปลาที่อยู่ในกลุ่ม

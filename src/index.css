@@ -1762,6 +1762,15 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 }
 .tank-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .tank-canvas.drawing-zone { cursor: crosshair; }
+/* Pixi tank renderer (see src/tank/render/) - opacity:0, not display:none/visibility:hidden, so the
+ * Canvas2D canvas underneath still receives every pointer event exactly as before; see the comment
+ * at its call site in TankCanvas.tsx for why it stays mounted and drawn-into either way. */
+.tank-canvas-hidden { opacity: 0; }
+/* Stacked exactly on top of .tank-canvas (same position:relative parent, .tank-wrap) - inset:0 makes
+ * it fill the same box, and pointer-events:none lets every pointer event fall straight through to
+ * the (invisible but live) Canvas2D canvas beneath it. */
+.tank-pixi-host { position: absolute; inset: 0; pointer-events: none; }
+.tank-pixi-canvas { display: block; width: 100%; height: 100%; }
 
 /* A fixed strip below the canvas (not floating over it) that hosts every contextual action -
  * undo/redo plus whatever selection/marquee/zone toolbar applies right now - so buttons never

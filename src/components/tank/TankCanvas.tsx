@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import {
   OVAL_TOP_CUT_MAX,
   OVAL_TOP_CUT_MIN,
@@ -13,6 +13,14 @@ import {
 import { useLanguage } from '@/lib/i18n';
 import { TANK_SHAPES } from '@/lib/storage';
 import type { TankShape } from '@/lib/types';
+import { getTankRendererMode } from '@/tank/render/rendererMode';
+
+// Dynamic import, not a static one: pixi.js (pulled in transitively by TankPixiLayer.tsx) is a
+// substantial dependency that only 'pixi' mode needs - the default 'canvas2d' users should never pay
+// for it in their initial bundle. Verified in docs/PIXI_MIGRATION_PLAN.md §11 (P0) that this actually
+// keeps the main bundle unaffected; a static import here was tried and measured to add ~70KB gzip to
+// the main chunk regardless of which renderer ends up being used.
+const TankPixiLayer = lazy(() => import('@/tank/render/TankPixiLayer').then((m) => ({ default: m.TankPixiLayer })));
 import { RoomLayer } from './RoomLayer';
 import { TankBackgroundOverlay } from './TankBackgroundOverlay';
 
@@ -39,6 +47,9 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
   const { t } = useLanguage();
   const selected = engine.selectedInstance;
   const drawingZone = !!engine.zoneDraftTarget;
+  // Read once per mount, not on every render - a live-switchable renderer isn't a real use case (see
+  // rendererMode.ts's own doc comment), so there's no need to re-check the flag on every re-render.
+  const [tankRendererMode] = useState(getTankRendererMode);
   const [justSaved, setJustSaved] = useState(false);
   const frameElRef = useRef<HTMLDivElement | null>(null);
   const viewportElRef = useRef<HTMLDivElement | null>(null);
@@ -209,17 +220,31 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
       >
         <div className="tank-frame" style={frameStyle} ref={frameElRef}>
           <div className="tank-wrap" style={wrapShapeStyle} ref={(el) => engine.attachWrap(el)}>
+            {/* The Canvas2D canvas is ALWAYS mounted and drawn into, in both renderer modes - it's
+             * not just a display surface, it's TankEngine's own source of truth for hit-testing,
+             * pointer coordinate math, and export (compositeScene() reads it directly - see
+             * useTank.ts) - none of which this migration touches (see docs/PIXI_MIGRATION_PLAN.md
+             * §4/§6 P1). In 'pixi' mode it keeps receiving every pointer event exactly as before,
+             * it's simply made visually invisible (`tank-canvas-hidden`, opacity:0 - not
+             * display:none/visibility:hidden, either of which would also stop it receiving pointer
+             * events) while TankPixiLayer, stacked on top of it with pointer-events:none so input
+             * still reaches this element underneath, shows the same scene painted a second way. */}
             <canvas
               ref={(el) => {
                 engine.attachCanvas(el);
                 if (el) engine.resizeCanvas();
               }}
-              className={`tank-canvas${drawingZone ? ' drawing-zone' : ''}`}
+              className={`tank-canvas${drawingZone ? ' drawing-zone' : ''}${tankRendererMode === 'pixi' ? ' tank-canvas-hidden' : ''}`}
               onPointerDown={(e) => engine.onCanvasPointerDown(e)}
               onPointerMove={(e) => engine.onCanvasPointerMove(e)}
               onPointerUp={() => engine.onCanvasPointerUp()}
               onPointerCancel={() => engine.onCanvasPointerUp()}
             />
+            {tankRendererMode === 'pixi' && (
+              <Suspense fallback={null}>
+                <TankPixiLayer engine={engine} />
+              </Suspense>
+            )}
           </div>
         </div>
         {/* Room decorations render as their own DOM layer, after (i.e. visually above) .tank-frame,

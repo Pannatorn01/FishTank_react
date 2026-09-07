@@ -1993,6 +1993,30 @@ class TankEngine {
     return p;
   }
 
+  /** `instances` (z-order) as-is - EXCEPT whatever's actively being dragged (and anything moving
+   *  with it - its group, or the rest of a multi-selection) is moved to the end so it visually sits
+   *  on top while moving, without ever touching the persisted array order (a mere click/drag must
+   *  not reorder anything or jump rows around in the Layers panel - only explicit bring-to-front/
+   *  send-to-back/panel-reorder should). Shared by draw() and visibleDrawOrder() below so a second
+   *  renderer (the Pixi one added in P1 - see docs/PIXI_MIGRATION_PLAN.md) can mirror the exact same
+   *  visual stacking without re-deriving the raised-while-dragging logic itself and risking it
+   *  drifting out of sync with this one. */
+  private computeDrawOrder(): Instance[] {
+    if (!this.draggingInstance) return this.instances;
+    const raised = new Set([this.draggingInstance.id, ...this.coMoversFor(this.draggingInstance)]);
+    const back: Instance[] = [];
+    const front: Instance[] = [];
+    this.instances.forEach((inst) => (raised.has(inst.id) ? front : back).push(inst));
+    return [...back, ...front];
+  }
+
+  /** Public read-only view of computeDrawOrder() - the current on-screen stacking order, for a
+   *  renderer other than this engine's own Canvas2D draw() to mirror (the Pixi renderer added in
+   *  P1). Never mutates `instances` itself; safe to call every frame. */
+  visibleDrawOrder(): Instance[] {
+    return this.computeDrawOrder();
+  }
+
   private draw(): void {
     if (!this.ctx || !this.canvas) return;
     const ctx = this.ctx;
@@ -2010,24 +2034,7 @@ class TankEngine {
 
     if (this.selectedZone) this.strokeZoneRect(this.selectedZone, 'rgba(120, 255, 160, 0.9)');
 
-    // Draw order follows `instances` (z-order) as-is - EXCEPT whatever's actively being dragged (and
-    // anything moving with it - its group, or the rest of a multi-selection) gets drawn last so it
-    // visually sits on top while moving, without ever touching the persisted array order (a mere
-    // click/drag must not reorder anything or jump rows around in the Layers panel - only explicit
-    // bring-to-front/send-to-back/panel-reorder should).
-    const raised = this.draggingInstance
-      ? new Set([this.draggingInstance.id, ...this.coMoversFor(this.draggingInstance)])
-      : null;
-    if (raised) {
-      this.instances.forEach((inst) => {
-        if (!raised.has(inst.id)) this.drawInstance(inst);
-      });
-      this.instances.forEach((inst) => {
-        if (raised.has(inst.id)) this.drawInstance(inst);
-      });
-    } else {
-      this.instances.forEach((inst) => this.drawInstance(inst));
-    }
+    this.computeDrawOrder().forEach((inst) => this.drawInstance(inst));
 
     if (this.marqueeRect) this.strokeZoneRect(this.marqueeRect, '#ffeb3b', 'rgba(255, 235, 59, 0.15)');
     if (this.zoneDraftRect) this.strokeZoneRect(this.zoneDraftRect, '#4ade80', 'rgba(74, 222, 128, 0.15)');
