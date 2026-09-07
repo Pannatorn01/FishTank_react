@@ -154,6 +154,12 @@ class TankEngine {
    *  as fits the viewport" (see TankCanvas's auto-fit computation, which multiplies this in). */
   zoomIndex = TANK_ZOOM_STEPS.length - 1;
 
+  /** In-progress video export - see startVideoExport/stopVideoExport. null the rest of the time. */
+  private exportRecording: { recorder: MediaRecorder; timer: number } | null = null;
+  /** True for the duration of an exportGif() call - guards against starting a second one (and two
+   *  competing downloads) while the first is still sampling frames. */
+  exportingGif = false;
+
   /** The actual on-screen-pixels-per-logical-pixel ratio right now (auto-fit scale x zoom step),
    *  computed and kept in sync by TankCanvas since only it knows the live viewport size. Every
    *  screen<->logical conversion (canvasPoint, resizeCanvas) goes through this - never assume 1:1. */
@@ -864,16 +870,252 @@ class TankEngine {
     };
   }
 
+  /**
+   * A room decoration's (xFrac, yFrac) is stored as its position at 100% zoom - a plain fraction of
+   * the viewport, exactly as it always was. This is what turns that reference position into an actual
+   * on-screen point *at the current zoom*: scaled around the viewport's own center by the current zoom
+   * step alone, not the fuller fitScale-inclusive effectiveScale a room item's own *size* uses (see
+   * RoomLayer.tsx) - fitScale's contribution is already folded in through `viewportSize` itself, which
+   * a window/tank resize changes independently of any zoom click, the same way it always has. Without
+   * this, a room item sat at a fixed screen position no matter how far the tank frame - centered in
+   * that same viewport, shrinking toward that same center as effectiveScale drops - had moved out from
+   * under it: zooming out visibly pulled them apart instead of the whole scene scaling together as one
+   * picture. roomScreenToFrac below is its exact inverse, used by every place a pointer position needs
+   * to become a stored fraction, so a drag at any zoom level round-trips back to the same point
+   * rendering it at that same zoom level would place it at.
+   */
+  roomFracToScreen(xFrac: number, yFrac: number, viewportSize: { width: number; height: number }): { x: number; y: number } {
+    const zoomStep = TANK_ZOOM_STEPS[this.zoomIndex];
+    const vcx = viewportSize.width / 2;
+    const vcy = viewportSize.height / 2;
+    return {
+      x: vcx + (xFrac * viewportSize.width - vcx) * zoomStep,
+      y: vcy + (yFrac * viewportSize.height - vcy) * zoomStep,
+    };
+  }
+
+  /** The exact inverse of roomFracToScreen - see its own doc comment. */
+  private roomScreenToFrac(screenX: number, screenY: number, viewportSize: { width: number; height: number }): { xFrac: number; yFrac: number } {
+    const zoomStep = TANK_ZOOM_STEPS[this.zoomIndex];
+    const vcx = viewportSize.width / 2;
+    const vcy = viewportSize.height / 2;
+    return {
+      xFrac: viewportSize.width > 0 ? (vcx + (screenX - vcx) / zoomStep) / viewportSize.width : 0,
+      yFrac: viewportSize.height > 0 ? (vcy + (screenY - vcy) / zoomStep) / viewportSize.height : 0,
+    };
+  }
+
+  // --- export ---
+
+  /** A room decoration's footprint relative to the tank frame's own top-left corner, in the same
+   *  logical units as the frame's own canvas (1 unit = 1 pixel of `this.canvas`'s raster, i.e. tank-
+   *  logical px, not CSS/view px) - the coordinate space compositeScene draws everything into. Reads
+   *  xFrac/yFrac at zoomStep = 1 (`roomFracToScreen` with the zoom step fixed to 1) rather than
+   *  whatever the view happens to be zoomed to right now, then divides out `fitScale` to land in
+   *  logical units - the same reasoning `roomScreenToFrac`'s own zoomStep division uses, just for a
+   *  fixed reference zoom instead of whatever's live. This is what makes an export look the same
+   *  regardless of the zoom level it was exported at. */
+  private roomLogicalRect(inst: RoomInstance, fitScale: number, viewportSize: { width: number; height: number }): SelectionBox | null {
+    const sprite = this.spriteFor(inst);
+    if (!sprite) return null;
+    const vcx = viewportSize.width / 2;
+    const vcy = viewportSize.height / 2;
+    const refFrameW = this.tankWidth! * fitScale;
+    const refFrameH = this.tankHeight! * fitScale;
+    const refX = inst.xFrac * viewportSize.width;
+    const refY = inst.yFrac * viewportSize.height;
+    const relX = (refX - (vcx - refFrameW / 2)) / fitScale;
+    const relY = (refY - (vcy - refFrameH / 2)) / fitScale;
+    const { pw, ph } = this.spritePx(sprite);
+    return { x0: relX - pw / 2, y0: relY - ph / 2, x1: relX + pw / 2, y1: relY + ph / 2 };
+  }
+
+  /**
+   * Composites the tank frame's own live raster (fish, decorations, water, glass outline - whatever
+   * `this.canvas` currently shows, kept animating by the loop below regardless of export) together
+   * with every visible room decoration into one flat image - the shared basis for every export format
+   * (PNG grabs one, GIF and video sample it repeatedly). Always built as if the view were at 100% zoom
+   * (see roomLogicalRect) so an export looks the same - and full pixel-art crisp, never blurred up from
+   * a zoomed-out view - no matter what zoom the editor happened to be showing at the time.
+   *
+   * `timeMs` drives each room item's own frame animation (they don't share the tank canvas's own loop -
+   * see RoomLayer.tsx) deterministically from a single clock, so a GIF/video's sampled frames animate
+   * room decor in lockstep with however many times compositeScene has been called, rather than each
+   * one free-running on its own real-time timer the way the live on-screen view does.
+   */
+  private compositeScene(fitScale: number, viewportSize: { width: number; height: number }, timeMs = 0): HTMLCanvasElement {
+    const out = document.createElement('canvas');
+    if (!this.canvas || !this.tankWidth || !this.tankHeight) return out;
+
+    const rects = this.roomInstances
+      .filter((r) => r.visible ?? true)
+      .map((inst) => ({ inst, rect: this.roomLogicalRect(inst, fitScale, viewportSize) }))
+      .filter((r): r is { inst: RoomInstance; rect: SelectionBox } => r.rect !== null);
+
+    let x0 = 0, y0 = 0, x1 = this.tankWidth, y1 = this.tankHeight;
+    rects.forEach(({ rect }) => {
+      x0 = Math.min(x0, rect.x0);
+      y0 = Math.min(y0, rect.y0);
+      x1 = Math.max(x1, rect.x1);
+      y1 = Math.max(y1, rect.y1);
+    });
+    out.width = Math.max(1, Math.round(x1 - x0));
+    out.height = Math.max(1, Math.round(y1 - y0));
+    const ctx = out.getContext('2d')!;
+    ctx.imageSmoothingEnabled = false;
+
+    // A room item sitting off to one side of the frame (rather than centered on it) makes this
+    // canvas's own bounding box bigger than the frame alone - the slack space around the frame and
+    // outside every room item's own footprint would otherwise stay fully transparent. That reads fine
+    // as a PNG, but a GIF's palette has no real alpha channel (only a single all-or-nothing
+    // transparent index - see exportGif), so an unfilled background there would come out as an ugly
+    // solid block of whatever color quantize() happens to pick for "transparent". Filling with the
+    // tank viewport's own background color instead means every export format gets the same, sensible
+    // backdrop - this reads as "a photo of the tank on the shelf it's sitting on," not a cutout.
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--pixel-bg-deep').trim() || '#2b2b2b';
+    ctx.fillRect(0, 0, out.width, out.height);
+
+    ctx.drawImage(this.canvas, -x0, -y0);
+
+    rects.forEach(({ inst, rect }) => {
+      const sprite = this.spriteFor(inst)!;
+      const { width, height } = this.spriteDims(sprite);
+      const frameIndex = sprite.frames.length > 1 ? Math.floor(timeMs / (sprite.frameMs || 400)) % sprite.frames.length : 0;
+      ctx.save();
+      ctx.translate(rect.x0 - x0, rect.y0 - y0);
+      paintLayers(ctx, sprite.frames[frameIndex], width, height, DISPLAY_SCALE);
+      ctx.restore();
+    });
+
+    return out;
+  }
+
+  private downloadBlob(blob: Blob | null, filename: string): void {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  /** A still photo of the tank exactly as it looks right now (one frame of compositeScene, timeMs=0
+   *  so every room item draws its first frame) - the simplest of the three export formats, and what
+   *  GIF/video export both build on top of. */
+  exportPng(fitScale: number, viewportSize: { width: number; height: number }): void {
+    const canvas = this.compositeScene(fitScale, viewportSize, 0);
+    canvas.toBlob((blob) => this.downloadBlob(blob, `${this.exportBaseName()}.png`));
+  }
+
+  private exportBaseName(): string {
+    return 'fish-tank';
+  }
+
+  /**
+   * Records the live, already-animating scene as a WebM video via MediaRecorder - the browser-native
+   * way to turn a canvas into a video with no encoding library of its own, at the cost of only ever
+   * producing WebM (no MP4 without a much heavier ffmpeg-in-the-browser dependency this app doesn't
+   * carry). Runs in real time, on its own short timer independent of the tank's own simulation loop,
+   * redrawing compositeScene every ~50ms and feeding each frame to the stream - stop with
+   * stopVideoExport (or exportRecording being cleared some other way) to finalize and download it.
+   */
+  startVideoExport(fitScale: number, viewportSize: { width: number; height: number }): void {
+    if (this.exportRecording) return;
+    const canvas = this.compositeScene(fitScale, viewportSize, 0);
+    const stream = canvas.captureStream(20);
+    const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
+    if (!mimeType) return;
+    const recorder = new MediaRecorder(stream, { mimeType });
+    const chunks: Blob[] = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunks.push(e.data);
+    };
+    recorder.onstop = () => {
+      this.downloadBlob(new Blob(chunks, { type: mimeType }), `${this.exportBaseName()}.webm`);
+    };
+    const startedAt = performance.now();
+    const redraw = () => {
+      const ctx = canvas.getContext('2d')!;
+      const next = this.compositeScene(fitScale, viewportSize, performance.now() - startedAt);
+      if (canvas.width !== next.width || canvas.height !== next.height) {
+        canvas.width = next.width;
+        canvas.height = next.height;
+      }
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(next, 0, 0);
+    };
+    const timer = window.setInterval(redraw, 50);
+    this.exportRecording = { recorder, timer };
+    recorder.start();
+    this.reactNotify();
+  }
+
+  stopVideoExport(): void {
+    if (!this.exportRecording) return;
+    window.clearInterval(this.exportRecording.timer);
+    this.exportRecording.recorder.stop();
+    this.exportRecording = null;
+    this.reactNotify();
+  }
+
+  get isRecordingVideo(): boolean {
+    return this.exportRecording !== null;
+  }
+
+  /**
+   * Samples the live scene at a fixed interval over `durationMs` and encodes the frames as an
+   * animated GIF (gifenc - a small, dependency-free, main-thread encoder; no web worker asset to wire
+   * up the way the more common gif.js needs). Each frame gets its own 256-color palette (gifenc's
+   * plain quantize/applyPalette pair) rather than one shared palette across the whole clip - simpler,
+   * and this app's flat pixel-art color fills rarely come close to the 256-color ceiling anyway, so
+   * the trade-off is invisible in practice for a several-second loop.
+   */
+  async exportGif(fitScale: number, viewportSize: { width: number; height: number }, durationMs = 3000): Promise<void> {
+    if (this.exportingGif) return;
+    this.exportingGif = true;
+    this.reactNotify();
+    try {
+      const { GIFEncoder, quantize, applyPalette } = await import('gifenc');
+      const frameDelayMs = 100;
+      const frameCount = Math.max(1, Math.round(durationMs / frameDelayMs));
+      const gif = GIFEncoder();
+      const start = performance.now();
+      for (let i = 0; i < frameCount; i++) {
+        const canvas = this.compositeScene(fitScale, viewportSize, i * frameDelayMs);
+        const ctx = canvas.getContext('2d')!;
+        const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const palette = quantize(data, 256);
+        const indexed = applyPalette(data, palette);
+        gif.writeFrame(indexed, canvas.width, canvas.height, { palette, delay: frameDelayMs });
+        // One real animation frame's worth of wait between samples, so this reads the tank's own
+        // already-running simulation loop rather than freezing it or racing ahead of it - the same
+        // "record what's actually happening" approach the video export takes.
+        const target = start + i * frameDelayMs;
+        const wait = target - performance.now();
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      }
+      gif.finish();
+      this.downloadBlob(new Blob([gif.bytes() as BlobPart], { type: 'image/gif' }), `${this.exportBaseName()}.gif`);
+    } finally {
+      this.exportingGif = false;
+      this.reactNotify();
+    }
+  }
+
   /** Drops a new room decoration at the given screen point, converted into a viewport-relative,
-   *  margin-clamped fraction (see clampRoomFrac) - counterpart to addInstance() for kind 'room'
-   *  sprites, but placed in the viewport's coordinate space instead of the tank canvas's, since
-   *  room decorations live around the tank rather than inside its swim space. */
+   *  margin-clamped fraction (see roomScreenToFrac/clampRoomFrac) - counterpart to addInstance() for
+   *  kind 'room' sprites, but placed in the viewport's coordinate space instead of the tank canvas's,
+   *  since room decorations live around the tank rather than inside its swim space. */
   addRoomInstance(spriteId: string, clientX: number, clientY: number): void {
     const sprite = this.sprites.find((s) => s.id === spriteId);
     if (!sprite || !this.viewportEl) return;
     const rect = this.viewportEl.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
-    const { xFrac, yFrac } = this.clampRoomFrac((clientX - rect.left) / rect.width, (clientY - rect.top) / rect.height, rect);
+    const raw = this.roomScreenToFrac(clientX - rect.left, clientY - rect.top, rect);
+    const { xFrac, yFrac } = this.clampRoomFrac(raw.xFrac, raw.yFrac, rect);
     const inst: RoomInstance = { id: storage.uid('room'), spriteId, xFrac, yFrac, visible: true };
     this.roomInstances.push(inst);
     this.persist();
@@ -901,10 +1143,8 @@ class TankEngine {
     if (!inst || !this.viewportEl) return;
     const rect = this.viewportEl.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
-    this.roomDragOffsetFrac = {
-      x: (e.clientX - rect.left) / rect.width - inst.xFrac,
-      y: (e.clientY - rect.top) / rect.height - inst.yFrac,
-    };
+    const grabbed = this.roomScreenToFrac(e.clientX - rect.left, e.clientY - rect.top, rect);
+    this.roomDragOffsetFrac = { x: grabbed.xFrac - inst.xFrac, y: grabbed.yFrac - inst.yFrac };
     this.draggingRoomId = id;
     this.roomDragMoved = false;
     this.roomDragUndoSnapshot = this.snapshotState();
@@ -918,8 +1158,9 @@ class TankEngine {
     if (!inst) return;
     const rect = this.viewportEl.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) return;
-    const rawX = (e.clientX - rect.left) / rect.width - this.roomDragOffsetFrac.x;
-    const rawY = (e.clientY - rect.top) / rect.height - this.roomDragOffsetFrac.y;
+    const pointer = this.roomScreenToFrac(e.clientX - rect.left, e.clientY - rect.top, rect);
+    const rawX = pointer.xFrac - this.roomDragOffsetFrac.x;
+    const rawY = pointer.yFrac - this.roomDragOffsetFrac.y;
     const { xFrac, yFrac } = this.clampRoomFrac(rawX, rawY, rect);
     if (Math.abs(xFrac - inst.xFrac) > 0.0005 || Math.abs(yFrac - inst.yFrac) > 0.0005) this.roomDragMoved = true;
     inst.xFrac = xFrac;

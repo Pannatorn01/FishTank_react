@@ -225,7 +225,7 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
         {/* Room decorations render as their own DOM layer, after (i.e. visually above) .tank-frame,
          * so they can overlap the tank chrome - unlike in-tank instances they aren't drawn into the
          * simulation <canvas> at all, since they live outside that coordinate space entirely. */}
-        <RoomLayer engine={engine} viewportSize={viewportSize} />
+        <RoomLayer engine={engine} viewportSize={viewportSize} effectiveScale={effectiveScale} />
         <TankBackgroundOverlay engine={engine} frameOffset={frameOffset} effectiveScale={effectiveScale} />
       </div>
 
@@ -281,6 +281,40 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
             onClick={() => engine.zoomIn()}
           >
             <i className="fa-solid fa-magnifying-glass-plus" />
+          </button>
+          <span className="tank-action-divider" aria-hidden="true" />
+          {/* All three build on the same composited photo of the tank (frame + fish/decor + room
+              decor, always at 100%-zoom-equivalent crispness regardless of the view's own current
+              zoom - see TankEngine.compositeScene) - a still frame for PNG, that photo sampled a
+              few times a second for GIF, or recorded live for video. */}
+          <button
+            type="button"
+            className="selection-toolbar-btn"
+            title={t('tank.exportPng')}
+            disabled={engine.isRecordingVideo || engine.exportingGif}
+            onClick={() => engine.exportPng(fitScale, viewportSize)}
+          >
+            <i className="fa-solid fa-camera" />
+          </button>
+          <button
+            type="button"
+            className="selection-toolbar-btn"
+            title={engine.exportingGif ? t('tank.exportGifBusy') : t('tank.exportGif')}
+            disabled={engine.isRecordingVideo || engine.exportingGif}
+            onClick={() => void engine.exportGif(fitScale, viewportSize)}
+          >
+            <i className={`fa-solid ${engine.exportingGif ? 'fa-spinner fa-spin' : 'fa-film'}`} />
+          </button>
+          <button
+            type="button"
+            className={`selection-toolbar-btn${engine.isRecordingVideo ? ' active' : ''}`}
+            title={engine.isRecordingVideo ? t('tank.exportVideoStop') : t('tank.exportVideoStart')}
+            disabled={engine.exportingGif}
+            onClick={() =>
+              engine.isRecordingVideo ? engine.stopVideoExport() : engine.startVideoExport(fitScale, viewportSize)
+            }
+          >
+            <i className={`fa-solid ${engine.isRecordingVideo ? 'fa-stop' : 'fa-circle-dot'}`} />
           </button>
         </div>
 

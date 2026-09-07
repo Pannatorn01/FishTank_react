@@ -5,10 +5,35 @@ import type { RoomInstance } from '@/lib/types';
 
 const DISPLAY_SCALE = 4;
 
-/** A single room decoration, drawn at its native sprite size (same DISPLAY_SCALE as in-tank
- *  instances, so it reads as the "same size" whether it's inside the tank or outside it) and
- *  positioned by its center at (xFrac, yFrac) of the viewport. */
-function RoomItem({ engine, inst, viewportSize }: { engine: TankEngine; inst: RoomInstance; viewportSize: { width: number; height: number } }) {
+/** A single room decoration, rasterized at its native sprite size (same DISPLAY_SCALE useTank.ts uses
+ *  for every in-tank sprite, for the same reason: a fixed, crisp logical-pixel buffer regardless of
+ *  view zoom) and then scaled *visually* by `effectiveScale` - the same auto-fit-times-zoom factor
+ *  the tank canvas itself is drawn at (see TankCanvas.tsx). Room decorations live in their own DOM
+ *  layer outside the canvas entirely, so nothing else makes them shrink and grow in step with the
+ *  tank the way an in-tank fish or plant automatically does just by being drawn on that same,
+ *  CSS-scaled canvas: without this they stayed a fixed absolute size no matter how small the tank
+ *  itself was drawn, which is what let one dwarf a tank many times its own on-screen size. The oval/
+ *  round/rounded outline the tank draws is only ever the *swim* boundary - room decor was always
+ *  meant to read as furniture around that boundary, sized to match it, not objects with a size of
+ *  their own independent of the room they're sitting in.
+ *
+ *  Position goes through engine.roomFracToScreen rather than a plain `xFrac * viewportSize.width` -
+ *  that plain multiplication was the other half of the same "stays a fixed size/position regardless
+ *  of the tank's own zoom" bug: it answers "where in the viewport", which doesn't move as the *tank
+ *  frame* (centered in that same viewport) shrinks toward that center under zoom - so an item placed
+ *  snug against the tank's edge drifted away from it, edge and item now scaling at different rates,
+ *  breaking the sense that the tank and everything sitting around it are one picture. */
+function RoomItem({
+  engine,
+  inst,
+  viewportSize,
+  effectiveScale,
+}: {
+  engine: TankEngine;
+  inst: RoomInstance;
+  viewportSize: { width: number; height: number };
+  effectiveScale: number;
+}) {
   const sprite = engine.spriteFor(inst);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -53,11 +78,20 @@ function RoomItem({ engine, inst, viewportSize }: { engine: TankEngine; inst: Ro
 
   if (!sprite || !inst.visible) return null;
   const selected = engine.selectedRoomId === inst.id;
+  const { x, y } = engine.roomFracToScreen(inst.xFrac, inst.yFrac, viewportSize);
 
   return (
     <div
       className={`tank-room-item${selected ? ' selected' : ''}`}
-      style={{ left: inst.xFrac * viewportSize.width, top: inst.yFrac * viewportSize.height }}
+      style={{
+        left: x,
+        top: y,
+        // Order matters: translate first (in the item's own untransformed box, so -50%/-50% is
+        // exactly half of its native, unscaled size) then scale - scaling around the box's default
+        // center transform-origin afterward can't un-center it, so the anchor point set by left/top
+        // stays exactly where it was regardless of what effectiveScale happens to be.
+        transform: `translate(-50%, -50%) scale(${effectiveScale})`,
+      }}
       onPointerDown={(e) => engine.onRoomPointerDown(e, inst.id)}
       onPointerMove={(e) => engine.onRoomPointerMove(e)}
       onPointerUp={() => engine.onRoomPointerUp()}
@@ -68,12 +102,20 @@ function RoomItem({ engine, inst, viewportSize }: { engine: TankEngine; inst: Ro
   );
 }
 
-export function RoomLayer({ engine, viewportSize }: { engine: TankEngine; viewportSize: { width: number; height: number } }) {
+export function RoomLayer({
+  engine,
+  viewportSize,
+  effectiveScale,
+}: {
+  engine: TankEngine;
+  viewportSize: { width: number; height: number };
+  effectiveScale: number;
+}) {
   if (!engine.roomInstances.length) return null;
   return (
     <div className="tank-room-layer">
       {engine.roomInstances.map((inst) => (
-        <RoomItem key={inst.id} engine={engine} inst={inst} viewportSize={viewportSize} />
+        <RoomItem key={inst.id} engine={engine} inst={inst} viewportSize={viewportSize} effectiveScale={effectiveScale} />
       ))}
     </div>
   );

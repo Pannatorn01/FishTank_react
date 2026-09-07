@@ -1,20 +1,17 @@
 import { useState } from 'react';
 import type { TankEngine } from '@/hooks/useTank';
 import { useLanguage } from '@/lib/i18n';
-import type { Instance, RoomInstance, SpriteType, TankGroup } from '@/lib/types';
+import type { Instance, RoomInstance, TankGroup } from '@/lib/types';
 import { PaletteThumb } from './TankPalette';
 
 type Row = { kind: 'group'; group: TankGroup; members: Instance[] } | { kind: 'instance'; inst: Instance };
 
-/** The Layers panel shows one sprite-type at a time (icon tabs switch between them), instead of
- *  one flat list mixing fish/decorations/room-decor together. */
-type LayerTab = Exclude<SpriteType, 'background'>;
-const LAYER_TABS: LayerTab[] = ['fish', 'object', 'room'];
-const TAB_ICON: Record<LayerTab, string> = { fish: 'fish', object: 'leaf', room: 'image' };
-
 /** Front-to-back rows for the panel (front first, same convention as the sprite editor's LayerPanel):
  *  walk `instances` back-to-front and, the first time a grouped instance is seen, emit its whole
- *  (already-contiguous) member block as one group row instead of emitting members individually. */
+ *  (already-contiguous) member block as one group row instead of emitting members individually. Fish
+ *  and decorations share one z-order (they're the same `instances` array - only room decor, which
+ *  lives outside the tank's swim space entirely, is a separate list - see roomInstances below), so
+ *  this always builds one combined list rather than one per sprite type. */
 function buildRows(engine: TankEngine): Row[] {
   const rows: Row[] = [];
   const seenGroups = new Set<string>();
@@ -35,23 +32,6 @@ function buildRows(engine: TankEngine): Row[] {
     rows.push({ kind: 'group', group, members });
   }
   return rows;
-}
-
-/** Keeps only what belongs on `tab`: plain instance rows whose sprite matches, and - for a group
- *  row - only the members whose sprite matches (a group can mix fish and decorations, so it may
- *  show up on more than one tab with a different subset of members each time; dropped entirely if
- *  none of its members match). */
-function filterRowsForTab(rows: Row[], engine: TankEngine, tab: 'fish' | 'object'): Row[] {
-  const out: Row[] = [];
-  rows.forEach((row) => {
-    if (row.kind === 'instance') {
-      if (engine.spriteFor(row.inst)?.type === tab) out.push(row);
-      return;
-    }
-    const members = row.members.filter((m) => engine.spriteFor(m)?.type === tab);
-    if (members.length) out.push({ kind: 'group', group: row.group, members });
-  });
-  return out;
 }
 
 function InstanceRow({
@@ -162,8 +142,10 @@ function RoomInstanceRow({ engine, inst }: { engine: TankEngine; inst: RoomInsta
 
 export function TankLayers({ engine }: { engine: TankEngine }) {
   const { t } = useLanguage();
-  const [tab, setTab] = useState<LayerTab>('fish');
-  const rows = tab === 'room' ? [] : filterRowsForTab(buildRows(engine), engine, tab);
+  // One combined list now - fish, decorations and room decor all together, in the order they'll
+  // actually be found (in-tank z-order first, room decor after), rather than one sprite type at a
+  // time behind a tab click that hid the other two.
+  const rows = buildRows(engine);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -184,37 +166,13 @@ export function TankLayers({ engine }: { engine: TankEngine }) {
     setRenamingId(null);
   };
 
+  const roomRows = engine.roomInstances.slice().reverse();
+
   return (
     <div className="tank-layers">
       <div className="panel-title">{t('tank.layersTitle')}</div>
-      <div className="tank-layer-type-tabs">
-        {LAYER_TABS.map((tt) => (
-          <button
-            key={tt}
-            type="button"
-            className={`tank-layer-type-tab${tab === tt ? ' active' : ''}`}
-            title={t(`tank.layerTab.${tt}`)}
-            onClick={() => setTab(tt)}
-          >
-            <i className={`fa-solid fa-${TAB_ICON[tt]}`} />
-          </button>
-        ))}
-      </div>
-
-      {tab === 'room' ? (
-        <div className="tank-layer-list">
-          {engine.roomInstances.length === 0 && <p className="palette-hint">{t('tank.layersEmpty')}</p>}
-          {engine.roomInstances
-            .slice()
-            .reverse()
-            .map((inst) => (
-              <RoomInstanceRow key={inst.id} engine={engine} inst={inst} />
-            ))}
-        </div>
-      ) : (
-        <>
-          {rows.length === 0 && <p className="palette-hint">{t('tank.layersEmpty')}</p>}
-          <div className="tank-layer-list">
+      {rows.length === 0 && roomRows.length === 0 && <p className="palette-hint">{t('tank.layersEmpty')}</p>}
+      <div className="tank-layer-list">
         {rows.map((row) => {
           if (row.kind !== 'group') {
             return (
@@ -363,9 +321,21 @@ export function TankLayers({ engine }: { engine: TankEngine }) {
             </div>
           );
         })}
-          </div>
-        </>
-      )}
+        {roomRows.length > 0 && (
+          <>
+            {/* A plain label, not another tab to click through - room decorations don't share a
+             *  z-order with fish/decorations (they live outside the tank's swim space entirely - see
+             *  RoomInstanceRow) and can't be drag-reordered against them, so folding them silently
+             *  into the same rows above would suggest a relationship that isn't there. This still
+             *  keeps everything in one glance-able list instead of one you click through, which is
+             *  the part that was actually unwanted. */}
+            {rows.length > 0 && <div className="tank-layer-section-label">{t('tank.layerTab.room')}</div>}
+            {roomRows.map((inst) => (
+              <RoomInstanceRow key={inst.id} engine={engine} inst={inst} />
+            ))}
+          </>
+        )}
+      </div>
     </div>
   );
 }

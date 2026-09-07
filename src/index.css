@@ -557,8 +557,26 @@ body, #root { height: 100%; margin: 0; }
    flex-wrap: wrap;
    margin-left: auto;
    }
-main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
-/* .tab-panel { height: 100%; } */
+/* display: flex column, not block - so the visible tab gets main's available height through the flex
+ * algorithm directly (flex-grow) instead of through a percentage `height`, which needs its ancestor to
+ * have a "definite" height for a *plain block* child to resolve against and silently doesn't always
+ * get one through a chain like this (main's own height comes from ITS OWN `flex: 1`, one level up -
+ * exactly the kind of indirection percentage resolution is fussiest about). Flexbox sizing doesn't
+ * have that requirement; a flex item's `flex-grow` share of the container's space is just computed,
+ * not resolved through a percentage lookup. */
+main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 8px; min-height: 0; }
+/* flex-shrink: 0 is what lets a tab whose content is genuinely taller than one page (the editor's
+ * docks) grow past main's height instead of being crushed back down to fit - main's own overflow:auto
+ * is what then makes the rest of it reachable by scrolling. flex-grow: 1 is the other half: a tab
+ * shorter than main's available space (the tank, most of the time) is stretched to fill it exactly,
+ * which is what every height:100%/flex:1 cascade inside it (the tank layout's .tank-viewport chain
+ * especially) needs a real, fixed number to measure against - without it, .tab-panel's box collapsed to
+ * whatever its own content needed, .tank-viewport's "flex: 1 of that" had nothing to actually grow
+ * into, and every tank-zoom click - which changes .tank-frame's own explicit size, part of that same
+ * content - fed straight back into how tall the box computing its size was even allowed to be,
+ * shrinking the whole tank view a little further on every click with zooming back in never able to
+ * recover it (the bug this whole rule replaces the plain `height: 100%` it makes redundant). */
+.tab-panel { flex: 1 0 auto; }
 .tab-panel[hidden] { display: none; }
 
 .pixelated { image-rendering: pixelated; }
@@ -1675,7 +1693,8 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
 .tank-room-layer { position: absolute; inset: 0; pointer-events: none; }
 .tank-room-item {
   position: absolute;
-  transform: translate(-50%, -50%);
+  /* transform (translate to center + scale to match the tank's own zoom) is set inline per item -
+     see RoomItem in RoomLayer.tsx, which needs effectiveScale, a value only known at render time. */
   pointer-events: auto;
   cursor: grab;
   touch-action: none;
@@ -1858,22 +1877,19 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   overflow-y: auto;
   overflow-x: hidden;
 }
-/* Icon tabs at the top of the Layers panel - switch which sprite type's layers are shown (fish,
- * decorations, room decor) instead of listing everything mixed together in one long list. */
-.tank-layer-type-tabs { display: flex; gap: 4px; flex-shrink: 0; }
-.tank-layer-type-tab {
-  flex: 1;
-  background: var(--pixel-dark-3);
-  color: var(--pixel-bevel-light);
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
-  height: 30px;
-  font-size: 0.8rem;
-  cursor: pointer;
-}
-.tank-layer-type-tab.active { background: var(--pixel-accent); color: var(--pixel-text-strong); }
 .tank-layer-list { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* Marks where room decor starts within the combined list (TankLayers.tsx) - a plain heading, not
+ * another tab to click through, since everything is one list now rather than one sprite type shown
+ * at a time behind a click. */
+.tank-layer-section-label {
+  margin-top: 4px;
+  padding: 3px 2px 2px;
+  border-top: 1px solid var(--bevel-dark);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--pixel-muted);
+}
 .tank-layer-row {
   display: flex;
   align-items: center;
