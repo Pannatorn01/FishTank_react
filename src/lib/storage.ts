@@ -177,10 +177,89 @@ export function saveGroups(groups: TankGroup[]): void {
   localStorage.setItem(KEY_GROUPS, JSON.stringify(groups));
 }
 
-export function loadRoomInstances(): RoomInstance[] {
+/** Fraction of the tank's own width/height added as "room" space on every side, for room decor to
+ *  sit in - see RoomInstance's own doc comment (types.ts) and normalizeRoomInstances below. Kept
+ *  here (not useTank.ts) since the migration needs the exact same value the live app uses to place
+ *  new room decor, and this is the one file both tankScene.ts's Pixi renderer and useTank.ts already
+ *  import from. */
+export const ROOM_MARGIN_FRAC = 0.35;
+
+/** The single source of truth for how big the "room" (the space room decor can occupy around the
+ *  tank - see RoomInstance's doc comment in types.ts) is, in tank-logical px, given the tank's own
+ *  current size. Used by TankEngine's own clampRoomPosition (useTank.ts) to bound where a room item
+ *  can be dragged, and by the Pixi renderer (tankScene.ts, TankPixiLayer.tsx) to size and offset the
+ *  scene so that same margin is actually visible/paintable - both need the exact same numbers or a
+ *  room item could be draggable to a position the renderer then clips off-canvas. */
+export function roomSceneMargin(tankWidth: number, tankHeight: number): { marginX: number; marginY: number; sceneWidth: number; sceneHeight: number } {
+  const marginX = tankWidth * ROOM_MARGIN_FRAC;
+  const marginY = tankHeight * ROOM_MARGIN_FRAC;
+  return { marginX, marginY, sceneWidth: tankWidth + marginX * 2, sceneHeight: tankHeight + marginY * 2 };
+}
+
+/** Pre-P2 shape (see git history / docs/PIXI_MIGRATION_PLAN.md §7-B) - center position as a fraction
+ *  (0..1) of the *browser viewport's* width/height at 100% zoom, with the tank frame centered inside
+ *  it. Only ever produced by versions of this app before RoomInstance moved to tank-relative x/y. */
+interface LegacyRoomInstance {
+  id: string;
+  spriteId: string;
+  xFrac: number;
+  yFrac: number;
+  visible?: boolean;
+}
+
+function isLegacyRoomInstance(r: unknown): r is LegacyRoomInstance {
+  return !!r && typeof r === 'object' && typeof (r as LegacyRoomInstance).xFrac === 'number';
+}
+
+/**
+ * Migrates whatever loadRoomInstances() returns onto the current RoomInstance shape (tank-relative
+ * x/y - see its own doc comment in types.ts), tolerating both a legacy record (xFrac/yFrac) and an
+ * already-current one (x/y) in the same array, since a user could have saved before P2 and never
+ * touched room decor since.
+ *
+ * The legacy fraction was of the *browser viewport*, which was never itself saved anywhere - there is
+ * no way to reconstruct exactly where a legacy item would have appeared on the specific screen it was
+ * placed on. Instead, the fraction is reinterpreted directly over the *new* room rectangle (the tank
+ * plus its ROOM_MARGIN_FRAC margin): xFrac=0 -> the room's left edge, xFrac=1 -> its right edge, and
+ * so on. This isn't pixel-identical to the old placement (nothing could be, without the original
+ * viewport size) but it is deterministic, keeps left-of-center items left-of-center and top items on
+ * top, and - the actual bar this needs to clear - always lands the item at a valid, reasonable
+ * position rather than off in undefined space or clamped to a corner.
+ */
+export function normalizeRoomInstances(raw: unknown, tankWidth: number, tankHeight: number): RoomInstance[] {
+  if (!Array.isArray(raw)) return [];
+  const marginX = tankWidth * ROOM_MARGIN_FRAC;
+  const marginY = tankHeight * ROOM_MARGIN_FRAC;
+  const roomWidth = tankWidth + marginX * 2;
+  const roomHeight = tankHeight + marginY * 2;
+  return raw
+    .map((r): RoomInstance | null => {
+      if (isLegacyRoomInstance(r)) {
+        return {
+          id: r.id,
+          spriteId: r.spriteId,
+          x: r.xFrac * roomWidth - marginX,
+          y: r.yFrac * roomHeight - marginY,
+          visible: r.visible ?? true,
+        };
+      }
+      const inst = r as Partial<RoomInstance>;
+      if (typeof inst.id !== 'string' || typeof inst.spriteId !== 'string') return null;
+      return {
+        id: inst.id,
+        spriteId: inst.spriteId,
+        x: typeof inst.x === 'number' ? inst.x : 0,
+        y: typeof inst.y === 'number' ? inst.y : 0,
+        visible: inst.visible ?? true,
+      };
+    })
+    .filter((r): r is RoomInstance => r !== null);
+}
+
+export function loadRoomInstances(tankWidth: number, tankHeight: number): RoomInstance[] {
   try {
     const raw = localStorage.getItem(KEY_ROOM_INSTANCES);
-    return raw ? JSON.parse(raw) : [];
+    return raw ? normalizeRoomInstances(JSON.parse(raw), tankWidth, tankHeight) : [];
   } catch (e) {
     console.warn('loadRoomInstances failed', e);
     return [];

@@ -1,6 +1,7 @@
 import { Container, FillGradient, Graphics, Sprite } from 'pixi.js';
 import { OVAL_TOP_CUT_MAX, OVAL_TOP_CUT_MIN, ROUNDED_RADIUS_MAX, ROUNDED_RADIUS_MIN, type TankEngine } from '@/hooks/useTank';
-import type { Instance, SelectionBox, Sprite as SpriteData, TankShape } from '@/lib/types';
+import { roomSceneMargin } from '@/lib/storage';
+import type { Instance, RoomInstance, SelectionBox, Sprite as SpriteData, TankShape } from '@/lib/types';
 import { textureFor } from './textureCache';
 
 /** Kept identical to the constants of the same name in useTank.ts's Canvas2D draw() - this file is
@@ -101,11 +102,25 @@ interface InstanceView {
   outline: Graphics;
 }
 
+interface RoomView {
+  sprite: Sprite;
+}
+
 /** Everything one call to createTankScene() owns - all torn down together by destroy(). Mirrors
  *  TankEngine's own draw() one-to-one (see the mapping table in docs/PIXI_MIGRATION_PLAN.md §4) but
  *  reads the engine's live, already-simulated state each frame rather than owning any simulation
- *  itself - P1 is a display-layer swap only, not a rewrite of state/physics/input (all of which stay
- *  exactly where they are in useTank.ts). */
+ *  itself - a display-layer swap only, not a rewrite of state/physics/input (all of which stay
+ *  exactly where they are in useTank.ts).
+ *
+ * Room decor (P2, docs/PIXI_MIGRATION_PLAN.md §13) is drawn here for VISUAL parity only - dragging/
+ * selecting a room item is still handled entirely by the existing DOM layer (RoomLayer.tsx), which
+ * stays mounted (just made invisible via opacity in pixi mode - see TankCanvas.tsx) rather than being
+ * ported to Pixi's own event system. The two rendering surfaces can't both be pointer-interactive at
+ * the same point on screen (only one DOM element receives a given click), and in-tank instances'
+ * pointer handling already lives on the Canvas2D <canvas> (also kept mounted-but-invisible, per P1) -
+ * consolidating every input path onto one system is real work with its own risk, and is deliberately
+ * left to a later phase (see the plan doc's P3, "input/dragController.ts") rather than folded into
+ * this one at extra risk for a purely visual milestone. */
 export interface TankSceneHandle {
   /** Repaints everything from the engine's current state - call once per animation frame. */
   render(engine: TankEngine): void;
@@ -113,6 +128,14 @@ export interface TankSceneHandle {
 }
 
 export function createTankScene(stage: Container): TankSceneHandle {
+  // sceneRoot is offset by (marginX, marginY) each frame (see the margin block in render() below) -
+  // so everything inside it (the tank itself AND room decor) shares one coordinate space with the
+  // tank's own top-left corner at local (0,0), matching Instance.x/y and RoomInstance.x/y directly
+  // with no per-item reprojection. Room decor (`roomLayer`) is a *sibling* of `root`, not a child of
+  // it - `root.mask` clips everything inside `root` to the tank's own water shape, and room decor
+  // must NOT be clipped by that (it lives *around* the tank, meant to stay visible past that
+  // boundary) - `outline` is a sibling of `root` for the exact same reason.
+  const sceneRoot = new Container();
   const root = new Container();
   const mask = new Graphics();
   const water = new Graphics();
@@ -122,13 +145,17 @@ export function createTankScene(stage: Container): TankSceneHandle {
   const instanceLayer = new Container();
   const overlayLayer = new Container();
   const outline = new Graphics();
+  const roomLayer = new Container();
 
   backgroundSprite.visible = false;
   backgroundSprite.anchor.set(0.5);
 
   root.addChild(water, backgroundSprite, waterline, zoneBelowLayer, instanceLayer, overlayLayer);
   root.mask = mask;
-  stage.addChild(root, outline);
+  // Draw order: tank (water/instances/mask), its outline, then room decor last - "always renders
+  // above the tank frame, can overlap it" (see RoomInstance's doc comment in types.ts).
+  sceneRoot.addChild(root, outline, roomLayer);
+  stage.addChild(sceneRoot);
 
   const waterGradient = new FillGradient({
     type: 'linear',
@@ -141,8 +168,10 @@ export function createTankScene(stage: Container): TankSceneHandle {
   });
 
   const instanceViews = new Map<string, InstanceView>();
+  const roomViews = new Map<string, RoomView>();
   let lastShapeKey = '';
   let lastWaterSizeKey = '';
+  let lastMarginKey = '';
 
   function ensureInstanceView(id: string): InstanceView {
     let v = instanceViews.get(id);
@@ -166,6 +195,43 @@ export function createTankScene(stage: Container): TankSceneHandle {
         instanceViews.delete(id);
       }
     }
+  }
+
+  function ensureRoomView(id: string): RoomView {
+    let v = roomViews.get(id);
+    if (!v) {
+      const sprite = new Sprite();
+      sprite.anchor.set(0.5);
+      roomLayer.addChild(sprite);
+      v = { sprite };
+      roomViews.set(id, v);
+    }
+    return v;
+  }
+
+  function pruneRoomViews(liveIds: Set<string>): void {
+    for (const [id, v] of roomViews) {
+      if (!liveIds.has(id)) {
+        v.sprite.destroy();
+        roomViews.delete(id);
+      }
+    }
+  }
+
+  /** timeMs drives each room item's own frame animation deterministically from the same clock used
+   *  for everything else this frame - simpler than the DOM RoomLayer.tsx's own per-item rAF loop
+   *  (not needed here since this whole scene already redraws every animation frame). */
+  function updateRoomView(v: RoomView, inst: RoomInstance, sprite: SpriteData, timeMs: number): void {
+    const { width, height } = spriteDims(sprite);
+    const pw = width * DISPLAY_SCALE;
+    const ph = height * DISPLAY_SCALE;
+    v.sprite.visible = inst.visible;
+    if (!inst.visible) return;
+    const frameIndex = sprite.frames.length > 1 ? Math.floor(timeMs / (sprite.frameMs || 400)) % sprite.frames.length : 0;
+    v.sprite.texture = textureFor(sprite, frameIndex);
+    v.sprite.width = pw;
+    v.sprite.height = ph;
+    v.sprite.position.set(inst.x, inst.y);
   }
 
   function drawZoneRect(
@@ -219,12 +285,20 @@ export function createTankScene(stage: Container): TankSceneHandle {
     const w = engine.canvas?.width ?? 0;
     const h = engine.canvas?.height ?? 0;
     if (w <= 0 || h <= 0) {
-      root.visible = false;
-      outline.visible = false;
+      sceneRoot.visible = false;
       return;
     }
-    root.visible = true;
-    outline.visible = true;
+    sceneRoot.visible = true;
+
+    // sceneRoot's own offset - see its declaration comment above. Recomputed only when the tank's
+    // size actually changes (matching sceneWidthFor/sceneHeightFor's own use in TankPixiLayer.tsx,
+    // which is what actually sizes the backing store this offset needs to line up inside of).
+    const marginKey = `${w}:${h}`;
+    if (marginKey !== lastMarginKey) {
+      lastMarginKey = marginKey;
+      const { marginX, marginY } = roomSceneMargin(w, h);
+      sceneRoot.position.set(marginX, marginY);
+    }
 
     const shapeKey = `${engine.tankShape}:${w}:${h}:${engine.tankCornerRadiusFrac}:${engine.tankOvalTopCutFrac}`;
     if (shapeKey !== lastShapeKey) {
@@ -291,13 +365,28 @@ export function createTankScene(stage: Container): TankSceneHandle {
     if (engine.zoneDraftRect) {
       drawZoneRect(overlayLayer, engine.zoneDraftRect, ZONE_DRAFT_COLOR, 1, ZONE_DRAFT_FILL_ALPHA, true);
     }
+
+    // Visual-only - see this file's own doc comment above for why input for these stays on the DOM
+    // RoomLayer.tsx rather than Pixi's own event system.
+    const roomLiveIds = new Set<string>();
+    const timeMs = performance.now();
+    engine.roomInstances.forEach((inst) => {
+      const sprite = engine.spriteFor(inst);
+      if (!sprite) return;
+      roomLiveIds.add(inst.id);
+      updateRoomView(ensureRoomView(inst.id), inst, sprite, timeMs);
+    });
+    pruneRoomViews(roomLiveIds);
   }
 
   function destroy(): void {
-    instanceViews.forEach((v) => v.container.destroy({ children: true }));
+    // A single recursive destroy from the top - root, outline, and roomLayer (with every instance/
+    // room sprite inside them) are all children of sceneRoot, so this tears down everything in one
+    // sweep rather than destroying instanceViews/roomViews' sprites individually first and risking a
+    // double-destroy when the recursive pass reaches them again.
     instanceViews.clear();
-    root.destroy({ children: true });
-    outline.destroy();
+    roomViews.clear();
+    sceneRoot.destroy({ children: true });
   }
 
   return { render, destroy };

@@ -17,21 +17,22 @@ const DISPLAY_SCALE = 4;
  *  meant to read as furniture around that boundary, sized to match it, not objects with a size of
  *  their own independent of the room they're sitting in.
  *
- *  Position goes through engine.roomFracToScreen rather than a plain `xFrac * viewportSize.width` -
- *  that plain multiplication was the other half of the same "stays a fixed size/position regardless
- *  of the tank's own zoom" bug: it answers "where in the viewport", which doesn't move as the *tank
- *  frame* (centered in that same viewport) shrinks toward that center under zoom - so an item placed
- *  snug against the tank's edge drifted away from it, edge and item now scaling at different rates,
- *  breaking the sense that the tank and everything sitting around it are one picture. */
+ *  Position converts through frameOffset/effectiveScale - the exact same pair TankBackgroundOverlay
+ *  uses for the background sprite's own move handles - now that RoomInstance.x/y live in the same
+ *  tank-logical coordinate space as everything else (see its doc comment in types.ts): `frameOffset`
+ *  is where the tank frame's own top-left corner sits inside the viewport, so `frameOffset.left +
+ *  inst.x * effectiveScale` is just "the frame's corner, plus this item's tank-relative offset from
+ *  it, both already in the same current-zoom screen scale" - no separate viewport-fraction
+ *  reprojection needed the way the pre-P2 version required (see docs/PIXI_MIGRATION_PLAN.md §7-B). */
 function RoomItem({
   engine,
   inst,
-  viewportSize,
+  frameOffset,
   effectiveScale,
 }: {
   engine: TankEngine;
   inst: RoomInstance;
-  viewportSize: { width: number; height: number };
+  frameOffset: { left: number; top: number };
   effectiveScale: number;
 }) {
   const sprite = engine.spriteFor(inst);
@@ -78,22 +79,27 @@ function RoomItem({
 
   if (!sprite || !inst.visible) return null;
   const selected = engine.selectedRoomId === inst.id;
-  const { x, y } = engine.roomFracToScreen(inst.xFrac, inst.yFrac, viewportSize);
+  const left = frameOffset.left + inst.x * effectiveScale;
+  const top = frameOffset.top + inst.y * effectiveScale;
 
   return (
     <div
       className={`tank-room-item${selected ? ' selected' : ''}`}
       style={{
-        left: x,
-        top: y,
+        left,
+        top,
         // Order matters: translate first (in the item's own untransformed box, so -50%/-50% is
         // exactly half of its native, unscaled size) then scale - scaling around the box's default
         // center transform-origin afterward can't un-center it, so the anchor point set by left/top
         // stays exactly where it was regardless of what effectiveScale happens to be.
         transform: `translate(-50%, -50%) scale(${effectiveScale})`,
       }}
-      onPointerDown={(e) => engine.onRoomPointerDown(e, inst.id)}
-      onPointerMove={(e) => engine.onRoomPointerMove(e)}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        engine.onRoomPointerDown(e.clientX, e.clientY, inst.id);
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => engine.onRoomPointerMove(e.clientX, e.clientY)}
       onPointerUp={() => engine.onRoomPointerUp()}
       onPointerCancel={() => engine.onRoomPointerUp()}
     >
@@ -104,18 +110,18 @@ function RoomItem({
 
 export function RoomLayer({
   engine,
-  viewportSize,
+  frameOffset,
   effectiveScale,
 }: {
   engine: TankEngine;
-  viewportSize: { width: number; height: number };
+  frameOffset: { left: number; top: number };
   effectiveScale: number;
 }) {
   if (!engine.roomInstances.length) return null;
   return (
     <div className="tank-room-layer">
       {engine.roomInstances.map((inst) => (
-        <RoomItem key={inst.id} engine={engine} inst={inst} viewportSize={viewportSize} effectiveScale={effectiveScale} />
+        <RoomItem key={inst.id} engine={engine} inst={inst} frameOffset={frameOffset} effectiveScale={effectiveScale} />
       ))}
     </div>
   );

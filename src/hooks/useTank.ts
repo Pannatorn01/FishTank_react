@@ -19,11 +19,6 @@ export const ROUNDED_RADIUS_MIN = 0.05;
 export const ROUNDED_RADIUS_MAX = 0.5;
 export const OVAL_TOP_CUT_MIN = 0;
 export const OVAL_TOP_CUT_MAX = 0.45;
-/** Room decorations (kind 'room' sprites, placed in the area around the tank) are kept this many
- *  screen px inset from the viewport's edge on every side - satisfies "not flush against the
- *  canvas edge" regardless of viewport size. Capped as a fraction of the viewport (see
- *  clampRoomFrac) so a tiny viewport can't invert the clamp range. */
-export const ROOM_MARGIN_PX = 16;
 
 /** Background free-transform handles - see TankBackgroundOverlay.tsx, which renders these as a DOM
  *  layer in .tank-viewport (not this engine's own <canvas>) specifically so a placement dragged past
@@ -175,7 +170,7 @@ class TankEngine {
    *  and selectRoomInstance). */
   selectedRoomId: string | null = null;
   private draggingRoomId: string | null = null;
-  private roomDragOffsetFrac = { x: 0, y: 0 };
+  private roomDragOffset = { x: 0, y: 0 };
   private roomDragMoved = false;
   private roomDragUndoSnapshot: Snapshot | null = null;
 
@@ -233,10 +228,13 @@ class TankEngine {
       visible: inst.visible ?? true,
     }));
     this.groups = storage.loadGroups().map((g) => ({ ...g, zone: g.zone ?? null }));
-    this.roomInstances = (storage.loadRoomInstances() || []).map((r) => ({ ...r, visible: r.visible ?? true }));
+    // Tank size loaded before room instances, not after - normalizeRoomInstances (see storage.ts)
+    // needs it to migrate a legacy record's viewport-fraction position onto the current tank-relative
+    // one, and to place any already-current record's margin-clamp bounds correctly.
     const savedSize = storage.loadTankSize();
     this.tankWidth = savedSize?.width ?? TANK_SIZE_DEFAULT.width;
     this.tankHeight = savedSize?.height ?? TANK_SIZE_DEFAULT.height;
+    this.roomInstances = storage.loadRoomInstances(this.tankWidth, this.tankHeight);
     this.tankShape = storage.loadTankShape() ?? 'rectangle';
     this.tankCornerRadiusFrac = storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22;
     this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
@@ -794,10 +792,13 @@ class TankEngine {
       visible: inst.visible ?? true,
     }));
     this.groups = storage.loadGroups().map((g) => ({ ...g, zone: g.zone ?? null }));
-    this.roomInstances = (storage.loadRoomInstances() || []).map((r) => ({ ...r, visible: r.visible ?? true }));
+    // Tank size loaded before room instances, not after - normalizeRoomInstances (see storage.ts)
+    // needs it to migrate a legacy record's viewport-fraction position onto the current tank-relative
+    // one, and to place any already-current record's margin-clamp bounds correctly.
     const savedSize = storage.loadTankSize();
     this.tankWidth = savedSize?.width ?? TANK_SIZE_DEFAULT.width;
     this.tankHeight = savedSize?.height ?? TANK_SIZE_DEFAULT.height;
+    this.roomInstances = storage.loadRoomInstances(this.tankWidth, this.tankHeight);
     this.tankShape = storage.loadTankShape() ?? 'rectangle';
     this.tankCornerRadiusFrac = storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22;
     this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
@@ -857,99 +858,58 @@ class TankEngine {
     this.persist();
   }
 
-  /** Keeps a room decoration's center at least ROOM_MARGIN_PX in from every edge of `rect` (the
-   *  viewport), expressed as a clamp on its fraction - so it can never land flush against the
-   *  outer edge regardless of viewport size. The margin fraction is capped at 0.45 per axis so a
-   *  very small viewport can't invert the min/max range. */
-  private clampRoomFrac(xFrac: number, yFrac: number, rect: { width: number; height: number }): { xFrac: number; yFrac: number } {
-    const mx = rect.width > 0 ? Math.min(0.45, ROOM_MARGIN_PX / rect.width) : 0;
-    const my = rect.height > 0 ? Math.min(0.45, ROOM_MARGIN_PX / rect.height) : 0;
+  /** Keeps a room decoration's center within ROOM_MARGIN_FRAC of the tank's own size beyond its
+   *  edges - same coordinate space and scale as Instance.x/y (see RoomInstance's doc comment in
+   *  types.ts), just not clamped to the tank rectangle itself since room decor lives *around* the
+   *  swim area, not in it. Replaces the old viewport-fraction clamp (clampRoomFrac) entirely - being
+   *  in the tank's own space means this margin scales with the tank's own size automatically, the
+   *  same "one picture, one scale" property everything else in the P2 migration gets for free. */
+  private clampRoomPosition(x: number, y: number): { x: number; y: number } {
+    const w = this.tankWidth ?? 0;
+    const h = this.tankHeight ?? 0;
+    const { marginX, marginY } = storage.roomSceneMargin(w, h);
     return {
-      xFrac: Math.min(1 - mx, Math.max(mx, xFrac)),
-      yFrac: Math.min(1 - my, Math.max(my, yFrac)),
-    };
-  }
-
-  /**
-   * A room decoration's (xFrac, yFrac) is stored as its position at 100% zoom - a plain fraction of
-   * the viewport, exactly as it always was. This is what turns that reference position into an actual
-   * on-screen point *at the current zoom*: scaled around the viewport's own center by the current zoom
-   * step alone, not the fuller fitScale-inclusive effectiveScale a room item's own *size* uses (see
-   * RoomLayer.tsx) - fitScale's contribution is already folded in through `viewportSize` itself, which
-   * a window/tank resize changes independently of any zoom click, the same way it always has. Without
-   * this, a room item sat at a fixed screen position no matter how far the tank frame - centered in
-   * that same viewport, shrinking toward that same center as effectiveScale drops - had moved out from
-   * under it: zooming out visibly pulled them apart instead of the whole scene scaling together as one
-   * picture. roomScreenToFrac below is its exact inverse, used by every place a pointer position needs
-   * to become a stored fraction, so a drag at any zoom level round-trips back to the same point
-   * rendering it at that same zoom level would place it at.
-   */
-  roomFracToScreen(xFrac: number, yFrac: number, viewportSize: { width: number; height: number }): { x: number; y: number } {
-    const zoomStep = TANK_ZOOM_STEPS[this.zoomIndex];
-    const vcx = viewportSize.width / 2;
-    const vcy = viewportSize.height / 2;
-    return {
-      x: vcx + (xFrac * viewportSize.width - vcx) * zoomStep,
-      y: vcy + (yFrac * viewportSize.height - vcy) * zoomStep,
-    };
-  }
-
-  /** The exact inverse of roomFracToScreen - see its own doc comment. */
-  private roomScreenToFrac(screenX: number, screenY: number, viewportSize: { width: number; height: number }): { xFrac: number; yFrac: number } {
-    const zoomStep = TANK_ZOOM_STEPS[this.zoomIndex];
-    const vcx = viewportSize.width / 2;
-    const vcy = viewportSize.height / 2;
-    return {
-      xFrac: viewportSize.width > 0 ? (vcx + (screenX - vcx) / zoomStep) / viewportSize.width : 0,
-      yFrac: viewportSize.height > 0 ? (vcy + (screenY - vcy) / zoomStep) / viewportSize.height : 0,
+      x: Math.min(w + marginX, Math.max(-marginX, x)),
+      y: Math.min(h + marginY, Math.max(-marginY, y)),
     };
   }
 
   // --- export ---
 
-  /** A room decoration's footprint relative to the tank frame's own top-left corner, in the same
-   *  logical units as the frame's own canvas (1 unit = 1 pixel of `this.canvas`'s raster, i.e. tank-
-   *  logical px, not CSS/view px) - the coordinate space compositeScene draws everything into. Reads
-   *  xFrac/yFrac at zoomStep = 1 (`roomFracToScreen` with the zoom step fixed to 1) rather than
-   *  whatever the view happens to be zoomed to right now, then divides out `fitScale` to land in
-   *  logical units - the same reasoning `roomScreenToFrac`'s own zoomStep division uses, just for a
-   *  fixed reference zoom instead of whatever's live. This is what makes an export look the same
-   *  regardless of the zoom level it was exported at. */
-  private roomLogicalRect(inst: RoomInstance, fitScale: number, viewportSize: { width: number; height: number }): SelectionBox | null {
+  /** A room decoration's footprint in the same logical units as the tank canvas's own raster (1 unit
+   *  = 1 pixel of `this.canvas`, i.e. tank-logical px) - the coordinate space compositeScene draws
+   *  everything into. Trivial now that RoomInstance.x/y already live in that same space (see its own
+   *  doc comment in types.ts) - no zoom/viewport reprojection needed at all, unlike the pre-P2
+   *  version this replaces. */
+  private roomRect(inst: RoomInstance): SelectionBox | null {
     const sprite = this.spriteFor(inst);
     if (!sprite) return null;
-    const vcx = viewportSize.width / 2;
-    const vcy = viewportSize.height / 2;
-    const refFrameW = this.tankWidth! * fitScale;
-    const refFrameH = this.tankHeight! * fitScale;
-    const refX = inst.xFrac * viewportSize.width;
-    const refY = inst.yFrac * viewportSize.height;
-    const relX = (refX - (vcx - refFrameW / 2)) / fitScale;
-    const relY = (refY - (vcy - refFrameH / 2)) / fitScale;
     const { pw, ph } = this.spritePx(sprite);
-    return { x0: relX - pw / 2, y0: relY - ph / 2, x1: relX + pw / 2, y1: relY + ph / 2 };
+    return { x0: inst.x - pw / 2, y0: inst.y - ph / 2, x1: inst.x + pw / 2, y1: inst.y + ph / 2 };
   }
 
   /**
    * Composites the tank frame's own live raster (fish, decorations, water, glass outline - whatever
    * `this.canvas` currently shows, kept animating by the loop below regardless of export) together
    * with every visible room decoration into one flat image - the shared basis for every export format
-   * (PNG grabs one, GIF and video sample it repeatedly). Always built as if the view were at 100% zoom
-   * (see roomLogicalRect) so an export looks the same - and full pixel-art crisp, never blurred up from
-   * a zoomed-out view - no matter what zoom the editor happened to be showing at the time.
+   * (PNG grabs one, GIF and video sample it repeatedly). Room decor positions come straight from
+   * `roomRect()`, which - since RoomInstance.x/y already live in the same tank-logical space as
+   * `this.canvas`'s own raster (see its doc comment in types.ts) - needs no zoom/viewport reprojection
+   * at all: an export is inherently "at 100%, tank-logical scale" simply by using those coordinates
+   * directly, full pixel-art crisp regardless of what zoom the editor happened to be showing.
    *
    * `timeMs` drives each room item's own frame animation (they don't share the tank canvas's own loop -
-   * see RoomLayer.tsx) deterministically from a single clock, so a GIF/video's sampled frames animate
+   * see tankScene.ts) deterministically from a single clock, so a GIF/video's sampled frames animate
    * room decor in lockstep with however many times compositeScene has been called, rather than each
    * one free-running on its own real-time timer the way the live on-screen view does.
    */
-  private compositeScene(fitScale: number, viewportSize: { width: number; height: number }, timeMs = 0): HTMLCanvasElement {
+  private compositeScene(timeMs = 0): HTMLCanvasElement {
     const out = document.createElement('canvas');
     if (!this.canvas || !this.tankWidth || !this.tankHeight) return out;
 
     const rects = this.roomInstances
       .filter((r) => r.visible ?? true)
-      .map((inst) => ({ inst, rect: this.roomLogicalRect(inst, fitScale, viewportSize) }))
+      .map((inst) => ({ inst, rect: this.roomRect(inst) }))
       .filter((r): r is { inst: RoomInstance; rect: SelectionBox } => r.rect !== null);
 
     let x0 = 0, y0 = 0, x1 = this.tankWidth, y1 = this.tankHeight;
@@ -1005,8 +965,8 @@ class TankEngine {
   /** A still photo of the tank exactly as it looks right now (one frame of compositeScene, timeMs=0
    *  so every room item draws its first frame) - the simplest of the three export formats, and what
    *  GIF/video export both build on top of. */
-  exportPng(fitScale: number, viewportSize: { width: number; height: number }): void {
-    const canvas = this.compositeScene(fitScale, viewportSize, 0);
+  exportPng(): void {
+    const canvas = this.compositeScene(0);
     canvas.toBlob((blob) => this.downloadBlob(blob, `${this.exportBaseName()}.png`));
   }
 
@@ -1022,9 +982,9 @@ class TankEngine {
    * redrawing compositeScene every ~50ms and feeding each frame to the stream - stop with
    * stopVideoExport (or exportRecording being cleared some other way) to finalize and download it.
    */
-  startVideoExport(fitScale: number, viewportSize: { width: number; height: number }): void {
+  startVideoExport(): void {
     if (this.exportRecording) return;
-    const canvas = this.compositeScene(fitScale, viewportSize, 0);
+    const canvas = this.compositeScene(0);
     const stream = canvas.captureStream(20);
     const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
     if (!mimeType) return;
@@ -1039,7 +999,7 @@ class TankEngine {
     const startedAt = performance.now();
     const redraw = () => {
       const ctx = canvas.getContext('2d')!;
-      const next = this.compositeScene(fitScale, viewportSize, performance.now() - startedAt);
+      const next = this.compositeScene(performance.now() - startedAt);
       if (canvas.width !== next.width || canvas.height !== next.height) {
         canvas.width = next.width;
         canvas.height = next.height;
@@ -1073,7 +1033,7 @@ class TankEngine {
    * and this app's flat pixel-art color fills rarely come close to the 256-color ceiling anyway, so
    * the trade-off is invisible in practice for a several-second loop.
    */
-  async exportGif(fitScale: number, viewportSize: { width: number; height: number }, durationMs = 3000): Promise<void> {
+  async exportGif(durationMs = 3000): Promise<void> {
     if (this.exportingGif) return;
     this.exportingGif = true;
     this.reactNotify();
@@ -1084,7 +1044,7 @@ class TankEngine {
       const gif = GIFEncoder();
       const start = performance.now();
       for (let i = 0; i < frameCount; i++) {
-        const canvas = this.compositeScene(fitScale, viewportSize, i * frameDelayMs);
+        const canvas = this.compositeScene(i * frameDelayMs);
         const ctx = canvas.getContext('2d')!;
         const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const palette = quantize(data, 256);
@@ -1105,18 +1065,18 @@ class TankEngine {
     }
   }
 
-  /** Drops a new room decoration at the given screen point, converted into a viewport-relative,
-   *  margin-clamped fraction (see roomScreenToFrac/clampRoomFrac) - counterpart to addInstance() for
-   *  kind 'room' sprites, but placed in the viewport's coordinate space instead of the tank canvas's,
-   *  since room decorations live around the tank rather than inside its swim space. */
+  /** Drops a new room decoration at the given screen point, converted through the same canvasPoint()
+   *  every other pointer handler uses (tank-logical px, not clamped to the tank rectangle itself - see
+   *  clampRoomPosition) - counterpart to addInstance() for kind 'room' sprites, sharing its coordinate
+   *  space now instead of a separate viewport-fraction one (see RoomInstance's doc comment in
+   *  types.ts). */
   addRoomInstance(spriteId: string, clientX: number, clientY: number): void {
     const sprite = this.sprites.find((s) => s.id === spriteId);
-    if (!sprite || !this.viewportEl) return;
-    const rect = this.viewportEl.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const raw = this.roomScreenToFrac(clientX - rect.left, clientY - rect.top, rect);
-    const { xFrac, yFrac } = this.clampRoomFrac(raw.xFrac, raw.yFrac, rect);
-    const inst: RoomInstance = { id: storage.uid('room'), spriteId, xFrac, yFrac, visible: true };
+    if (!sprite) return;
+    const p = this.canvasPoint(clientX, clientY);
+    if (!p) return;
+    const { x, y } = this.clampRoomPosition(p.x, p.y);
+    const inst: RoomInstance = { id: storage.uid('room'), spriteId, x, y, visible: true };
     this.roomInstances.push(inst);
     this.persist();
   }
@@ -1137,34 +1097,35 @@ class TankEngine {
     this.persist();
   }
 
-  onRoomPointerDown(e: React.PointerEvent<HTMLDivElement>, id: string): void {
-    e.stopPropagation();
+  /** Grabs a room decoration to start dragging it. Takes raw screen coordinates rather than a DOM
+   *  PointerEvent (unlike this class's own on-canvas pointer handlers) so it can be driven by either
+   *  renderer's own event system - the DOM one RoomLayer.tsx used before P2, or a Pixi sprite's
+   *  FederatedPointerEvent (see tankScene.ts) - without this method needing to know or care which.
+   *  Event-specific bits (stopPropagation, setPointerCapture) are the caller's responsibility. */
+  onRoomPointerDown(clientX: number, clientY: number, id: string): void {
     const inst = this.roomInstances.find((r) => r.id === id);
-    if (!inst || !this.viewportEl) return;
-    const rect = this.viewportEl.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const grabbed = this.roomScreenToFrac(e.clientX - rect.left, e.clientY - rect.top, rect);
-    this.roomDragOffsetFrac = { x: grabbed.xFrac - inst.xFrac, y: grabbed.yFrac - inst.yFrac };
+    if (!inst) return;
+    const p = this.canvasPoint(clientX, clientY);
+    if (!p) return;
+    this.roomDragOffset = { x: p.x - inst.x, y: p.y - inst.y };
     this.draggingRoomId = id;
     this.roomDragMoved = false;
     this.roomDragUndoSnapshot = this.snapshotState();
     this.selectRoomInstance(id);
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }
 
-  onRoomPointerMove(e: React.PointerEvent<HTMLDivElement>): void {
-    if (!this.draggingRoomId || !this.viewportEl) return;
+  onRoomPointerMove(clientX: number, clientY: number): void {
+    if (!this.draggingRoomId) return;
     const inst = this.roomInstances.find((r) => r.id === this.draggingRoomId);
     if (!inst) return;
-    const rect = this.viewportEl.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    const pointer = this.roomScreenToFrac(e.clientX - rect.left, e.clientY - rect.top, rect);
-    const rawX = pointer.xFrac - this.roomDragOffsetFrac.x;
-    const rawY = pointer.yFrac - this.roomDragOffsetFrac.y;
-    const { xFrac, yFrac } = this.clampRoomFrac(rawX, rawY, rect);
-    if (Math.abs(xFrac - inst.xFrac) > 0.0005 || Math.abs(yFrac - inst.yFrac) > 0.0005) this.roomDragMoved = true;
-    inst.xFrac = xFrac;
-    inst.yFrac = yFrac;
+    const p = this.canvasPoint(clientX, clientY);
+    if (!p) return;
+    const rawX = p.x - this.roomDragOffset.x;
+    const rawY = p.y - this.roomDragOffset.y;
+    const { x, y } = this.clampRoomPosition(rawX, rawY);
+    if (Math.abs(x - inst.x) > 0.5 || Math.abs(y - inst.y) > 0.5) this.roomDragMoved = true;
+    inst.x = x;
+    inst.y = y;
     this.reactNotify();
   }
 

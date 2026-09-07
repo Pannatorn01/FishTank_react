@@ -11,7 +11,7 @@ import {
   type TankEngine,
 } from '@/hooks/useTank';
 import { useLanguage } from '@/lib/i18n';
-import { TANK_SHAPES } from '@/lib/storage';
+import { roomSceneMargin, TANK_SHAPES } from '@/lib/storage';
 import type { TankShape } from '@/lib/types';
 import { getTankRendererMode } from '@/tank/render/rendererMode';
 
@@ -208,6 +208,17 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
     top: Math.max(0, (viewportSize.height - frameStyle.height) / 2),
   };
 
+  // Sized/positioned bigger than (and centered the same as) .tank-frame - room decor (P2) lives in
+  // the margin around the tank rectangle, so the Pixi canvas needs actual pixels to paint there
+  // rather than being clipped at the tank's own edge (see TankPixiLayer.tsx's own doc comment).
+  const { marginX, marginY, sceneWidth, sceneHeight } = roomSceneMargin(tankWidth, tankHeight);
+  const pixiHostStyle = {
+    left: frameOffset.left - marginX * effectiveScale,
+    top: frameOffset.top - marginY * effectiveScale,
+    width: sceneWidth * effectiveScale,
+    height: sceneHeight * effectiveScale,
+  };
+
   return (
     <div className="tank-canvas-col">
       <div
@@ -224,11 +235,11 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
              * not just a display surface, it's TankEngine's own source of truth for hit-testing,
              * pointer coordinate math, and export (compositeScene() reads it directly - see
              * useTank.ts) - none of which this migration touches (see docs/PIXI_MIGRATION_PLAN.md
-             * §4/§6 P1). In 'pixi' mode it keeps receiving every pointer event exactly as before,
-             * it's simply made visually invisible (`tank-canvas-hidden`, opacity:0 - not
-             * display:none/visibility:hidden, either of which would also stop it receiving pointer
-             * events) while TankPixiLayer, stacked on top of it with pointer-events:none so input
-             * still reaches this element underneath, shows the same scene painted a second way. */}
+             * §4/§6). In 'pixi' mode it keeps receiving every pointer event exactly as before, it's
+             * simply made visually invisible (`tank-canvas-hidden`, opacity:0 - not display:none/
+             * visibility:hidden, either of which would also stop it receiving pointer events) while
+             * TankPixiLayer (mounted as a .tank-viewport-level sibling below, not nested in here -
+             * see its own style comment) shows the same scene painted a second way, on top. */}
             <canvas
               ref={(el) => {
                 engine.attachCanvas(el);
@@ -240,17 +251,22 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
               onPointerUp={() => engine.onCanvasPointerUp()}
               onPointerCancel={() => engine.onCanvasPointerUp()}
             />
-            {tankRendererMode === 'pixi' && (
-              <Suspense fallback={null}>
-                <TankPixiLayer engine={engine} />
-              </Suspense>
-            )}
           </div>
         </div>
+        {tankRendererMode === 'pixi' && (
+          <Suspense fallback={null}>
+            <TankPixiLayer engine={engine} style={pixiHostStyle} />
+          </Suspense>
+        )}
         {/* Room decorations render as their own DOM layer, after (i.e. visually above) .tank-frame,
          * so they can overlap the tank chrome - unlike in-tank instances they aren't drawn into the
-         * simulation <canvas> at all, since they live outside that coordinate space entirely. */}
-        <RoomLayer engine={engine} viewportSize={viewportSize} effectiveScale={effectiveScale} />
+         * simulation <canvas> at all, since they live outside that coordinate space entirely. Stays
+         * mounted (handling every drag/select/drop) in 'pixi' mode too - just made invisible there,
+         * since TankPixiLayer already paints a visual copy on top (see tankScene.ts's own doc
+         * comment for why input isn't also ported to Pixi's event system yet). */}
+        <div className={tankRendererMode === 'pixi' ? 'tank-room-layer-hidden' : undefined}>
+          <RoomLayer engine={engine} frameOffset={frameOffset} effectiveScale={effectiveScale} />
+        </div>
         <TankBackgroundOverlay engine={engine} frameOffset={frameOffset} effectiveScale={effectiveScale} />
       </div>
 
@@ -317,7 +333,7 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
             className="selection-toolbar-btn"
             title={t('tank.exportPng')}
             disabled={engine.isRecordingVideo || engine.exportingGif}
-            onClick={() => engine.exportPng(fitScale, viewportSize)}
+            onClick={() => engine.exportPng()}
           >
             <i className="fa-solid fa-camera" />
           </button>
@@ -326,7 +342,7 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
             className="selection-toolbar-btn"
             title={engine.exportingGif ? t('tank.exportGifBusy') : t('tank.exportGif')}
             disabled={engine.isRecordingVideo || engine.exportingGif}
-            onClick={() => void engine.exportGif(fitScale, viewportSize)}
+            onClick={() => void engine.exportGif()}
           >
             <i className={`fa-solid ${engine.exportingGif ? 'fa-spinner fa-spin' : 'fa-film'}`} />
           </button>
@@ -335,9 +351,7 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
             className={`selection-toolbar-btn${engine.isRecordingVideo ? ' active' : ''}`}
             title={engine.isRecordingVideo ? t('tank.exportVideoStop') : t('tank.exportVideoStart')}
             disabled={engine.exportingGif}
-            onClick={() =>
-              engine.isRecordingVideo ? engine.stopVideoExport() : engine.startVideoExport(fitScale, viewportSize)
-            }
+            onClick={() => (engine.isRecordingVideo ? engine.stopVideoExport() : engine.startVideoExport())}
           >
             <i className={`fa-solid ${engine.isRecordingVideo ? 'fa-stop' : 'fa-circle-dot'}`} />
           </button>

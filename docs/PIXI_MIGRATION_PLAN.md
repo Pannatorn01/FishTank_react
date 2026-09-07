@@ -451,7 +451,7 @@ age > lifespan                              → ตาย
 | Q&A §9 | ✅ done | 2026-09-07 | — | ผู้ใช้ตอบครบ 11 ข้อ — ดู §9/§9.1/§9.2 |
 | P0 Spike | ✅ done | 2026-09-07 | (pending) | ดู §11 — คมเท่า Canvas2D, bundle ~145KB gzip (< 400KB), dynamic-import ไม่กระทบ main bundle |
 | P1 Pixi render parity | ✅ done | 2026-09-07 | (pending) | ดู §12 — pixel-diff ผ่านทั้ง 3 ทรง, flag `?tankRenderer=pixi`/`VITE_TANK_RENDERER`, main bundle ไม่โต (dynamic import) |
-| P2 room+bg เข้า scene | ⬜ not started | | | **ถัดไป** |
+| P2 room decor เข้า scene | 🟡 partial | 2026-09-08 | (pending) | ดู §13 — room decor เสร็จ+verify แล้ว, background overlay handles / Canvas2D retirement เลื่อนไป P2b/P3 โดยตั้งใจ |
 | P3 แยก model/sim/render | ⬜ not started | | | |
 | P4 ฉากห้อง + สลับโหมด | ⬜ not started | | | รอ asset ห้องจากผู้ใช้ (§9.2) — ทำโครงไปก่อนได้ |
 | P5 กลไกเลี้ยง | ⬜ not started | | | **ไม่ blocked แล้ว** — ค่า balance เริ่มต้นอยู่ §9.1 |
@@ -577,3 +577,65 @@ open http://localhost:5199/?tankRenderer=pixi
 - Group/schooling fish (หลายตัวว่ายเป็นฝูง) ยังไม่ได้ทดสอบใน pixi mode โดยเฉพาะ - z-order ของ raised-while-
   dragging ทดสอบผ่าน `visibleDrawOrder()` ที่ Canvas2D ใช้เอง (regression suite เดิมยืนยัน draw() พฤติกรรม
   ไม่เปลี่ยน) แต่ยังไม่ได้ยืนยัน "มองด้วยตา" ว่า Pixi วาด raised order ถูกจริงตอนลากปลาที่อยู่ในกลุ่ม
+
+---
+
+## 13. P2 Room Decor — ผลลัพธ์ (2026-09-08) — **partial, ตั้งใจ scope ลง**
+
+**สรุป: ส่วน room decor (เป้าหมายหลักของ P2 - ฆ่าบั๊ก zoom class) เสร็จและ verify แล้ว
+แต่ "ปิด flag ลบ Canvas2D ทั้งหมด" ตามที่ระบุไว้ใน §6 P2 เดิม ยังไม่ได้ทำ - ดูเหตุผลด้านล่าง**
+
+### สิ่งที่ตั้งใจตัดสินใจต่างจาก §6 เดิม (และทำไม)
+
+ตอนเริ่มงานจริง พบว่า "ปิด flag P1 ทิ้ง ลบ path Canvas2D" (ตามที่ §6 P2 เขียนไว้ตอนวางแผน) เปิดปัญหาที่ไม่มี
+ทางเลี่ยงได้: room decor ใน Pixi ถ้าให้รับ pointer event ของตัวเอง (`eventMode:'static'`) จะชนกับ
+`.tank-pixi-host` ที่ตั้ง `pointer-events:none` ไว้ตั้งแต่ P1 (จงใจ เพื่อให้ event ทะลุไปหา Canvas2D canvas
+สำหรับปลา/น้ำ) — จะเปิดให้ Pixi รับ event ของตัวเองได้ ต้องเปลี่ยน host เป็น `pointer-events:auto` ซึ่งจะไป
+บัง Canvas2D canvas จากการรับ event ของปลา/marquee/zone ทันที (สอง element ซ้อนกันรับ click จุดเดียวกัน
+พร้อมกันไม่ได้) นี่คือการ "รวม input ให้เป็นระบบเดียว" ตัวจริง ซึ่ง §6 เองก็แยกไว้เป็นงานของ **P3
+(`input/dragController.ts`)** อยู่แล้ว — ทำใน P2 จะเป็นการทำ P3 บางส่วนแบบเร่งรีบ เสี่ยงเกินความจำเป็นสำหรับ
+phase ที่เป้าหมายจริงคือ "ภาพต้อง zoom ไปด้วยกัน" ไม่ใช่ "ย้าย input ทั้งระบบ"
+
+**ทางแก้ที่เลือก:** ให้ input ของ room decor ยังอยู่ที่ DOM layer เดิม (`RoomLayer.tsx`) ในทั้งสองโหมด - แค่
+`opacity:0` (ไม่ใช่ `display:none`) เวลาอยู่โหมด pixi เพื่อให้ยังรับ pointer event ได้เหมือนเดิมทุกอย่าง แต่
+มองไม่เห็น ส่วน Pixi วาดสำเนา "ภาพอย่างเดียว" (visual-only) ทับไว้ด้านบน - **แพตเทิร์นเดียวกับที่ P1 ใช้กับ
+Canvas2D `<canvas>` เป๊ะ** (มองไม่เห็นแต่ยังทำงาน + อีกระบบวาดทับให้เห็น) เพราะงั้น**บั๊ก zoom ของ room decor
+หายจริง** (ตำแหน่ง/ขนาดคำนวณจาก scene graph เดียวกับตู้ ไม่ต้องทำ manual reprojection เลย) แต่ **ยังไม่ได้ลบ
+Canvas2D หรือรวม input** — เก็บไว้เป็นงานของ P3 ตามที่ §6 วางไว้ตั้งแต่ต้นจริง ๆ
+
+ในทางเดียวกัน **TankBackgroundOverlay.tsx (กล่อง move/resize/rotate ของ background) ไม่ได้ย้ายเข้า Pixi ในรอบ
+นี้** — มันไม่มีบั๊กแบบ room decor เลย (`backgroundTransform.x/y` เป็นพิกัด tank-logical มาตั้งแต่แรก ไม่เคย
+เป็น viewport-fraction) ใช้ frameOffset/effectiveScale เหมือน RoomLayer.tsx และทำงานถูกอยู่แล้วทั้งสองโหมด
+โดยไม่ต้องแก้อะไร - ย้ายเข้า Pixi ตอนนี้จะเป็นแค่ "ความสวยงามของสถาปัตยกรรม" ไม่ใช่การแก้บั๊ก จึงเลื่อนไปพร้อม
+กับตอน P3 รวม input ทีเดียว (ตอนนั้น handle เองก็ควรเป็น Pixi Graphics ที่รับ event ของตัวเองได้เลย)
+
+### สิ่งที่ทำจริง
+
+| ไฟล์ | เปลี่ยนอะไร |
+|---|---|
+| `src/lib/types.ts` | `RoomInstance.xFrac/yFrac` → `x/y` (พิกัด tank-logical เดียวกับ `Instance.x/y`) |
+| `src/lib/storage.ts` | เพิ่ม `ROOM_MARGIN_FRAC`, `roomSceneMargin()` (source of truth เดียวของ margin ทั้งฝั่ง engine/renderer), `normalizeRoomInstances()` (migration รองรับทั้ง legacy `xFrac/yFrac` และ current `x/y` ในอาเรย์เดียวกัน) |
+| `src/hooks/useTank.ts` | ลบ `roomFracToScreen`/`roomScreenToFrac`/`roomLogicalRect`/`clampRoomFrac`/`ROOM_MARGIN_PX` ทิ้งหมด แทนที่ด้วย `clampRoomPosition()`/`roomRect()` (สั้นกว่าเดิมมาก เพราะไม่ต้องแปลงหน่วย) - `addRoomInstance`/`onRoomPointerDown`/`onRoomPointerMove` ใช้ `canvasPoint()` ตรง ๆ (คู่เดียวกับที่ปลาใช้อยู่แล้ว) - `compositeScene`/`exportPng`/`startVideoExport`/`exportGif` ตัดพารามิเตอร์ `fitScale`/`viewportSize` ทิ้ง (ไม่จำเป็นอีกแล้ว) |
+| `src/components/tank/RoomLayer.tsx` | ใช้ `frameOffset`+`effectiveScale` แทน `roomFracToScreen` (สูตรเดียวกับ `TankBackgroundOverlay.tsx` อยู่แล้ว) - `onRoomPointerDown/Move` รับ `clientX/clientY` ตรง ๆ ไม่ใช่ React event object ทั้งก้อน (ให้ทั้ง DOM และ Pixi (อนาคต) เรียกแบบเดียวกันได้) |
+| `src/tank/render/tankScene.ts` | เพิ่ม `sceneRoot` container offset ด้วย margin, `roomLayer` (visual-only Pixi sprites อ่านจาก `engine.roomInstances` ตรง ๆ ทุกเฟรม) |
+| `src/tank/render/TankPixiLayer.tsx` | resize เป็น `sceneWidth × sceneHeight` (รวม margin) แทนแค่ขนาดตู้ |
+| `src/components/tank/TankCanvas.tsx` | ย้าย `<TankPixiLayer>` ออกจาก `.tank-wrap` (ซึ่ง `overflow:hidden` จะตัด margin ทิ้ง) มาเป็น sibling ระดับ `.tank-viewport` พร้อมคำนวณ style เอง; ห่อ `<RoomLayer>` ด้วย wrapper `opacity:0` เวลาโหมด pixi |
+| `src/index.css` | `.tank-pixi-host` เอา `inset:0` ออก (ใช้ inline style แทน), เพิ่ม `.tank-room-layer-hidden` |
+
+### ผลตรวจ
+
+| เกณฑ์ | ผล |
+|---|---|
+| room decor ติดขอบตู้แล้ว zoom ระยะห่างสเกลตามเป๊ะ ทั้งสองโหมด | ✅ canvas2d: gap 7→5→4→7 px (ตรงสัดส่วน 100/75/50/100%) · pixi: ตรวจด้วยภาพจริงทั้ง 3 ระดับซูม (screenshot in §13 ไม่ได้ commit เข้า repo) เห็นชัดว่าเล็กลง/ใหญ่ขึ้นพร้อมกับตู้ ไม่มี manual reprojection code เหลืออยู่เลย |
+| ข้อมูลเก่า (legacy `xFrac/yFrac`) โหลดขึ้นถูกตำแหน่ง | ✅ ทดสอบ seed legacy record จริงผ่าน migration - ได้ตำแหน่งจำกัดขอบเขตแน่นอน (finite, ไม่ NaN, ไม่ crash) |
+| ลากย้าย room decor ยังทำงาน (ทั้งสองโหมด) | ✅ canvas2d: เหมือนเดิม · pixi: ลากที่ DOM (invisible) แล้ว Pixi visual ตามถูกต้อง (ทดสอบจริงด้วยภาพก่อน/หลัง) |
+| export PNG/GIF/WebM ยังถูกต้อง | ✅ ทั้ง 3 ฟอร์แมต ยังออกไฟล์ถูกต้อง หลังตัด `fitScale`/`viewportSize` ออกจาก signature |
+| `useTank.ts` สั้นลง | 🟡 สั้นลงจริง (-39 บรรทัดสุทธิ) แต่ไม่ "มาก" ตามที่ §6 คาดไว้ เพราะโค้ดส่วนใหญ่ที่ลบไปเป็น complexity ที่**ย้ายไปอยู่ที่ `tankScene.ts` แทน** (ไฟล์ใหม่) ไม่ใช่ลบทิ้งเฉย ๆ - สมเหตุสมผลเพราะ engine ยังต้องมี `clampRoomPosition`/`roomRect` สำหรับ canvas2d mode +export อยู่ดี |
+| Regression suite เดิม | ✅ ผ่านหมด (zoom lockstep, room decor lockstep+drag, tank layers, pen/eraser, dock, tab-switch × 6 รอบไม่มี leak) |
+| `tsc -b` / `build` / `oxlint` | ✅ สะอาด (warning เดิม 4 ตัวเท่านั้น) |
+
+### สิ่งที่เหลือสำหรับ P2b/P3 (ระบุไว้ชัดเพื่อไม่ให้หลงลืม)
+1. **รวม input เป็นระบบเดียว** - ตอนนี้มี 2 ระบบพร้อมกัน (Canvas2D `<canvas>` สำหรับปลา/น้ำ, DOM `RoomLayer.tsx` สำหรับ room decor) ทั้งคู่ "มองไม่เห็นแต่ทำงาน" ในโหมด pixi ซึ่งใช้งานได้จริงแต่ไม่ใช่สถาปัตยกรรมสุดท้าย - P3 ควรตัดสินใจว่าจะรวมเป็น Pixi-native event ทั้งหมด (`eventMode:'static'`) หรือยังคง DOM ไว้เป็นชั้น input แยกต่างหากถาวร (ทั้งสองแบบมีข้อดีข้อเสีย ยังไม่ได้ตัดสินใจ)
+2. **TankBackgroundOverlay.tsx → Pixi Graphics handles** - ไม่มีบั๊กให้แก้ แต่ทำพร้อม input consolidation ใน P3 จะสมเหตุสมผลกว่า
+3. **ปิด flag / ลบ Canvas2D draw() ทั้งหมด** - รอจนกว่า input จะรวมเป็นระบบเดียวก่อน (Canvas2D ยังจำเป็นสำหรับ hit-test ตราบใดที่ยังไม่มี Pixi-native input) - export ก็ยังอ่าน `this.canvas` (Canvas2D raster) อยู่ ต้องสลับเป็น `app.renderer.extract.canvas()` พร้อมกัน
+4. Marquee/zone-draft dashed rectangle และ multi-fish schooling ใน pixi mode ยังไม่ pixel-diff ทดสอบ (เหมือนที่ระบุไว้ใน §12 P1 - ยังไม่ได้แก้เพิ่มใน P2)

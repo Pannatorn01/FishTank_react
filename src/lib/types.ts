@@ -159,14 +159,21 @@ export interface Instance {
 /** A decoration placed in the area around the tank (kind 'room' sprites) rather than inside its
  *  swim space - can be dragged anywhere in that area, always renders above the tank frame (so it
  *  can overlap the tank), and never swims/animates/groups the way an in-tank Instance does. See
- *  TankEngine.roomInstances in useTank.ts. */
+ *  TankEngine.roomInstances in useTank.ts.
+ *
+ *  Position is the sprite's center in the SAME logical-pixel coordinate space as Instance.x/y - (0,0)
+ *  is the tank's own top-left corner, (tankWidth, tankHeight) its bottom-right - just not clamped to
+ *  that rectangle (that's the *swim* boundary, not the room's), only to a margin around it (see
+ *  ROOM_MARGIN_FRAC in useTank.ts). Being expressed in the tank's own coordinate space, at the tank's
+ *  own scale, rather than as a fraction of the browser viewport (the pre-P2 representation) is what
+ *  lets a Pixi scene graph zoom room decor in lockstep with the tank automatically, simply by being
+ *  the tank's own sibling in the same scaled container - no per-frame reprojection math needed (see
+ *  docs/PIXI_MIGRATION_PLAN.md §7-B/§12/§13). storage.ts's normalizeRoomInstances() migrates the old
+ *  xFrac/yFrac-of-viewport shape onto this one for existing saved tanks. */
 export interface RoomInstance {
   id: string;
   spriteId: string;
-  /** Center position as a fraction (0..1) of the viewport's width/height - fraction-based so it
-   *  stays proportionally put if the viewport is ever resized. Kept inset from 0/1 by a fixed
-   *  margin (see ROOM_MARGIN_PX in useTank.ts) so it's never dropped flush against the outer edge. */
-  xFrac: number;
-  yFrac: number;
+  x: number;
+  y: number;
   visible: boolean;
 }
