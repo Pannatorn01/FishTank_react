@@ -39,10 +39,13 @@ cells.length === width*height) ถ้าไม่ผ่านให้ fallback 
 ## P1 — หนี้ทางสถาปัตยกรรม
 
 ### 4. `usePixelEditor.ts` ยังใหญ่ (กำลังเล็กลงเรื่อยๆ)
-migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้ว 8 ตัว (pen, eraser, rect, ellipse, magicWand, move, select,
-lasso) เหลืออีก 6 ตัวที่ยังเป็น if-chain เดิม: **line, spray, fill, curve, gradient, eyedropper**
-การ migrate select/lasso รอบนี้ยังลบโค้ดที่ตายจริง (`startMoveGesture`, `moveStartCell`, legacy
-`moveBuffer` branch, `draftSelectionMode`) ออกไปด้วย หลังยืนยัน caller ครบทุกจุดแล้ว
+migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้ว 9 ตัว (pen, eraser, rect, ellipse, line, magicWand, move,
+select, lasso) เหลืออีก 5 ตัวที่ยังเป็น if-chain เดิม: **spray, fill, curve, gradient, eyedropper**
+การ migrate select/lasso ลบโค้ดตายจริง (`startMoveGesture`, `moveStartCell`, legacy `moveBuffer`
+branch, `draftSelectionMode`) ออกไปด้วย หลังยืนยัน caller ครบทุกจุด — migrate line รอบถัดมาลบ
+`computeShapeCells()` เต็มตัว + `shapeStart` field ออกไปด้วยเหตุผลเดียวกัน (branch rect/ellipse ใน
+`computeShapeCells` ตายมาตั้งแต่ migrate rect/ellipse แล้วแต่ไม่เคยเก็บกวาด จนกระทั่ง line เข้าไปด้วย
+ทำให้ทั้งฟังก์ชันตายสนิท)
 **แผนละเอียด + ลำดับที่แนะนำ + จุดเสี่ยง:** อยู่ใน `src/lib/tools/ARCHITECTURE.md` §Migration plan แล้ว
 (ไม่ต้องเขียนซ้ำที่นี่)
 

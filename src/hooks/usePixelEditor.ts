@@ -7,7 +7,6 @@ import {
   flipFrameH,
   flipFrameV,
   hexToRgb,
-  inEllipseLocal,
   layersDiffRegion,
   paintLayers,
   rgbToHex,
@@ -142,6 +141,7 @@ const TOOL_REGISTRY: Partial<Record<ToolName, Tool>> = {
   eraser: createPenTool(true),
   rect: createShapeTool('rect'),
   ellipse: createShapeTool('ellipse'),
+  line: createShapeTool('line'),
   magicWand: createMagicWandTool(),
   move: createMoveTool(),
   select: createSelectTool(),
@@ -240,7 +240,6 @@ class PixelEditorEngine {
    *  sampled a color on click, but nothing said so until the click had already happened; this drives the
    *  eyedropper cursor on .pixel-canvas-wrap so the mode is visible while the key is down. */
   altPickActive = false;
-  shapeStart: Cell | null = null;
   shapePreviewCells: Cell[] | null = null;
   shapeFilled = false;
   selection: SelectionBox | null = null;
@@ -1780,7 +1779,6 @@ class PixelEditorEngine {
     this.painting = false;
     this.gestureButtons = 0;
     this.lastPaintCell = null;
-    this.shapeStart = null;
     // redrawShapePreview(null), not a bare field assignment - an interrupted shape/curve drag can
     // leave a preview actually painted on the canvas (see redrawShapePreview's dirty-rect repaint),
     // and unlike the old full-canvas drawGrid() (which erased it as a side effect of repainting
@@ -2737,11 +2735,7 @@ class PixelEditorEngine {
     this.painting = true;
     this.eraseOverride = e.button === 2;
 
-    if (this.tool === 'line') {
-      this.shapeStart = cell;
-      const end = e.shiftKey ? this.constrainShapeEnd(cell, cell) : cell;
-      this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(cell, end)));
-    } else if (this.tool === 'fill') {
+    if (this.tool === 'fill') {
       const frame = this.activeCells();
       const { width, height } = this.current;
       const fillColor = this.eraseOverride ? null : this.color;
@@ -2906,12 +2900,6 @@ class PixelEditorEngine {
       }
       return;
     }
-
-    if (!cell) return;
-    if (this.shapeStart) {
-      const end = e.shiftKey ? this.constrainShapeEnd(this.shapeStart, cell) : cell;
-      this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(this.shapeStart, end)));
-    }
   }
 
   onPointerUp(): void {
@@ -2984,28 +2972,6 @@ class PixelEditorEngine {
       return;
     }
 
-    if (this.shapeStart && this.shapePreviewCells) {
-      const frame = this.activeCells();
-      const { width, height } = this.current;
-      const shapeColor = this.eraseOverride ? null : this.color;
-      // Bounding box of the outgoing preview cells only ("erase old, draw nothing new") - by the time
-      // this repaints, `frame` already has the committed colors, so there's no separate overlay left
-      // to draw on top (unlike redrawShapePreview mid-drag); this just needs a proper, z-order/opacity-
-      // respecting repaint of the region the (fillRect-approximated) live preview covered.
-      const rects = this.cellsDirtyRects(this.shapePreviewCells, null);
-      this.shapePreviewCells.forEach((c) => {
-        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height && this.paintAllowed(c.x, c.y)) frame[c.y * width + c.x] = shapeColor;
-      });
-      if (shapeColor) this.addSavedColor(shapeColor);
-      this.shapeStart = null;
-      this.shapePreviewCells = null;
-      this.lastPaintCell = null;
-      this.strokeSnapshot = null;
-      this.strokePoints = [];
-      this.eraseOverride = false;
-      this.redrawRegions(rects);
-      return;
-    }
     // Pen/eraser/spray/fill all already left the canvas correctly painted (their own dirty-rect or
     // full-repaint redraw already ran on the last stroke step / on mousedown) - nothing here changes a
     // pixel, so this only needs a React re-render (e.g. for canUndo()/dirty-flag-driven UI), not another
@@ -3064,48 +3030,6 @@ class PixelEditorEngine {
         }
       });
     });
-    return cells;
-  }
-
-  private computeShapeCells(start: Cell, end: Cell): Cell[] {
-    if (this.tool === 'line') {
-      return this.thickenPath(bresenhamLine(start.x, start.y, end.x, end.y));
-    }
-    if (this.tool === 'rect') {
-      const x0 = Math.min(start.x, end.x);
-      const x1 = Math.max(start.x, end.x);
-      const y0 = Math.min(start.y, end.y);
-      const y1 = Math.max(start.y, end.y);
-      const thickness = this.brushSize;
-      const cells: Cell[] = [];
-      for (let y = y0; y <= y1; y++) {
-        for (let x = x0; x <= x1; x++) {
-          const nearEdge = x - x0 < thickness || x1 - x < thickness || y - y0 < thickness || y1 - y < thickness;
-          if (this.shapeFilled || nearEdge) cells.push({ x, y });
-        }
-      }
-      return cells;
-    }
-    // ellipse
-    const x0 = Math.min(start.x, end.x);
-    const x1 = Math.max(start.x, end.x);
-    const y0 = Math.min(start.y, end.y);
-    const y1 = Math.max(start.y, end.y);
-    const cx = (x0 + x1) / 2 + 0.5;
-    const cy = (y0 + y1) / 2 + 0.5;
-    const rx = Math.max(0.5, (x1 - x0 + 1) / 2);
-    const ry = Math.max(0.5, (y1 - y0 + 1) / 2);
-    const cells: Cell[] = [];
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) {
-        if (!inEllipseLocal(x + 0.5, y + 0.5, cx, cy, rx, ry)) continue;
-        if (this.shapeFilled) {
-          cells.push({ x, y });
-          continue;
-        }
-        if (!inEllipseLocal(x + 0.5, y + 0.5, cx, cy, Math.max(0.5, rx - this.brushSize), Math.max(0.5, ry - this.brushSize))) cells.push({ x, y });
-      }
-    }
     return cells;
   }
 

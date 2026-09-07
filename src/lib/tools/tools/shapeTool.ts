@@ -1,13 +1,13 @@
-import { inEllipseLocal } from '../../pixelMath';
+import { bresenhamLine, inEllipseLocal } from '../../pixelMath';
 import type { Cell, SymmetryMode } from '../../types';
 import { mirrorPoints, withSelectionClip, type CellWriter } from '../paintPipeline';
 import { DirtyRectTracker } from '../dirtyRect';
 import type { Gesture, GestureResult, PaintOp, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '../types';
 
-type Shape = 'rect' | 'ellipse';
+type Shape = 'rect' | 'ellipse' | 'line';
 
 /** Shift-constrain to a square/circle - the rect/ellipse branch of `constrainShapeEnd`
- *  (usePixelEditor.ts:2913-2931; the angle-snap branch there is line/gradient-only, not needed here). */
+ *  (usePixelEditor.ts:3029-3047; see constrainToAngle below for the line/gradient branch there). */
 function constrainToSquare(start: Cell, end: Cell): Cell {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
@@ -16,8 +16,54 @@ function constrainToSquare(start: Cell, end: Cell): Cell {
   return { x: start.x + (dx < 0 ? -side : side), y: start.y + (dy < 0 ? -side : side) };
 }
 
-/** Ports the rect/ellipse branches of `computeShapeCells` (usePixelEditor.ts:2954-2994). */
+/** Shift-constrain to the nearest 0/45/90° increment, keeping the dragged distance - the line/gradient
+ *  branch of `constrainShapeEnd` (usePixelEditor.ts:3033-3040). Gradient still calls the engine's own
+ *  copy of this (not yet migrated); this is Line's copy. */
+function constrainToAngle(start: Cell, end: Cell): Cell {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  if (dx === 0 && dy === 0) return end;
+  const step = Math.PI / 4;
+  const angle = Math.round(Math.atan2(dy, dx) / step) * step;
+  const dist = Math.round(Math.hypot(dx, dy));
+  return { x: start.x + Math.round(Math.cos(angle) * dist), y: start.y + Math.round(Math.sin(angle) * dist) };
+}
+
+/** Top-left-anchored square of side `brushSize` centered as closely as possible on (x, y) - ports
+ *  `brushCellsAt` (usePixelEditor.ts:3276-3286, also duplicated in penTool.ts - small and stable
+ *  enough that a shared import isn't worth it for two callers). */
+function brushCellsAt(x: number, y: number, brushSize: number): Cell[] {
+  if (brushSize <= 1) return [{ x, y }];
+  const off = Math.floor((brushSize - 1) / 2);
+  const cells: Cell[] = [];
+  for (let dy = 0; dy < brushSize; dy++) {
+    for (let dx = 0; dx < brushSize; dx++) cells.push({ x: x - off + dx, y: y - off + dy });
+  }
+  return cells;
+}
+
+/** Thickens a 1px path to `brushSize` by stamping `brushCellsAt` at every point and deduping - ports
+ *  `thickenPath` (usePixelEditor.ts:3054-3068, also still used there directly by curve - kept on the
+ *  engine for that, this is Line's own copy). */
+function thickenPath(points: Cell[], brushSize: number): Cell[] {
+  if (brushSize <= 1) return points;
+  const seen = new Set<string>();
+  const cells: Cell[] = [];
+  points.forEach((p) => {
+    brushCellsAt(p.x, p.y, brushSize).forEach((c) => {
+      const key = `${c.x},${c.y}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        cells.push(c);
+      }
+    });
+  });
+  return cells;
+}
+
+/** Ports the rect/ellipse/line branches of `computeShapeCells` (usePixelEditor.ts:3070-3110). */
 function shapeCells(shape: Shape, start: Cell, end: Cell, brushSize: number, filled: boolean): Cell[] {
+  if (shape === 'line') return thickenPath(bresenhamLine(start.x, start.y, end.x, end.y), brushSize);
   const x0 = Math.min(start.x, end.x);
   const x1 = Math.max(start.x, end.x);
   const y0 = Math.min(start.y, end.y);
@@ -88,7 +134,8 @@ class ShapeGesture implements Gesture {
   }
 
   private update(e: ToolPointerEvent, ctx: ToolContext): ToolPreview {
-    const end = e.shiftKey ? constrainToSquare(this.start, e.cell) : e.cell;
+    const constrain = this.shape === 'line' ? constrainToAngle : constrainToSquare;
+    const end = e.shiftKey ? constrain(this.start, e.cell) : e.cell;
     const next = this.computePreview(end, ctx);
     const dirty = new DirtyRectTracker();
     dirty.addCells(this.previewCells);

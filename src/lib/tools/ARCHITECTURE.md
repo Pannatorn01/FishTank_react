@@ -1,8 +1,8 @@
 # Pixel editor tool architecture
 
 Response to `.claude/prompt/edit-pixeleditor.md`: a from-scratch architecture for the drawing-tool
-engine. **Six tools are migrated and wired into the live `PixelEditorEngine`**: Pen/Eraser,
-Rect/Ellipse, Magic Wand, Move, Select, Lasso. Every other tool (line, curve, fill, gradient,
+engine. **Seven tools are migrated and wired into the live `PixelEditorEngine`**: Pen/Eraser,
+Rect/Ellipse/Line, Magic Wand, Move, Select, Lasso. Every other tool (curve, fill, gradient,
 eyedropper, spray) is untouched, still running on the original inline `if (this.tool === 'xxx')`
 handling in `src/hooks/usePixelEditor.ts`.
 
@@ -26,12 +26,12 @@ src/lib/tools/
                          rectMask, resolveMarqueeMode) - used by Magic Wand, Select and Lasso
   tools/
     penTool.ts            Pen/Eraser
-    shapeTool.ts           Rect/Ellipse
+    shapeTool.ts           Rect/Ellipse/Line
     magicWandTool.ts        Magic Wand
     moveTool.ts               Move
     selectTool.ts              Select (marquee)
     lassoTool.ts                Lasso
-  __tests__/             vitest unit tests for all of the above (76 tests, no DOM)
+  __tests__/             vitest unit tests for all of the above (81 tests, no DOM)
 ```
 
 **Tool** is a stateless factory: given a `ToolPointerEvent` (a pointer event already resolved to a
@@ -47,7 +47,7 @@ return) separate *what to paint* from *how to repaint the canvas*:
 - `ops: PaintOp[]` - already pipeline-composed (mirrored, selection-clipped) cell writes.
 - `overlay` (shapes only) - tentative preview cells drawn on top without touching the frame yet, in
   the exact shape `redrawRegions(rects, overlay)` already expected, so the engine's repaint code needed
-  no changes for Pen or Rect/Ellipse.
+  no changes for Pen or Rect/Ellipse/Line.
 - `movePreview` (Move only) - an explicit exception: Move's live-drag preview stays on the existing
   `gestureBaseBitmap`/`drawGrid` fast path (a deliberate, previously-existing optimization, see that
   code's own comments) instead of forcing it through the dirty-rect/overlay path the other tools use.
@@ -69,10 +69,20 @@ inline bbox math (`cellsDirtyRects`/`strokeDirtyRects`).
 rule as Magic Wand's own `resolveWandCombine`, which additionally treats Ctrl as 'add' and gives the
 sticky 'subtract' mode priority; kept deliberately separate, don't unify them).
 
+**shapeTool.ts covers three shapes now, not two.** Line joined Rect/Ellipse in the same file rather
+than getting its own - it's the same `ShapeGesture` scaffolding (eraseOverride resolution,
+mirrorExpand, DirtyRectTracker, overlay preview, commit, onCancel), just a different cell shape
+(`thickenPath(bresenhamLine(...))`, its own local port - the engine's copy stays too, since curve still
+uses it) and a different Shift-constrain rule: `constrainToAngle` (snap to the nearest 0/45/90°,
+keeping the dragged distance) instead of `constrainToSquare`. **These two constrain rules are not
+interchangeable** - don't be tempted to unify them, same reasoning as Magic Wand vs. Select/Lasso's
+combine-mode rules above. The engine's own `constrainShapeEnd` keeps its angle-snap branch too, since
+gradient (not yet migrated) still calls it.
+
 ### Integration into `PixelEditorEngine`
 
-A module-level `TOOL_REGISTRY` maps `pen`/`eraser`/`rect`/`ellipse`/`magicWand`/`move`/`select`/`lasso`
-to their `Tool`. `NO_UNDO_TOOLS` (`magicWand`/`select`/`lasso`) skips `pushGestureUndo()` for gestures
+A module-level `TOOL_REGISTRY` maps
+`pen`/`eraser`/`rect`/`ellipse`/`line`/`magicWand`/`move`/`select`/`lasso` to their `Tool`. `NO_UNDO_TOOLS` (`magicWand`/`select`/`lasso`) skips `pushGestureUndo()` for gestures
 that never touch a pixel. `onPointerDown` dispatches to the registry, with two routing checks ahead of
 it for the two tools that can instead start a Move:
 - **Magic Wand**: a click that resolves (`resolveWandCombine`) to `'subtract'` always subtracts even
@@ -94,6 +104,14 @@ used it; only Select did, and only via the shared `selectionMask.ts` copy now) a
 (now held inside each gesture instance instead of one shared engine field). Each removal was verified
 with a fresh grep for remaining callers first - see the Correction entry below for why that step isn't
 optional.
+
+Migrating Line similarly let three more things be removed for real, again only after re-verifying zero
+remaining callers: the `if (this.tool === 'line')` branches in `onPointerDown`/`onPointerMove`/
+`onPointerUp`, `computeShapeCells()` in full (its rect/ellipse branches had already been dead since
+those two migrated earlier and were never cleaned up - line joining them made the whole method
+removable), and the `shapeStart` field. **Not removed**, deliberately: `constrainShapeEnd` and
+`thickenPath` on the engine (gradient and curve still call them respectively), and `shapePreviewCells`
+(curve and `redrawShapePreview` both still depend on it).
 
 ### Deviations found during implementation (worth flagging for future migration steps)
 
@@ -119,24 +137,26 @@ optional.
 
 ## Migration plan
 
-Already migrated: **pen, eraser, rect, ellipse, magicWand, move, select, lasso.**
+Already migrated: **pen, eraser, rect, ellipse, line, magicWand, move, select, lasso.**
 
 Proposed order for the rest, each independently swappable behind the same `TOOL_REGISTRY` pattern:
 
-1. **line** - near-identical to `shapeTool.ts` (shares shift-constrain + brush thickness), low risk.
-2. **spray** - timer-driven (`sprayTimer`/`sprayTick`), needs an optional `Gesture.onTick?()` hook added
+1. **spray** - timer-driven (`sprayTimer`/`sprayTick`), needs an optional `Gesture.onTick?()` hook added
    to the interface - the first required interface extension.
-3. **fill** - flood fill + tolerance + global replace; single-click commit, no live preview, moderate
+2. **fill** - flood fill + tolerance + global replace; single-click commit, no live preview, moderate
    risk around the global-replace mode.
-4. **curve** - 2-phase drag (`drag-end` → `bend`), the most stateful remaining tool; do after the
-   simpler ones establish the pattern.
-5. **gradient** - needs `ToolPreview`'s native-canvas-gradient fast path preserved as an escape hatch
+3. **curve** - 2-phase drag (`drag-end` → `bend`), the most stateful remaining tool; do after the
+   simpler ones establish the pattern. Once curve is the only caller left, `thickenPath` and
+   `shapePreviewCells`/`redrawShapePreview` can finally move too (or be retired if curve absorbs them).
+4. **gradient** - needs `ToolPreview`'s native-canvas-gradient fast path preserved as an escape hatch
    (see the original's own perf rationale) or accept per-cell dither-preview cost, already the status
-   quo when dither is on.
-6. **eyedropper** - arguably not a gesture at all today (instant Alt-shortcut); likely stays a
+   quo when dither is on. Once gradient is migrated, `constrainShapeEnd` on the engine has zero
+   remaining callers and its own angle-snap logic (now duplicated in `shapeTool.ts`'s
+   `constrainToAngle`) can finally be deleted - the last piece of the original shape-tool machinery.
+5. **eyedropper** - arguably not a gesture at all today (instant Alt-shortcut); likely stays a
    special-cased instant action outside the registry.
 
-**Highest-risk points for whoever does steps 2-6:**
+**Highest-risk points for whoever does steps 1-5:**
 - **Never spread a native DOM event** (`{ ...pointerEvent }`) when building a `ToolPointerEvent`. On a
   native event - which is what `getCoalescedEvents()` returns, unlike React's synthetic event -
   `clientX`/`clientY` are prototype getters, not own enumerable properties, so a spread silently drops
@@ -156,15 +176,18 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
 
 ## Test coverage
 
-`npm test` (`vitest run`) - 76 tests, all pure logic, no DOM/canvas:
+`npm test` (`vitest run`) - 81 tests, all pure logic, no DOM/canvas:
 - **paintPipeline**: selection-clip inside/outside a rect and a sparse mask; symmetry mirroring
   on-axis (no duplicate) and off-axis, composed with selection-clip.
 - **DirtyRectTracker**: single cell, disjoint-cell union, canvas-edge clamping, empty input.
 - **PenTool**: zero-length stroke, fast-drag gap-filling via bresenham, Pixel-Perfect corner trim (and
   that a brush size > 1 skips it), erase mode, right-click-erases (`eraseOverride`), `onCancel`, and
   that a release always keeps the undo entry even when nothing painted.
-- **ShapeTool**: zero-size drag, shift-constrain to a square, filled vs. outline cell counts, brush
-  thickness, out-of-canvas bounds-checking.
+- **ShapeTool (rect/ellipse)**: zero-size drag, shift-constrain to a square, filled vs. outline cell
+  counts, brush thickness, out-of-canvas bounds-checking.
+- **ShapeTool (line)**: matches `bresenhamLine`'s own output for a plain drag; zero-length drag paints
+  one cell; Shift snaps to the nearest 45° keeping the dragged distance (not a square); a thicker brush
+  produces more cells with no duplicates; out-of-canvas bounds-checking.
 - **MagicWandTool**: contiguous vs. global select, tolerance, add/subtract combine (including the
   mask-collapses-to-a-plain-rectangle case), and that it never emits paint ops or a "changed" gesture.
 - **MoveTool**: source-clear-on-lift (skipped when copying), unclamped drag tracking, clamped
@@ -182,9 +205,9 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
 ## Verification performed
 
 - `npx tsc -b --noEmit` - clean.
-- `npx vitest run` - 76/76 passing.
+- `npx vitest run` - 81/81 passing.
 - `npm run build` - production build succeeds.
-- Manual Playwright smoke test against the running dev server, two rounds:
+- Manual Playwright smoke test against the running dev server, three rounds:
   - *Pen/Rect/MagicWand/Move round*: Pen L-stroke with corner trim, undo/redo across two strokes,
     filled and outline Rect, Magic Wand select-then-drag-to-move (both the outline-only and filled
     cases, including the click-inside-selection → Move routing), and Escape mid-Pen-stroke fully
@@ -195,4 +218,10 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
     Move and actually relocating the pixels (confirmed via raw canvas pixel readback, not just a
     screenshot), undo correctly reverting the move, Escape mid-marquee-drag cancelling with no leftover
     dashed box, and a freeform Lasso drag tracing a closed pentagon selection.
+  - *Line round*: a plain diagonal drag (confirmed pixel-exact against the expected path), a Shift-held
+    drag confirmed to snap to horizontal at the correct length (not the square-constrain result a
+    copy-paste mistake would have produced), a brush-size-3 thick line with no gaps, right-click
+    erasing a previously drawn line back to nothing, Escape mid-drag cancelling with nothing painted,
+    and - since this migration touched shared code - re-confirmed Curve (bent bezier still draws
+    correctly) and Gradient (Shift-snap axis still works) both still work unchanged.
   - No console/runtime errors in any run.
