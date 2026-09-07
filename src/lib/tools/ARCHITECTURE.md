@@ -78,11 +78,14 @@ the last position `onPointerMove` saw, same as the legacy shape commit reading w
 - Dithering (the "dither brush") resolves its stipple color from the *mirrored* cell's own coordinates.
   `withSymmetry` only mirrors coordinates; a caller needing per-mirrored-cell dithering (Pen) resolves
   color itself in its own final sink stage, after mirroring - see `paintPipeline.ts`'s own doc comment.
-- The legacy `if (this.moveBuffer)` branch in `onPointerMove` and the shape/pen tails in
-  `onPointerMove`/`onPointerUp` are now provably unreachable for the 6 migrated tool values (their
-  early `activeGesture`/`TOOL_REGISTRY` returns always fire first) but were left in place rather than
-  deleted, to keep this change's diff auditable. Safe, trivial cleanup for whoever migrates the next
-  tool and wants to remove them.
+- **Correction (this was wrong when first written):** the `if (this.moveBuffer)` branches in
+  `onPointerMove`/`onPointerUp` are *not* dead code - `select`/`lasso`'s own "click inside the
+  selection" path (usePixelEditor.ts:2716, 2731) still calls the legacy `startMoveGesture()` directly,
+  which sets `this.moveBuffer` without ever going through `activeGesture`. Deleting that branch was
+  tried and reverted after realizing dragging a select/lasso-triggered move would silently stop
+  updating mid-drag. Those two tools' own pen/shape-specific tails were *not* re-verified after this
+  mistake and should be checked the same careful way (trace every remaining caller, not just grep for
+  the tool name) before assuming they're removable.
 
 ## Migration plan
 

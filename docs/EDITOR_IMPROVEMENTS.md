@@ -44,11 +44,14 @@ migrate เครื่องมือไปสถาปัตยกรรมใ
 **แผนละเอียด + ลำดับที่แนะนำ + จุดเสี่ยง:** อยู่ใน `src/lib/tools/ARCHITECTURE.md` §Migration plan แล้ว
 (ไม่ต้องเขียนซ้ำที่นี่)
 
-### 5. โค้ดเดิมที่ตายแล้วแต่ยังอยู่
-**ไฟล์:** `src/hooks/usePixelEditor.ts` — branch `if (this.moveBuffer)` ใน `onPointerMove`
-และ tail ของ pen/shape ใน `onPointerMove`/`onPointerUp` เข้าไม่ถึงแล้ว (เพราะ `activeGesture`
-return ก่อนเสมอ) แต่ยังคาอยู่เพื่อให้ diff ตอน refactor ตรวจง่าย
-**แนวทาง:** ลบทิ้งพร้อมกับตอน migrate tool ตัวถัดไป
+### 5. ~~โค้ดเดิมที่ตายแล้ว~~ — ข้อนี้เขียนผิด ลองลบแล้วต้องคืนกลับ
+เข้าใจผิดว่า branch `if (this.moveBuffer)` ใน `onPointerMove` เข้าไม่ถึงแล้ว — ลองลบดูจริงแล้วพบว่า
+**ยังใช้งานอยู่**: `select`/`lasso` ตอนคลิกด้านในกรอบ selection ยังเรียก `startMoveGesture()` แบบเดิม
+โดยตรง (usePixelEditor.ts:2716, 2731) ไม่ผ่าน `activeGesture` เลย — ลบแล้วจะทำให้ลาก select/lasso
+ที่เลือกไว้ค้างกลางทาง (moveDelta ไม่อัปเดต) ได้คืนโค้ดกลับเรียบร้อยแล้ว
+**บทเรียน:** ก่อนสรุปว่าอะไร "unreachable" ต้องไล่ caller ทุกจุดจริง ๆ ไม่ใช่แค่ grep ชื่อ tool
+ส่วน tail ของ pen/shape ใน `onPointerMove`/`onPointerUp` **ยังไม่ได้ตรวจซ้ำ** หลังจากพลาดรอบนี้ —
+ห้ามสมมติว่าลบได้จนกว่าจะไล่ทุก caller แบบเดียวกัน
 
 ### 6. ยังไม่มีเทสต์ในส่วนที่เสี่ยงที่สุด
 มีเทสต์แล้ว: `src/lib/tools/` (39 tests) + `pixelMath` (4 tests)
@@ -69,15 +72,14 @@ return ก่อนเสมอ) แต่ยังคาอยู่เพื�
 **ขาด:** เลือกชนิด linear / radial, กลับทิศสี (มีปุ่ม swap อยู่ใน COLORS panel แต่ไม่อยู่ในแถบ tool)
 > เคยคุยกันแล้วว่าจะเอา linear ก่อน — radial ยังเป็นของที่ขาดอยู่
 
-### 9. คีย์ลัดมีครบแต่ไม่มีที่ไหนบอกผู้ใช้
-`TOOL_KEYS` ใน `usePixelEditor.ts:103-106` มีคีย์ลัดครบทุกเครื่องมือ (b/e/f/i/l/u/r/c/a/k/m/q/w/v)
-แต่ tooltip ใน `ToolRail.tsx:53` แสดงแค่คำอธิบาย ไม่บอกคีย์
-**แนวทาง:** ต่อคีย์เข้าไปใน tooltip เช่น `"ปากกา (B)"` + ทำหน้า/แผง Shortcuts สักอัน
+### 9. ~~คีย์ลัดไม่มีที่ไหนบอกผู้ใช้~~ — ตรวจซ้ำแล้ว: มีอยู่แล้ว ไม่ต้องแก้
+`ToolRail.tsx:53`'s `title={t('tool.${entry.tool}.desc')}` มีคีย์ลัดต่อท้ายอยู่แล้วทุกตัว
+เช่น `"Pen — draw pixels one at a time (B) • ..."` (ดู `i18n.ts:7-34`) — รายการนี้ตัดทิ้ง
 
-### 10. ปุ่มไอคอนล้วนยังเข้าถึงด้วย screen reader ไม่ได้
-ปุ่มเครื่องมือ/undo/redo ใน `ToolRail.tsx` ใช้ `title=` แต่ไม่มี `aria-label`
-(ทั้งโฟลเดอร์ editor มี aria-label แค่ 10 จุด)
-**แนวทาง:** เติม `aria-label` ให้ปุ่มไอคอนล้วนทุกตัว + `aria-pressed` สำหรับเครื่องมือที่เลือกอยู่
+### 10. ปุ่ม Undo/Redo ยังไม่มี `aria-label` (แก้แล้วเฉพาะจุดนี้)
+เครื่องมือวาดทุกตัวใน `ToolRail.tsx:54-55` มี `aria-label`+`aria-pressed` ครบอยู่แล้ว
+มีแค่ปุ่ม Undo/Redo (`ToolRail.tsx:65,68`) ที่มี `title=` อย่างเดียว ไม่มี `aria-label`
+**สถานะ:** แก้แล้ว — เพิ่ม `aria-label` ให้สองปุ่มนี้
 
 ### 11. พื้นที่ว่างในแผงฝั่งขวาเยอะผิดสัดส่วน
 PREVIEW / ONION SKIN / TRANSFORM มีช่องว่างด้านล่างเยอะมากขณะที่ MY LIBRARY ด้านล่างถูกบีบจนต้องเลื่อน

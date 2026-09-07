@@ -1,8 +1,15 @@
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { PixelEditorPanel } from '@/components/editor/PixelEditorPanel';
-import { TankPanel } from '@/components/tank/TankPanel';
+
+// Lazy: TankPanel pulls in the tank simulation engine, canvas render loop, and GIF/video export
+// (gifenc) - a meaningful slice of the ~550kB bundle (see docs/EDITOR_IMPROVEMENTS.md #12) that
+// someone who only ever uses the pixel editor shouldn't have to download at all. Both tabs used to
+// stay mounted unconditionally so the tank's own imperative engine (a running requestAnimationFrame
+// loop, instance state) survives switching tabs - see the `hasVisitedTank` gate below for how that's
+// preserved while still deferring the import/mount until the Fish Tank tab is opened at least once.
+const TankPanel = lazy(() => import('@/components/tank/TankPanel').then((m) => ({ default: m.TankPanel })));
 import { useEditorLayout } from '@/hooks/useEditorLayout';
 import { usePixelEditor } from '@/hooks/usePixelEditor';
 import { UI_SCALES, useUiScale, type UiScale } from '@/hooks/useUiScale';
@@ -15,6 +22,12 @@ type Tab = 'editor' | 'tank';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('editor');
+  // Once true, stays true - TankPanel keeps its own running engine/animation loop alive across tab
+  // switches (see this file's Suspense boundary comment), so it must never unmount after first visit.
+  const [hasVisitedTank, setHasVisitedTank] = useState(false);
+  useEffect(() => {
+    if (tab === 'tank') setHasVisitedTank(true);
+  }, [tab]);
   const { t } = useLanguage();
   const { theme, setTheme } = useUiTheme();
   const { scale, setScale } = useUiScale();
@@ -135,7 +148,11 @@ export default function App() {
           />
         </section>
         <section className="tab-panel" hidden={tab !== 'tank'}>
-          <TankPanel active={tab === 'tank'} />
+          {hasVisitedTank && (
+            <Suspense fallback={<p className="tab-panel-loading">Loading…</p>}>
+              <TankPanel active={tab === 'tank'} />
+            </Suspense>
+          )}
         </section>
       </main>
     </div>

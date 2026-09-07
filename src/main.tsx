@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
+import { ErrorBoundary } from './components/ErrorBoundary.tsx'
 
 // P0 spike only (docs/PIXI_MIGRATION_PLAN.md §6) - reached via ?pixi=1, never in the normal app
 // flow. Deleted along with src/tank/render/dev/ once P1 supersedes it.
@@ -20,7 +21,9 @@ async function mount() {
   }
   root.render(
     <StrictMode>
-      <App />
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
     </StrictMode>,
   );
 }
