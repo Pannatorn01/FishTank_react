@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, type ReactNode } from 'react';
+import { useDockDrag, type DockDropLocation } from '@/hooks/useDockDrag';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import type { DockPanelId, DockZone, EditorLayoutApi } from '@/hooks/useEditorLayout';
 import { useLanguage } from '@/lib/i18n';
@@ -6,7 +7,7 @@ import type { SpriteType } from '@/lib/types';
 import { CanvasMetaBar } from './CanvasMetaBar';
 import { CanvasStatusBar } from './CanvasStatusBar';
 import { ColorPalette } from './ColorPalette';
-import { DockPanel, DockZoneView } from './EditorDock';
+import { DockDragGhost, DockPanel, DockZoneView } from './EditorDock';
 import { FrameStrip } from './FrameStrip';
 import { LayerPanel } from './LayerPanel';
 import { OnionSkinPanel } from './OnionSkinPanel';
@@ -50,27 +51,18 @@ export function PixelEditorPanel({
 }) {
   const { t } = useLanguage();
   const { layout, movePanel, setZoneSize, setPanelHeight, setColumnWidth } = layoutApi;
-  /** Which panel is mid-drag, so every dock can offer itself as a drop target while one is moving. */
-  const [dragging, setDragging] = useState<DockPanelId | null>(null);
+  const onDrop = useCallback(
+    (panel: DockPanelId, location: DockDropLocation) => movePanel(panel, location.zone, location.target),
+    [movePanel]
+  );
+  // Plain pointer events, not native HTML5 drag-and-drop - see useDockDrag.ts for why (short version: a
+  // scripted mouse-drag testing the old native version hung the browser's own input queue mid-gesture,
+  // which is the same OS-level handoff that made a real drag sometimes just not start for a real user).
+  const { dragging, dropLocation, ghostRef, onDragStart, onDragMove, onDragEnd, onDragCancel } = useDockDrag(onDrop);
 
   useEffect(() => {
     engine.setActive(active);
   }, [engine, active]);
-
-  // Safety net for the drag highlight. A panel's own dragend is not guaranteed to arrive - a drop
-  // outside any dock, a drag cancelled with Esc, or a browser that skips it after a successful drop all
-  // leave it unfired - and a stuck "something is being dragged" flag means every dock keeps offering
-  // itself as a drop target long after the drag ended. Listening on the window catches all of those.
-  useEffect(() => {
-    if (!dragging) return;
-    const clear = () => setDragging(null);
-    window.addEventListener('dragend', clear);
-    window.addEventListener('drop', clear);
-    return () => {
-      window.removeEventListener('dragend', clear);
-      window.removeEventListener('drop', clear);
-    };
-  }, [dragging]);
 
   const confirmDiscard = () => confirm(t('confirm.discard'));
   const onError = (msg: string) => alert(msg);
@@ -93,8 +85,10 @@ export function PixelEditorPanel({
       icon={PANEL_META[id].icon}
       dragging={dragging === id}
       height={layout.panelHeights[id]}
-      onDragStart={setDragging}
-      onDragEnd={() => setDragging(null)}
+      onDragStart={onDragStart}
+      onDragMove={onDragMove}
+      onDragEnd={onDragEnd}
+      onDragCancel={onDragCancel}
     >
       {panelBody[id]}
     </DockPanel>
@@ -107,10 +101,7 @@ export function PixelEditorPanel({
       columns={layout.zones[zone]}
       columnWidths={layout.columnWidths}
       dragging={dragging}
-      onDropPanel={(panel, target, dropTarget) => {
-        movePanel(panel, target, dropTarget);
-        setDragging(null);
-      }}
+      dropLocation={dropLocation}
       onResize={(px) => setZoneSize(zone, px)}
       onPanelResize={setPanelHeight}
       onColumnResize={setColumnWidth}
@@ -125,6 +116,12 @@ export function PixelEditorPanel({
 
   return (
     <div className="editor-shell" data-dock-dragging={dragging || undefined}>
+      <DockDragGhost
+        ghostRef={ghostRef}
+        panel={dragging}
+        title={dragging ? t(PANEL_META[dragging].titleKey) : ''}
+        icon={dragging ? PANEL_META[dragging].icon : ''}
+      />
       <div className="editor-main">
         {renderZone('left')}
 

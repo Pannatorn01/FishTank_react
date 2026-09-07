@@ -1,5 +1,13 @@
 import { Fragment, useRef, useState, type ReactNode } from 'react';
-import { columnKey, rootRemPx, type DockColumns, type DockDropTarget, type DockPanelId, type DockZone } from '@/hooks/useEditorLayout';
+import type { DockDropLocation } from '@/hooks/useDockDrag';
+import { columnKey, rootRemPx, type DockColumns, type DockPanelId, type DockZone } from '@/hooks/useEditorLayout';
+
+/** How far the pointer has to move from where it went down before that counts as "dragging" rather than
+ *  "clicking" - below this, releasing does nothing (the header itself has no click action of its own;
+ *  the collapse button is a separate element that never reaches this check at all - see DockPanel). A
+ *  plain click that trembles by a pixel or two must not turn into a drag, since a drag - even one
+ *  released instantly - reorders on drop the same as a deliberate one would. */
+const DRAG_THRESHOLD_PX = 4;
 
 /** Shared with the old SidePanelSection so a collapse state set before this existed still applies. */
 const COLLAPSE_PREFIX = 'fishtank.sidePanel.collapsed.';
@@ -18,6 +26,11 @@ function loadCollapsed(id: string): boolean {
  * columns to open a new one. Collapsed bodies are unmounted rather than hidden, since these panels do
  * real work on render (the preview canvas, the layer thumbnails).
  *
+ * Dragging is plain pointer events, not native HTML5 drag-and-drop - see useDockDrag.ts for why. The
+ * header captures the pointer on pointerdown and tracks the gesture itself (with a small move threshold
+ * so an ordinary click isn't mistaken for a drag - see DRAG_THRESHOLD_PX), calling back up into the
+ * shared drag controller for everything past "did a drag actually start".
+ *
  * `height` is set once the divider under the panel has been dragged (see PanelDivider); until then the
  * panel keeps whatever the stylesheet gives it - its content's height, or a share of the leftover space.
  */
@@ -28,7 +41,9 @@ export function DockPanel({
   dragging,
   height,
   onDragStart,
+  onDragMove,
   onDragEnd,
+  onDragCancel,
   children,
 }: {
   id: DockPanelId;
@@ -36,11 +51,14 @@ export function DockPanel({
   icon: string;
   dragging: boolean;
   height?: number;
-  onDragStart: (id: DockPanelId) => void;
+  onDragStart: (id: DockPanelId, x: number, y: number) => void;
+  onDragMove: (x: number, y: number) => void;
   onDragEnd: () => void;
+  onDragCancel: () => void;
   children: ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(() => loadCollapsed(id));
+  const gesture = useRef<{ pointerId: number; x: number; y: number; started: boolean } | null>(null);
 
   const toggle = () => {
     const next = !collapsed;
@@ -50,6 +68,15 @@ export function DockPanel({
     } catch {
       // Not being able to remember the choice is no reason to refuse to make it.
     }
+  };
+
+  const endGesture = (e: React.PointerEvent, cancelled: boolean) => {
+    const g = gesture.current;
+    gesture.current = null;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    if (!g?.started) return;
+    if (cancelled) onDragCancel();
+    else onDragEnd();
   };
 
   return (
@@ -67,16 +94,26 @@ export function DockPanel({
     >
       <div
         className="dock-panel-header"
-        draggable
-        onDragStart={(e) => {
-          // text/plain as well as the private type: some browsers refuse to start a drag without one,
-          // and a stray drop onto a text field then pastes the panel's id rather than nothing at all.
-          e.dataTransfer.setData('application/x-fishtank-panel', id);
-          e.dataTransfer.setData('text/plain', id);
-          e.dataTransfer.effectAllowed = 'move';
-          onDragStart(id);
+        onPointerDown={(e) => {
+          if (e.button !== 0 && e.pointerType === 'mouse') return;
+          // Let the collapse button's own click through untouched - never even arms a potential drag,
+          // so there's nothing for that click to compete against.
+          if ((e.target as HTMLElement).closest('button')) return;
+          gesture.current = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, started: false };
+          e.currentTarget.setPointerCapture(e.pointerId);
         }}
-        onDragEnd={onDragEnd}
+        onPointerMove={(e) => {
+          const g = gesture.current;
+          if (!g || g.pointerId !== e.pointerId) return;
+          if (!g.started) {
+            if (Math.hypot(e.clientX - g.x, e.clientY - g.y) < DRAG_THRESHOLD_PX) return;
+            g.started = true;
+            onDragStart(id, e.clientX, e.clientY);
+          }
+          onDragMove(e.clientX, e.clientY);
+        }}
+        onPointerUp={(e) => endGesture(e, false)}
+        onPointerCancel={(e) => endGesture(e, true)}
       >
         <i className={`fa-solid fa-${icon} dock-panel-icon`} aria-hidden="true" />
         <span className="dock-panel-title">{title}</span>
@@ -86,6 +123,30 @@ export function DockPanel({
       </div>
       {!collapsed && <div className="dock-panel-body">{children}</div>}
     </section>
+  );
+}
+
+/** Follows the cursor while a panel is being dragged, so there's always a clear answer to "what am I
+ *  holding" - unlike native drag-and-drop, nothing here supplies a drag image automatically. Always
+ *  mounted (rendering is what lets moveGhost's direct DOM writes work at all - see useDockDrag.ts) but
+ *  invisible whenever nothing is being dragged; `pointer-events: none` is what keeps it from being the
+ *  answer to its own hit-test, since it's the topmost thing at the cursor's own position by definition. */
+export function DockDragGhost({
+  ghostRef,
+  panel,
+  title,
+  icon,
+}: {
+  ghostRef: React.RefObject<HTMLDivElement | null>;
+  panel: DockPanelId | null;
+  title: string;
+  icon: string;
+}) {
+  return (
+    <div className="dock-drag-ghost" ref={ghostRef} hidden={!panel} aria-hidden="true">
+      <i className={`fa-solid fa-${icon}`} />
+      {title}
+    </div>
   );
 }
 
@@ -168,14 +229,19 @@ const NARROW_PANELS = new Set<DockPanelId>(['tools', 'transform']);
  *  squeezed down to a strip loses one. */
 const COMPACT_COLUMN_REM = 7;
 
-/** One column of a dock: panels stacked top to bottom, with a resize divider between each pair. */
+/**
+ * One column of a dock: panels stacked top to bottom, with a resize divider between each pair. Purely
+ * presentational as far as dragging goes now - it carries `data-drop-*` markers that identify it to
+ * computeDropLocation (see useDockDrag.ts) and renders `active` (whether *this* column is the current
+ * drop target, decided by the drag controller up in PixelEditorPanel) as a highlight; it no longer
+ * tracks hover or decides anything about drops itself.
+ */
 function DockColumn({
   zone,
   index,
   panels,
   width,
-  dragging,
-  onDropPanel,
+  active,
   onPanelResize,
   renderPanel,
   resizeLabel,
@@ -187,61 +253,35 @@ function DockColumn({
    *  column keeps whatever the stylesheet gives it - narrow for an icon-only column, content-width
    *  otherwise (see .dock-column[data-narrow] in index.css). */
   width?: number;
-  dragging: DockPanelId | null;
-  onDropPanel: (panel: DockPanelId, zone: DockZone, target: DockDropTarget) => void;
+  /** Whether the pointer is currently over this exact column mid-drag - see useDockDrag's dropLocation. */
+  active: boolean;
   onPanelResize: (panel: DockPanelId, px: number | null) => void;
   renderPanel: (id: DockPanelId) => ReactNode;
   resizeLabel: string;
 }) {
-  const [over, setOver] = useState(false);
   const narrow = panels.length > 0 && panels.every((id) => NARROW_PANELS.has(id));
   // With no width of its own a column renders at its default, which for a narrow one is the single
   // button strip - so that's the case the composition still decides.
   const compact = width != null ? width < COMPACT_COLUMN_REM * rootRemPx() : narrow;
 
-  /** Which panel the dragged one should land above, from where the pointer is relative to the panels
-   *  already here - so dropping between two of them puts it between them, not always at the end. */
-  const insertionBefore = (e: React.DragEvent<HTMLDivElement>): DockPanelId | null => {
-    for (const el of Array.from(e.currentTarget.querySelectorAll<HTMLElement>('[data-panel-id]'))) {
-      const r = el.getBoundingClientRect();
-      if (e.clientY < r.top + r.height / 2) return (el.dataset.panelId as DockPanelId) ?? null;
-    }
-    return null;
-  };
-
   return (
     <div
       className="dock-column"
+      // Read by computeDropLocation (useDockDrag.ts) to identify this column and find where within it
+      // the pointer is - see its own :scope > [data-panel-id] scan for the beforeId half of that.
+      data-drop-kind="column"
+      data-drop-zone={zone}
+      data-drop-index={index}
       // Two separate things, deliberately. `narrow` is about *sizing* and comes from what the column
       // holds: a column of nothing but icon buttons opens one button wide and is allowed to be dragged
       // that far back down. `compact` is about *styling* and comes from the width the column actually
       // has, so widening one brings its titles back instead of leaving it looking like a strip forever.
       data-narrow={narrow ? '' : undefined}
       data-compact={compact ? '' : undefined}
-      data-drop-active={over || undefined}
+      data-drop-active={active || undefined}
       // An explicit width wins over the narrow/wide defaults either way, the same way DockPanel's own
       // height override does - inline style beats a stylesheet rule of any specificity.
       style={width ? { flex: `0 0 ${width}px` } : undefined}
-      onDragOver={(e) => {
-        if (!dragging) return;
-        e.preventDefault();
-        e.stopPropagation();
-        e.dataTransfer.dropEffect = 'move';
-        if (!over) setOver(true);
-      }}
-      onDragLeave={(e) => {
-        // Only when the pointer really left this column - crossing a child fires dragleave for the
-        // child, which would otherwise flicker the highlight for the whole drag.
-        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-        setOver(false);
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setOver(false);
-        const panel = (e.dataTransfer.getData('application/x-fishtank-panel') || dragging) as DockPanelId | null;
-        if (panel) onDropPanel(panel, zone, { kind: 'column', index, beforeId: insertionBefore(e) });
-      }}
     >
       {panels.map((id, i) => (
         <Fragment key={id}>
@@ -254,41 +294,18 @@ function DockColumn({
 }
 
 /** The strip between (and either side of) a dock's columns: dropping a panel here opens a new column at
- *  that position. Only exists while a panel is being dragged. */
-function NewColumnStrip({
-  zone,
-  index,
-  dragging,
-  onDropPanel,
-  label,
-}: {
-  zone: DockZone;
-  index: number;
-  dragging: DockPanelId | null;
-  onDropPanel: (panel: DockPanelId, zone: DockZone, target: DockDropTarget) => void;
-  label: string;
-}) {
-  const [over, setOver] = useState(false);
-  if (!dragging) return null;
+ *  that position. Only exists while a panel is being dragged - see DockZoneView, which skips rendering
+ *  these entirely once `dragging` is null rather than passing an always-false `active` down to one that
+ *  would otherwise sit in the layout doing nothing. */
+function NewColumnStrip({ zone, index, active, label }: { zone: DockZone; index: number; active: boolean; label: string }) {
   return (
     <div
       className="dock-new-column"
-      data-drop-active={over || undefined}
+      data-drop-kind="new"
+      data-drop-zone={zone}
+      data-drop-index={index}
+      data-drop-active={active || undefined}
       title={label}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        e.dataTransfer.dropEffect = 'move';
-        if (!over) setOver(true);
-      }}
-      onDragLeave={() => setOver(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        setOver(false);
-        const panel = (e.dataTransfer.getData('application/x-fishtank-panel') || dragging) as DockPanelId | null;
-        if (panel) onDropPanel(panel, zone, { kind: 'new', index });
-      }}
     >
       <i className="fa-solid fa-plus" aria-hidden="true" />
     </div>
@@ -378,7 +395,7 @@ export function DockZoneView({
   columns,
   columnWidths,
   dragging,
-  onDropPanel,
+  dropLocation,
   onResize,
   onPanelResize,
   onColumnResize,
@@ -395,8 +412,12 @@ export function DockZoneView({
   /** Explicit widths for columns whose divider has been dragged (see useEditorLayout's columnWidths),
    *  keyed the same way (columnKey) - looked up per column below. */
   columnWidths: Partial<Record<string, number>>;
+  /** Which panel is being dragged, if any - drives whether the drop-target chrome (NewColumnStrip, the
+   *  empty-dock hint) exists at all; see useDockDrag.ts. */
   dragging: DockPanelId | null;
-  onDropPanel: (panel: DockPanelId, zone: DockZone, target: DockDropTarget) => void;
+  /** Where that panel would land if released right now - compared against this zone's own columns/gaps
+   *  below to decide which one (if any) highlights. Also from useDockDrag.ts. */
+  dropLocation: DockDropLocation | null;
   onResize: (px: number) => void;
   onPanelResize: (panel: DockPanelId, px: number | null) => void;
   onColumnResize: (key: string, zone: DockZone, px: number | null) => void;
@@ -407,7 +428,6 @@ export function DockZoneView({
   newColumnLabel: string;
   emptyHint: string;
 }) {
-  const [over, setOver] = useState(false);
   const vertical = zone !== 'bottom';
   const axis = vertical ? 'x' : 'y';
   /** Which way the dock grows relative to pointer movement: the left dock widens as the pointer moves
@@ -415,36 +435,28 @@ export function DockZoneView({
   const sign = zone === 'left' ? 1 : -1;
   const resizeStart = useRef<{ pos: number; size: number } | null>(null);
   const empty = columns.length === 0;
+  const zoneActive = dropLocation?.zone === zone;
+  const isColumnActive = (i: number) => zoneActive && dropLocation!.target.kind === 'column' && dropLocation!.target.index === i;
+  const isNewActive = (i: number) => zoneActive && dropLocation!.target.kind === 'new' && dropLocation!.target.index === i;
 
   return (
     <div
       className="dock-zone"
+      // Read by computeDropLocation (useDockDrag.ts) as the fallback when the pointer is over this
+      // zone's own chrome rather than a specific column or gap - its padding, or empty space.
+      data-drop-kind="zone"
+      data-drop-zone={zone}
+      data-drop-empty={empty ? '1' : undefined}
+      data-drop-column-count={columns.length}
       data-zone={zone}
       data-empty={empty || undefined}
-      data-drop-active={over || undefined}
+      data-drop-active={zoneActive || undefined}
       // An empty dock still has to be reachable, or a panel dragged out of it could never go back:
       // it keeps a thin strip that widens into a labelled drop target while a drag is in progress.
       style={vertical ? { width: empty && !dragging ? undefined : size } : { height: empty && !dragging ? undefined : size }}
-      onDragOver={(e) => {
-        if (!dragging) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        if (!over) setOver(true);
-      }}
-      onDragLeave={(e) => {
-        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-        setOver(false);
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        setOver(false);
-        const panel = (e.dataTransfer.getData('application/x-fishtank-panel') || dragging) as DockPanelId | null;
-        if (!panel) return;
-        onDropPanel(panel, zone, empty ? { kind: 'new', index: 0 } : { kind: 'column', index: columns.length - 1, beforeId: null });
-      }}
     >
       <div className="dock-zone-columns">
-        <NewColumnStrip zone={zone} index={0} dragging={dragging} onDropPanel={onDropPanel} label={newColumnLabel} />
+        {dragging && <NewColumnStrip zone={zone} index={0} active={isNewActive(0)} label={newColumnLabel} />}
         {columns.map((panels, i) => (
           <Fragment key={panels.join('-') || i}>
             <DockColumn
@@ -452,14 +464,13 @@ export function DockZoneView({
               index={i}
               panels={panels}
               width={columnWidths[columnKey(panels)]}
-              dragging={dragging}
-              onDropPanel={onDropPanel}
+              active={isColumnActive(i)}
               onPanelResize={onPanelResize}
               renderPanel={renderPanel}
               resizeLabel={panelResizeLabel}
             />
             {dragging ? (
-              <NewColumnStrip zone={zone} index={i + 1} dragging={dragging} onDropPanel={onDropPanel} label={newColumnLabel} />
+              <NewColumnStrip zone={zone} index={i + 1} active={isNewActive(i + 1)} label={newColumnLabel} />
             ) : (
               // Only between two real columns - the strip that opens a brand new one (above) only makes
               // sense while a panel is actually being dragged onto it.

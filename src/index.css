@@ -722,6 +722,10 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   border-bottom: 2px solid var(--bevel-dark);
   cursor: grab;
   user-select: none;
+  /* The header owns this gesture as a pointer drag (see DockPanel in EditorDock.tsx), not a native
+     HTML5 one any more - touch-action: none is what stops a touch/pen browser from also reading the
+     same movement as "scroll the page" and cancelling the pointer sequence out from under it. */
+  touch-action: none;
   font-family: "Press Start 2P", "Pixelify Sans", system-ui, sans-serif;
   font-size: 0.46rem;
   text-transform: uppercase;
@@ -729,6 +733,33 @@ main { flex: 1; overflow: auto; padding: 8px; min-height: 0; }
   color: var(--pixel-text-strong);
 }
 .dock-panel-header:active { cursor: grabbing; }
+/* Follows the cursor while a panel is being dragged (see DockDragGhost/useDockDrag.ts) - position is
+   written directly to this element's own transform on every pointermove, not through React state, so
+   `left`/`top` stay at 0 here and the transform is the only thing that ever moves it. pointer-events:
+   none is load-bearing, not cosmetic: without it this would be the topmost thing under the cursor and
+   every drop-target hit-test would find the ghost instead of whatever's actually there. */
+.dock-drag-ghost {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  background: var(--pixel-panel-hover);
+  border: 2px solid var(--bevel-dark);
+  box-shadow: 3px 3px 0 var(--bevel-dark);
+  font-family: "Press Start 2P", "Pixelify Sans", system-ui, sans-serif;
+  font-size: 0.46rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--pixel-text-strong);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0.92;
+}
+.dock-drag-ghost[hidden] { display: none; }
 .dock-panel-icon { font-size: 0.6rem; opacity: 0.6; }
 .dock-panel-title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dock-panel-collapse {
