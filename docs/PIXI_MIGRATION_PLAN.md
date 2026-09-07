@@ -441,8 +441,8 @@ age > lifespan                              → ตาย
 |---|---|---|---|---|
 | Plan | ✅ done | 2026-09-07 | — | เอกสารนี้ |
 | Q&A §9 | ✅ done | 2026-09-07 | — | ผู้ใช้ตอบครบ 11 ข้อ — ดู §9/§9.1/§9.2 |
-| P0 Spike | ⬜ not started | | | **ถัดไป** |
-| P1 Pixi render parity | ⬜ not started | | | |
+| P0 Spike | ✅ done | 2026-09-07 | (pending) | ดู §11 — คมเท่า Canvas2D, bundle ~145KB gzip (< 400KB), dynamic-import ไม่กระทบ main bundle |
+| P1 Pixi render parity | ⬜ not started | | | **ถัดไป** |
 | P2 room+bg เข้า scene | ⬜ not started | | | |
 | P3 แยก model/sim/render | ⬜ not started | | | |
 | P4 ฉากห้อง + สลับโหมด | ⬜ not started | | | รอ asset ห้องจากผู้ใช้ (§9.2) — ทำโครงไปก่อนได้ |
@@ -453,3 +453,38 @@ age > lifespan                              → ตาย
 - ✅ เพิ่งแก้เสร็จ: zoom feedback loop (§7-A), room decor lockstep (§7-B), Tank Layers รวมลิสต์เดียว, export PNG/GIF/WebM
 - deps: react 19.2.8, vite 8, tailwind 4, gifenc 1.0.3 · **ยังไม่มี pixi.js**
 - `tsc -b` / `build` / `oxlint` สะอาด (เหลือ warning เดิม 4 ตัวใน `ui/*.tsx` + `TankCanvas` set-state-in-effect)
+
+---
+
+## 11. P0 Spike — ผลลัพธ์ (2026-09-07)
+
+**สรุป: ผ่านทั้งสองเกณฑ์ → ไปต่อ P1 ได้**
+
+### ไฟล์ที่สร้าง (ของชั่วคราว จะถูกลบตอนเริ่ม P1 จริง ยกเว้นสองไฟล์แรก)
+```
+src/tank/render/pixiApp.ts          ✅ ใช้ต่อใน P1 ได้เลย (createPixiApp/destroyPixiApp)
+src/tank/render/textureCache.ts     ✅ ใช้ต่อใน P1 ได้เลย (textureFor/invalidateSprite/invalidateAll)
+src/tank/render/dev/PixiSpike.tsx   🗑️ ลบตอนเริ่ม P1 - หน้าที่จบแล้ว
+src/main.tsx                        ⚠️ มี branch `?pixi=1` ชั่วคราว - ลบ branch นี้ตอนลบ PixiSpike.tsx
+```
+
+### ผลตรวจ
+
+| เกณฑ์ (จาก §6 "Done when") | ผล |
+|---|---|
+| สไปรท์ Pixi คมเท่า Canvas2D | ✅ ทดสอบ 3 สไปรท์ (Goldfish sample, Seaweed sample, สไปรท์วาดเองทรงเฉียง) — คมเท่ากันทุกตัว ไม่มี bilinear blur เลย (ยืนยันว่า `texture.source.scaleMode = 'nearest'` ใน textureCache.ts ทำงานถูก) |
+| bundle เพิ่มไม่เกิน ~400KB gzip | ✅ pixi.js ทั้งหมด (chunk หลัก + sub-chunks ของ WebGL/WebGPU/Canvas backend ที่ pixi split เอง) รวม **~145KB gzip** — ต่ำกว่างบเกือบ 3 เท่า |
+| build ผ่าน | ✅ `tsc -b` และ `npm run build` สะอาด |
+| **ของแถมที่เจอเพิ่ม (ไม่ใช่เกณฑ์เดิม แต่สำคัญ)** | เพราะ import pixi.js ผ่าน `import()` แบบ dynamic (โหลดเฉพาะตอนเข้า `?pixi=1`) **bundle หลักของแอปไม่โตขึ้นเลยแม้แต่ byte เดียว** (`index-*.js` ยังคง ~164KB gzip เท่าเดิม) → **P1 ควรทำ tank renderer เป็น dynamic import เหมือนกัน** ไม่ใช่ import ตรงที่ TankPanel.tsx เพื่อไม่ให้แท็บ editor (ที่ไม่ได้ใช้ Pixi) โตขึ้นโดยไม่จำเป็น |
+
+### วิธี re-verify ด้วยตัวเอง (ถ้าอยากดูซ้ำ)
+```bash
+npm run dev -- --port 5199
+# เปิด http://localhost:5199/?pixi=1 (ต้องมีสไปรท์อย่างน้อย 1 ตัวในไลบรารีก่อน - วาดจากแท็บ Draw Fish/Decor)
+# เทียบภาพซ้าย (Canvas2D) กับขวา (Pixi) ด้วยตา - ทั้งคู่ต้องคมเท่ากันทุก pixel
+```
+
+### สิ่งที่ P1 ต้องทำต่อ (ไม่ใช่แค่ไปอ่าน §6 P1 เฉย ๆ - นี่คือ action items จริงจาก P0)
+1. ลบ `src/tank/render/dev/` ทั้งโฟลเดอร์ + ลบ branch `?pixi=1` ใน `main.tsx` กลับไปเป็นโค้ดเดิม
+2. ใช้ `pixiApp.ts` + `textureCache.ts` ที่มีอยู่แล้วต่อได้เลย ไม่ต้องเขียนใหม่
+3. โหลด Pixi renderer ของตู้ผ่าน dynamic `import()` ใน `TankCanvas.tsx` (ตาม flag `VITE_TANK_RENDERER`) เพื่อรักษาเรื่อง "bundle หลักไม่โต" ที่เพิ่งพิสูจน์ได้ใน P0
