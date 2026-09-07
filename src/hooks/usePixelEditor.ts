@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   bresenhamLine,
   ditherColorAt,
+  ditherGradientMix,
   flipFrameH,
   flipFrameV,
   hexToRgb,
@@ -18,6 +19,11 @@ import {
 import { t } from '@/lib/i18n';
 import * as storage from '@/lib/storage';
 import { pixelateImageFile } from '@/lib/imageImport';
+import { createPenTool } from '@/lib/tools/tools/penTool';
+import { createShapeTool } from '@/lib/tools/tools/shapeTool';
+import { createMagicWandTool, resolveWandCombine } from '@/lib/tools/tools/magicWandTool';
+import { createMoveTool } from '@/lib/tools/tools/moveTool';
+import type { Gesture, GestureResult, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '@/lib/tools/types';
 import type {
   CanvasBackground,
   Cell,
@@ -110,6 +116,19 @@ const SELECTION_TOOLS = new Set<ToolName>(['select', 'lasso', 'magicWand']);
  *  visible/active while the Move tool is selected too, not just while actively editing the selection
  *  shape, so switching to Move to drag a selection doesn't make it look like nothing is selected. */
 const SELECTION_AWARE_TOOLS = new Set<ToolName>(['select', 'lasso', 'magicWand', 'move']);
+
+/** Tools migrated to the new Tool/Gesture architecture (src/lib/tools/) - see that directory's
+ *  ARCHITECTURE.md for the design and the rest of the migration plan. Every other ToolName still runs
+ *  on the legacy inline `if (this.tool === 'xxx')` handling directly below. Built once at module scope
+ *  since the `createXTool()` factories are pure and stateless. */
+const TOOL_REGISTRY: Partial<Record<ToolName, Tool>> = {
+  pen: createPenTool(false),
+  eraser: createPenTool(true),
+  rect: createShapeTool('rect'),
+  ellipse: createShapeTool('ellipse'),
+  magicWand: createMagicWandTool(),
+  move: createMoveTool(),
+};
 
 export type HandleName = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e';
 /** Size (px) of a resize handle's square - exported for PixelSelectionOverlay.tsx, which draws the
@@ -306,6 +325,19 @@ class PixelEditorEngine {
    *  no *other* part of the same stroke also painted that cell: a scribble crossing its own path would
    *  otherwise punch a hole straight through the segment it already drew. */
   private strokeVisits = new Map<string, number>();
+  /** The in-progress gesture for a tool migrated to the new architecture (see TOOL_REGISTRY) - null
+   *  whenever the active tool is still on the legacy inline handling below. */
+  private activeGesture: Gesture | null = null;
+  /** The ToolPointerEvent last given to `activeGesture.onPointerMove` - the real DOM `pointerup` event
+   *  carries no position of its own (see onPointerUp's empty signature), so `onPointerUp` replays this
+   *  instead, exactly like the legacy code finalizing a shape/curve from whatever `shapePreviewCells`
+   *  was last set to rather than re-deriving a position from the up-event. */
+  private lastToolPointerEvent: ToolPointerEvent | null = null;
+  /** Canvas-clamped rect(s) `activeGesture`'s last preview drew as an *overlay* (not yet committed to
+   *  the frame - see ToolPreview's own doc comment) - so a cancelled gesture (Escape, blur) can erase
+   *  it. Ports `redrawShapePreview(null)`'s role for the legacy shape/curve preview, which this
+   *  bypasses for migrated tools since they no longer write to `shapePreviewCells`. */
+  private lastGesturePreviewRects: SelectionBox[] | null = null;
   sprayTimer: ReturnType<typeof setInterval> | null = null;
   sprayPointerCell: Cell | null = null;
   /** Curve tool: null = idle, 'drag-end' = dragging the initial line, 'bend' = adjusting the control-point handle. */
@@ -1707,6 +1739,21 @@ class PixelEditorEngine {
   }
 
   private resetGestureState(): void {
+    // A migrated tool's (see TOOL_REGISTRY) gesture: erase any uncommitted overlay it left on the
+    // canvas bitmap (Pen never leaves one - it commits directly; a shape/curve-equivalent does, see
+    // lastGesturePreviewRects' own doc comment), let it do its own cleanup, then forget it. Whatever it
+    // already committed progressively (Pen) or lifted into moveBuffer (Move) is handled below the same
+    // way legacy gestures always were - either committed back (moveBuffer, right below) or left for the
+    // caller's undo-rollback (cancelGesture) to fully restore.
+    if (this.activeGesture) {
+      if (this.lastGesturePreviewRects) {
+        this.redrawRegions(this.lastGesturePreviewRects);
+        this.lastGesturePreviewRects = null;
+      }
+      this.activeGesture.onCancel(this.buildToolContext());
+      this.activeGesture = null;
+      this.lastToolPointerEvent = null;
+    }
     // A pending move/resize already cleared its source cells from the frame data
     // at gesture start, so an interrupted gesture must be committed back (at its
     // last known position), never just discarded - dropping it would silently
@@ -2448,6 +2495,151 @@ class PixelEditorEngine {
     this.refresh();
   }
 
+  // --- new Tool/Gesture architecture (src/lib/tools/) - see that directory's ARCHITECTURE.md ---
+
+  /** Builds the read-only snapshot a migrated tool's gesture logic reads - see ToolContext's own doc
+   *  comment for why this is a plain data bag instead of `this`. */
+  private buildToolContext(): ToolContext {
+    const { width, height } = this.current;
+    const frame = this.activeCells();
+    return {
+      width,
+      height,
+      getCell: (x, y) => (x >= 0 && y >= 0 && x < width && y < height ? frame[y * width + x] : null),
+      color: this.color,
+      secondaryColor: this.gradientColor,
+      brushSize: this.brushSize,
+      ditherEnabled: this.ditherEnabled,
+      pixelPerfect: this.pixelPerfect,
+      shapeFilled: this.shapeFilled,
+      symmetry: this.symmetry,
+      symmetryAxisX: this.symmetryAxisX,
+      symmetryAxisY: this.symmetryAxisY,
+      selection: this.selection,
+      selectionMask: this.selectionMask,
+      fillTolerance: this.fillTolerance,
+      wandContiguous: this.wandContiguous,
+      selectionMode: this.selectionMode,
+    };
+  }
+
+  /** Resolves a raw DOM pointer event into the tool-agnostic shape Gesture methods read. Always the
+   *  *unclamped* cell (see cellFromEventUnclamped's own doc comment) - Pen needs it to keep painting a
+   *  stroke that runs off the edge, Move needs it to drag a selection past the canvas boundary, and
+   *  it's harmless for the other migrated tools (their own commit logic bounds-checks). */
+  private toolPointerEvent(e: { clientX: number; clientY: number; shiftKey: boolean; altKey: boolean; ctrlKey: boolean; metaKey: boolean; button: number }): ToolPointerEvent {
+    const cell = this.cellFromEventUnclamped(e);
+    const chainFrom = (this.tool === 'pen' || this.tool === 'eraser') && e.shiftKey ? this.strokeChainAnchor() : null;
+    return { cell, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey || e.metaKey, button: e.button, chainFrom };
+  }
+
+  /** Starts a migrated tool's gesture: pushes the undo snapshot (skipped for Magic Wand, which - like
+   *  the original `applyMagicWandAt` - never touches a pixel, see resolveWandCombine's own doc comment
+   *  and `rollbackGestureUndo`'s "returns null when the gesture never pushed one" case for why that's
+   *  safe to just skip rather than push-then-always-rollback), then immediately replays the same event
+   *  through `onPointerMove` once - every migrated tool's original behavior painted/previewed
+   *  immediately on mousedown (see e.g. `redrawShapePreview` at the top of the old line/rect/ellipse
+   *  branch), not just starting from the first pointermove. */
+  private beginToolGesture(tool: Tool, tpe: ToolPointerEvent): void {
+    if (tool.name !== 'magicWand') this.pushGestureUndo();
+    this.painting = true;
+    const ctx = this.buildToolContext();
+    const gesture = tool.beginGesture(tpe, ctx);
+    if (!gesture) {
+      this.rollbackGestureUndo();
+      this.painting = false;
+      return;
+    }
+    this.activeGesture = gesture;
+    this.lastToolPointerEvent = tpe;
+    this.applyToolPreview(gesture.onPointerMove(tpe, ctx));
+  }
+
+  /** Applies one ToolPreview - ports the same three destinations the legacy code wrote a live preview
+   *  to, now driven by data instead of each tool's own inline calls: committed cells go straight into
+   *  the frame (Pen), an overlay repaints via the existing `redrawRegions` (shapes), and Move's
+   *  floating-buffer state feeds the existing `gestureBaseBitmap` fast path unchanged. */
+  private applyToolPreview(preview: ToolPreview | null): void {
+    if (!preview) return;
+    if (preview.ops && preview.ops.length) {
+      const { width, height } = this.current;
+      const frame = this.activeCells();
+      preview.ops.forEach((op) => {
+        if (op.x >= 0 && op.y >= 0 && op.x < width && op.y < height) frame[op.y * width + op.x] = op.color;
+      });
+    }
+    if (preview.movePreview) {
+      this.moveBuffer = { cells: preview.movePreview.cells.map((c) => ({ x: c.x, y: c.y, color: c.color })) };
+      this.moveDelta = { dx: preview.movePreview.dx, dy: preview.movePreview.dy };
+      if (!this.gestureBaseBitmap) this.cacheGestureBaseBitmap();
+      this.lastGesturePreviewRects = null;
+      this.refresh();
+      return;
+    }
+    if (preview.dirtyRects.length) {
+      this.redrawRegions(preview.dirtyRects, preview.overlay ?? undefined);
+      this.lastGesturePreviewRects = preview.overlay ? preview.dirtyRects : null;
+    } else if (preview.ops && preview.ops.length) {
+      this.reactNotify();
+    }
+  }
+
+  /** Finalizes a migrated tool's gesture on release - the counterpart to every legacy tool's own
+   *  onPointerUp commit branch (shape commit at usePixelEditor.ts:2871-2892, commitMove, etc.),
+   *  generalized: write `ops` into the frame, apply any selection change, then either roll back the
+   *  undo entry (nothing changed) or repaint. */
+  private commitGestureResult(result: GestureResult): void {
+    const { width, height } = this.current;
+    const frame = this.activeCells();
+    result.ops.forEach((op) => {
+      if (op.x >= 0 && op.y >= 0 && op.x < width && op.y < height) frame[op.y * width + op.x] = op.color;
+    });
+    if (result.selection) {
+      this.selection = result.selection.box;
+      this.selectionMask = result.selection.mask ? new Set(result.selection.mask) : null;
+      this.lassoPoints = result.selection.outline;
+    }
+    const wasMove = result.moveSelectionBy !== undefined;
+    if (result.moveSelectionBy) {
+      const { dx, dy } = result.moveSelectionBy;
+      if (this.selection) this.selection = shiftBox(this.selection, { dx, dy });
+      if (this.lassoPoints) {
+        this.lassoPoints = this.lassoPoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        this.selectionMask = this.polygonMask(this.lassoPoints);
+      } else if (this.selectionMask) {
+        this.selectionMask = this.shiftMask(this.selectionMask, dx, dy);
+      }
+    }
+    const hadColor = result.ops.some((op) => op.color !== null);
+    this.moveBuffer = null;
+    this.moveStartCell = null;
+    this.moveDelta = { dx: 0, dy: 0 };
+    this.gestureBaseBitmap = null;
+    this.lastGesturePreviewRects = null;
+    this.lastPaintCell = null;
+    this.strokeSnapshot = null;
+    this.strokePoints = [];
+    this.eraseOverride = false;
+    this.activeGesture = null;
+    this.lastToolPointerEvent = null;
+
+    if (!result.changed) {
+      this.rollbackGestureUndo();
+      this.reactNotify();
+      return;
+    }
+    if (hadColor && !wasMove) this.addSavedColor(this.color);
+    if (result.finalCell && (this.tool === 'pen' || this.tool === 'eraser')) this.lastStrokeEndCell = result.finalCell;
+    if (wasMove) {
+      this.refresh();
+    } else if (result.dirtyRects.length) {
+      this.redrawRegions(result.dirtyRects);
+    } else {
+      this.flushPreviewRepaint();
+      this.reactNotify();
+    }
+  }
+
   onPointerDown(e: React.PointerEvent<HTMLCanvasElement>): void {
     // Middle-button pan (Paint/Photoshop/Pixilart convention): works regardless of the active tool and
     // independent of `painting`/tool-specific state entirely, so it can't trigger a draw action and
@@ -2481,6 +2673,26 @@ class PixelEditorEngine {
       return;
     }
 
+    // Migrated tools (see TOOL_REGISTRY). Magic Wand keeps its original routing quirk: a click that
+    // resolves to 'subtract' always subtracts, even inside the existing selection, but any other
+    // click landing inside it starts a Move instead (see resolveWandCombine's own doc comment and the
+    // original usePixelEditor.ts:2699-2707 this ports).
+    if (this.tool === 'magicWand') {
+      const tpe = this.toolPointerEvent(e);
+      const combine = resolveWandCombine(tpe, this.selectionMode);
+      if (combine !== 'subtract' && this.isInsideSelection(cell)) {
+        this.beginToolGesture(TOOL_REGISTRY.move!, tpe);
+        return;
+      }
+      this.beginToolGesture(TOOL_REGISTRY.magicWand!, tpe);
+      return;
+    }
+    const registryTool = TOOL_REGISTRY[this.tool];
+    if (registryTool) {
+      this.beginToolGesture(registryTool, this.toolPointerEvent(e));
+      return;
+    }
+
     if (this.tool === 'select') {
       // Shift = add, Alt = subtract, for this one drag (the Photoshop marquee modifiers) - neither key
       // means anything else on this tool, so there is nothing to collide with. Without a modifier the
@@ -2511,31 +2723,6 @@ class PixelEditorEngine {
       return;
     }
 
-    if (this.tool === 'magicWand') {
-      // Shift stays the per-click "every matching pixel in the layer" override on top of the sticky
-      // Contiguous toggle, so the modifier keeps working for anyone who already knows it.
-      const global = e.shiftKey || !this.wandContiguous;
-      // Subtract - held Alt, or the sticky mode - always means "take the clicked region out of the
-      // selection", even when that region is part of the existing selection (the common case: shrinking
-      // a selection by clicking inside it). Hence checked before isInsideSelection, which would
-      // otherwise route the click into a move/copy gesture instead.
-      if (e.altKey || this.selectionMode === 'subtract') {
-        this.applyMagicWandAt(cell, global, 'subtract');
-        return;
-      }
-      if (this.isInsideSelection(cell)) {
-        this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
-        return;
-      }
-      this.applyMagicWandAt(cell, global, e.ctrlKey || e.metaKey || this.selectionMode === 'add' ? 'add' : 'new');
-      return;
-    }
-
-    if (this.tool === 'move') {
-      this.startMoveGesture(cell, e.ctrlKey || e.metaKey);
-      return;
-    }
-
     if (this.tool === 'curve') {
       this.eraseOverride = e.button === 2;
       if (this.curvePhase === 'bend') {
@@ -2563,7 +2750,7 @@ class PixelEditorEngine {
     this.painting = true;
     this.eraseOverride = e.button === 2;
 
-    if (this.tool === 'line' || this.tool === 'rect' || this.tool === 'ellipse') {
+    if (this.tool === 'line') {
       this.shapeStart = cell;
       const end = e.shiftKey ? this.constrainShapeEnd(cell, cell) : cell;
       this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(cell, end)));
@@ -2601,16 +2788,10 @@ class PixelEditorEngine {
       this.gradientStart = cell;
       this.gradientEnd = cell;
       this.drawGradientPreviewOverlay();
-    } else {
-      // Shift+click resumes from where the last stroke ended, as a straight line (paintCell's own
-      // `isMove` path already interpolates from lastPaintCell with Bresenham - the same code that keeps
-      // a fast drag from leaving gaps). Dragging afterwards continues freehand from the new point, so
-      // repeated Shift+clicks chain segments the way the Line tool would without leaving the pen.
-      const anchor = e.shiftKey ? this.strokeChainAnchor() : null;
-      this.lastPaintCell = anchor;
-      this.beginStroke();
-      this.paintCell(cell.x, cell.y, anchor !== null);
     }
+    // No trailing `else`: every other ToolName is either handled above this shared block (eyedropper,
+    // select, lasso, curve) or dispatched through TOOL_REGISTRY before it's ever reached (pen, eraser,
+    // rect, ellipse, magicWand, move).
   }
 
   /** lastStrokeEndCell, but only when it still points at a cell this canvas actually has - a resize,
@@ -2641,6 +2822,23 @@ class PixelEditorEngine {
     // extra bit set in `buttons` - there is no second pointerdown to hook.
     if (this.painting && (e.buttons & ~this.gestureButtons & 0b111) !== 0) {
       this.cancelGesture();
+      return;
+    }
+    if (this.activeGesture) {
+      // Coalesced replay only for Pen/Eraser, same as the legacy pen branch below (see its own doc
+      // comment) - the other migrated tools (shape preview, Move) only ever read the final position of
+      // a move batch, so replaying every coalesced sample would just be wasted repaints for them.
+      const isPenLike = this.tool === 'pen' || this.tool === 'eraser';
+      const coalesced = isPenLike && typeof e.nativeEvent.getCoalescedEvents === 'function' ? e.nativeEvent.getCoalescedEvents() : [];
+      const positions = coalesced.length > 1 ? coalesced : [e];
+      const ctx = this.buildToolContext();
+      positions.forEach((pos) => {
+        // Modifier keys come from the outer React event, not each coalesced sample - only position
+        // varies between them (see the legacy pen branch's own `cellFromEventUnclamped(ce)` below).
+        const tpe = this.toolPointerEvent({ ...pos, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, button: e.button });
+        this.lastToolPointerEvent = tpe;
+        this.applyToolPreview(this.activeGesture!.onPointerMove(tpe, ctx));
+      });
       return;
     }
     if (!this.painting) {
@@ -2765,6 +2963,15 @@ class PixelEditorEngine {
     this.painting = false;
     this.gestureButtons = 0;
     this.stopSprayTimer();
+
+    if (this.activeGesture) {
+      // The real DOM pointerup carries no position (see this method's own empty signature) - finalize
+      // using the last position `onPointerMove` saw, exactly like the legacy shape/curve commit below
+      // reads whatever `shapePreviewCells` was last set to instead of re-deriving one.
+      const tpe = this.lastToolPointerEvent ?? { cell: { x: 0, y: 0 }, shiftKey: false, altKey: false, ctrlKey: false, button: 0 };
+      this.commitGestureResult(this.activeGesture.onPointerUp(tpe, this.buildToolContext()));
+      return;
+    }
 
     if (this.moveBuffer) {
       this.commitMove();
@@ -3045,7 +3252,7 @@ class PixelEditorEngine {
           t = Math.min(1, Math.max(0, t));
         }
         const color = this.ditherEnabled
-          ? ditherColorAt(x, y, startColor, endColor, t)
+          ? ditherColorAt(x, y, startColor, endColor, ditherGradientMix(t))
           : rgbToHex(sr + (er - sr) * t, sg + (eg - sg) * t, sb + (eb - sb) * t);
         out.push({ x, y, color });
       }
@@ -3103,7 +3310,7 @@ class PixelEditorEngine {
             t = ((x + 0.5 - this.gradientStart.x) * dx + (y + 0.5 - this.gradientStart.y) * dy) / lenSq;
             t = Math.min(1, Math.max(0, t));
           }
-          ctx.fillStyle = ditherColorAt(x, y, startColor, endColor, t);
+          ctx.fillStyle = ditherColorAt(x, y, startColor, endColor, ditherGradientMix(t));
           ctx.fillRect(x, y, 1, 1);
         }
       }
@@ -3297,13 +3504,6 @@ class PixelEditorEngine {
         }
       });
     });
-  }
-
-  /** Starts a new freehand stroke: snapshots the layer so Pixel Perfect can restore a trimmed corner pixel. */
-  private beginStroke(): void {
-    this.strokeSnapshot = this.activeCells().slice();
-    this.strokePoints = [];
-    this.strokeVisits.clear();
   }
 
   /**
@@ -3655,47 +3855,8 @@ class PixelEditorEngine {
     return changed;
   }
 
-  /** Magic Wand's plain-click behavior: the same connected, tolerance-aware walk as floodFill above,
-   *  but collecting matching cells into a selection mask instead of repainting them - the selection
-   *  counterpart to floodFill the way this whole tool is the selection counterpart to Fill. Always
-   *  tracks `visited` (unlike floodFill, which only needs to for tolerance > 0): floodFill can skip it
-   *  at tolerance 0 because repainting a cell to `fillColor` makes it stop matching `target` on
-   *  re-visit, but this never mutates `frame`, so an unvisited already-selected cell would otherwise be
-   *  re-queued by every one of its neighbors. */
-  private floodSelectMask(frame: Frame, width: number, height: number, x: number, y: number, target: string | null, tolerance: number): Set<string> {
-    const mask = new Set<string>();
-    const visited = new Uint8Array(width * height);
-    const stack: number[] = [y * width + x];
-    visited[y * width + x] = 1;
-    while (stack.length) {
-      const idx = stack.pop()!;
-      if (!this.colorsMatch(frame[idx], target, tolerance)) continue;
-      mask.add(`${idx % width},${Math.floor(idx / width)}`);
-      const cx = idx % width;
-      const tryPush = (idx2: number) => {
-        if (!visited[idx2]) {
-          visited[idx2] = 1;
-          stack.push(idx2);
-        }
-      };
-      if (cx + 1 < width) tryPush(idx + 1);
-      if (cx - 1 >= 0) tryPush(idx - 1);
-      if (idx + width < width * height) tryPush(idx + width);
-      if (idx - width >= 0) tryPush(idx - width);
-    }
-    return mask;
-  }
-
-  /** Shift+click on Magic Wand: every pixel in the layer matching `target` (within tolerance), not
-   *  just the region floodSelectMask would reach from the clicked cell - mirrors globalReplace above,
-   *  the Fill tool's own Shift+click convention. */
-  private globalSelectMask(frame: Frame, width: number, target: string | null, tolerance: number): Set<string> {
-    const mask = new Set<string>();
-    for (let i = 0; i < frame.length; i++) {
-      if (this.colorsMatch(frame[i], target, tolerance)) mask.add(`${i % width},${Math.floor(i / width)}`);
-    }
-    return mask;
-  }
+  // floodSelectMask/globalSelectMask (Magic Wand's own tolerance-aware region walk) now live as pure
+  // functions in src/lib/tools/tools/magicWandTool.ts, ported alongside the rest of that tool.
 
   /** Materializes whatever the current selection is (a plain rectangular box with no mask, or an
    *  already-sparse mask) into an explicit `"x,y"` cell set - what Magic Wand's Ctrl/Alt combine modes
@@ -3824,40 +3985,6 @@ class PixelEditorEngine {
     if (a.size !== b.size) return false;
     for (const key of a) if (!b.has(key)) return false;
     return true;
-  }
-
-  /** Magic Wand: click to select the region of pixels matching the clicked cell's color - the
-   *  selection equivalent of what the Fill tool does for painting, reusing the exact same
-   *  tolerance/matching rules (see colorsMatch/floodSelectMask/globalSelectMask). Shift+click selects
-   *  every matching pixel in the layer (global) rather than just the contiguous blob touching the
-   *  clicked cell, mirroring the Fill tool's own Shift+click convention exactly. Populates
-   *  selection/selectionMask/lassoPoints the same way settling a Lasso selection does (see
-   *  onPointerUp's 'lasso' branch) so the rest of the selection machinery - the overlay, move/rotate,
-   *  copy/cut, Delete-to-clear - treats it identically.
-   *
-   *  lassoPoints is only kept when polygonMask(traceMaskOutline(mask)) round-trips back to the exact
-   *  same mask (see traceMaskOutline's own doc comment for the one case it can't) - otherwise it's left
-   *  null, which still shows/acts as a correct (if plain, bounding-box-only) selection outline; only
-   *  the lasso-style traced shape is sacrificed, never mask accuracy for the immediate selection
-   *  itself, which is set directly from `mask` either way.
-   *
-   *  `combine` layers repeated clicks into one selection instead of always replacing it: 'add' (held
-   *  Ctrl/Cmd) unions the newly-clicked region into whatever's already selected - the standard way to
-   *  select several same-colored blobs (e.g. every fin on a multi-colored fish) that a single click,
-   *  or even Shift's "every matching pixel in the layer" global mode, can't reach when they're
-   *  different colors. 'subtract' (held Alt) instead removes the clicked region from the existing
-   *  selection - carving out a mistakenly-included patch without starting over. Neither mode needs
-   *  `pushUndo` - like a plain wand click, adjusting a selection doesn't touch a pixel. */
-  private applyMagicWandAt(cell: Cell, global: boolean, combine: 'new' | 'add' | 'subtract' = 'new'): void {
-    const frame = this.activeCells();
-    const { width, height } = this.current;
-    const target = frame[cell.y * width + cell.x];
-    const clicked = global
-      ? this.globalSelectMask(frame, width, target, this.fillTolerance)
-      : this.floodSelectMask(frame, width, height, cell.x, cell.y, target, this.fillTolerance);
-
-    this.applySelectionMask(clicked, combine);
-    this.reactNotify();
   }
 
   /** Merges a freshly made selection mask into whatever is already selected per `mode`, then settles

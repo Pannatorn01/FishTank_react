@@ -206,6 +206,19 @@ export function ditherColorAt(x: number, y: number, colorA: string, colorB: stri
   return mix > threshold ? colorB : colorA;
 }
 
+/** Width (as a fraction of the 0-1 gradient axis) of the dithered transition band the gradient tool
+ *  stretches its `t` through via ditherGradientMix - see that function. */
+const DITHER_BAND_WIDTH = 0.35;
+
+/** Remaps a gradient's raw 0-1 position `t` so dithering (see ditherColorAt) only happens in a band
+ *  centered on the midpoint, with solid colorA/colorB on either side - instead of a checker pattern
+ *  fading in/out across the *entire* gradient. Values already at exactly 0.5 (e.g. the fixed-mix
+ *  "dither brush" texture, not a real gradient) are unaffected, since the band is centered there. */
+export function ditherGradientMix(t: number): number {
+  const lo = 0.5 - DITHER_BAND_WIDTH / 2;
+  return Math.min(1, Math.max(0, (t - lo) / DITHER_BAND_WIDTH));
+}
+
 export interface Hsv {
   h: number;
   s: number;
