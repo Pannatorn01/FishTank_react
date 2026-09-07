@@ -2833,9 +2833,20 @@ class PixelEditorEngine {
       const positions = coalesced.length > 1 ? coalesced : [e];
       const ctx = this.buildToolContext();
       positions.forEach((pos) => {
-        // Modifier keys come from the outer React event, not each coalesced sample - only position
-        // varies between them (see the legacy pen branch's own `cellFromEventUnclamped(ce)` below).
-        const tpe = this.toolPointerEvent({ ...pos, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, button: e.button });
+        // clientX/clientY are read explicitly, never spread: on a *native* DOM PointerEvent (which is
+        // what getCoalescedEvents returns, unlike the React synthetic event `e`) they are prototype
+        // getters, not own enumerable properties, so `{ ...pos }` silently drops them - leaving
+        // cellFromEventUnclamped to compute NaN cells, which then hung bresenhamLine's loop outright.
+        // Modifier keys come from the outer React event: only the position varies between samples.
+        const tpe = this.toolPointerEvent({
+          clientX: pos.clientX,
+          clientY: pos.clientY,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          button: e.button,
+        });
         this.lastToolPointerEvent = tpe;
         this.applyToolPreview(this.activeGesture!.onPointerMove(tpe, ctx));
       });

@@ -106,6 +106,14 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
    special-cased instant action outside the registry.
 
 **Highest-risk points for whoever does steps 2-7:**
+- **Never spread a native DOM event** (`{ ...pointerEvent }`) when building a `ToolPointerEvent`. On a
+  native event - which is what `getCoalescedEvents()` returns, unlike React's synthetic event -
+  `clientX`/`clientY` are prototype getters, not own enumerable properties, so a spread silently drops
+  them and the position math yields `NaN` cells. This shipped as a real bug: it hung
+  `bresenhamLine`'s loop (tab freeze, then an out-of-memory crash), and once that was guarded it turned
+  into dropped stroke segments plus a stray pixel at (0,0). Read the coordinates explicitly. It is also
+  invisible to Playwright-driven tests, whose synthetic input never produces more than one coalesced
+  sample - see `usePixelEditor.ts`'s own comment at the coalesced-replay loop.
 - Blur/visibility-forced gesture-end and two-button-abort must route through `Gesture.onCancel` for
   every migrated tool - easy to silently miss for a new tool and leave a stuck gesture.
 - Any tool whose live-drag preview currently uses `gestureBaseBitmap` instead of dirty-rect repaint
