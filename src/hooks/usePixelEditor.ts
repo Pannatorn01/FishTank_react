@@ -85,11 +85,11 @@ const PREVIEW_LIVE_CELL_LIMIT = 128 * 128;
 const UNDO_LIMIT = 50;
 export const MAX_BRUSH_SIZE = 20;
 /** Tools that share the brush-size stepper (see CanvasStatusBar's `showBrushOptions` / PixelCanvas's
- *  brush-footprint preview) - each remembers its own size (see brushSizes/brushSizeToolKey) since a
- *  size picked for one shouldn't silently carry over to another. Line/rect/ellipse read the same
- *  `brushSize` to thicken their outline (see computeShapeCells), and curve thickens its own path the
- *  same way (see quadraticBezierCells/thickenPath) - gradient and the selection tools have no
- *  comparable "stroke width" concept, so they're deliberately left out. */
+ *  brush-footprint preview) and one shared size (see brushSizes/brushSizeToolKey), so switching between
+ *  them keeps the same size. Line/rect/ellipse read the same `brushSize` to thicken their outline (see
+ *  computeShapeCells), and curve thickens its own path the same way (see
+ *  quadraticBezierCells/thickenPath) - gradient and the selection tools have no comparable "stroke
+ *  width" concept, so they're deliberately left out. */
 export const BRUSH_SIZE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'spray', 'line', 'rect', 'ellipse', 'curve']);
 const SPRAY_INTERVAL_MS = 55;
 export const MIN_SPRAY_DENSITY = 0.25;
@@ -283,8 +283,8 @@ class PixelEditorEngine {
   /** Shows the composited preview tiled 3x3 instead of once, to spot seams on a 'background'-type
    *  sprite meant to repeat (see tickPreview/PreviewPanel.tsx). */
   tiledPreview = false;
-  /** Per-tool brush size (pen/eraser/spray each remember their own - see brushSizeToolKey/BRUSH_SIZE_TOOLS),
-   *  persisted so a size picked in one session survives a reload. */
+  /** Shared brush size across BRUSH_SIZE_TOOLS (see brushSizeToolKey/BRUSH_SIZE_TOOLS), persisted so a
+   *  size picked in one session survives a reload. */
   private brushSizes: Record<string, number> = {};
   /** Last-known pointer position over the canvas, in on-screen px relative to .pixel-canvas-inner -
    *  drives the brush-footprint preview outline (see brushPreviewRect) via a DOM overlay rather than a
@@ -842,10 +842,10 @@ class PixelEditorEngine {
     this.axisDragging = false;
   }
 
-  /** Which brush-size slot the active tool reads/writes - tools outside BRUSH_SIZE_TOOLS (shapes,
-   *  fill, etc.) fall back to the pen's size since they never read `brushSize` in the first place. */
+  /** All BRUSH_SIZE_TOOLS share one size slot, so switching tools keeps the same brush size instead of
+   *  each tool remembering its own. */
   private brushSizeToolKey(): string {
-    return BRUSH_SIZE_TOOLS.has(this.tool) ? this.tool : 'pen';
+    return 'shared';
   }
 
   get brushSize(): number {
