@@ -62,10 +62,10 @@ export function ToolRail({ engine }: { engine: PixelEditorEngine }) {
         </div>
       </div>
       <div className="tool-actions">
-        <Button type="button" size="icon" variant="secondary" title={t('action.undo')} disabled={!engine.canUndo()} onClick={() => engine.undo()}>
+        <Button type="button" size="icon" variant="secondary" title={t('action.undo')} aria-label={t('action.undo')} disabled={!engine.canUndo()} onClick={() => engine.undo()}>
           <i className="fa-solid fa-arrow-rotate-left w-100" />
         </Button>
-        <Button type="button" size="icon" variant="secondary" title={t('action.redo')} disabled={!engine.canRedo()} onClick={() => engine.redo()}>
+        <Button type="button" size="icon" variant="secondary" title={t('action.redo')} aria-label={t('action.redo')} disabled={!engine.canRedo()} onClick={() => engine.redo()}>
           <i className="fa-solid fa-arrow-rotate-right w-100" />
         </Button>
       </div>

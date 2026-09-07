@@ -76,6 +76,30 @@ describe('PenTool', () => {
     expect(preview.ops).toEqual([{ x: 4, y: 4, color: null }]);
   });
 
+  it('right-click erases with the pen tool (the eraseOverride modifier)', () => {
+    const frame = makeFrame(10, 10, () => '#123456');
+    const ctx = makeContext(frame);
+    const tool = createPenTool(false); // the PEN, not the eraser
+    const down = ptr(4, 4, { button: 2 });
+    const gesture = tool.beginGesture(down, ctx)!;
+    const preview = gesture.onPointerMove(down, ctx)!;
+    expect(preview.ops).toEqual([{ x: 4, y: 4, color: null }]);
+  });
+
+  it('right-click also switches off Pixel Perfect, matching an erasing stroke', () => {
+    const frame = makeFrame(10, 10, () => '#123456');
+    const ctx = makeContext(frame, { pixelPerfect: true, brushSize: 1 });
+    const tool = createPenTool(false);
+    const down = ptr(0, 0, { button: 2 });
+    const gesture = tool.beginGesture(down, ctx)!;
+    const state = new Map<string, string | null>();
+    applyOps(state, gesture.onPointerMove(down, ctx)!.ops ?? []);
+    applyOps(state, gesture.onPointerMove(ptr(1, 0, { button: 2 }), ctx)!.ops ?? []);
+    applyOps(state, gesture.onPointerMove(ptr(1, 1, { button: 2 }), ctx)!.ops ?? []);
+    // Trimming an erase would put a pixel back, leaving a stray dot the pointer was dragged over.
+    expect(state.get('1,0')).toBeNull();
+  });
+
   it('onCancel reports no changes and no ops', () => {
     const frame = makeFrame(10, 10);
     const ctx = makeContext(frame);

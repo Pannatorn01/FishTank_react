@@ -502,6 +502,37 @@ body, #root { height: 100%; margin: 0; }
 }
 
 .app-header { display: flex; flex-direction: column; }
+.tab-panel-loading { padding: 24px; opacity: 0.7; }
+
+.error-boundary {
+  height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--pixel-bg);
+  padding: 24px;
+}
+.error-boundary-card {
+  max-width: 480px;
+  background: var(--pixel-panel, #fff);
+  border: 2px solid var(--pixel-border, #333);
+  border-radius: 8px;
+  padding: 24px;
+}
+.error-boundary-card h2 { margin: 0 0 8px; }
+.error-boundary-card p { margin: 0 0 16px; opacity: 0.85; }
+.error-boundary-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.error-boundary-btn {
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--pixel-border, #333);
+  background: var(--pixel-panel-alt, #eee);
+  cursor: pointer;
+}
+.error-boundary-btn-primary { background: var(--pixel-accent, #4a7); color: #fff; font-weight: 600; }
+.error-boundary-btn-danger { border-color: #c0392b; color: #c0392b; }
+.error-boundary-details { margin-top: 16px; font-size: 0.75rem; opacity: 0.7; }
+.error-boundary-details pre { white-space: pre-wrap; word-break: break-word; }
 .title-bar {
   padding: 5px 10px;
   display: flex;

@@ -99,12 +99,46 @@ export function normalizeSprite(sprite: Sprite): Sprite {
   return { ...sprite, width, height, frames, frameMs: sprite.frameMs || DEFAULT_FRAME_MS };
 }
 
+/**
+ * Guards against a sprite that parsed as valid JSON but isn't shaped like a Sprite at all - a hand-
+ * edited localStorage value, a future format loaded by an older build, or (see the bresenhamLine fix
+ * in pixelMath.ts) any other bug that could have written `width`/`height` as `NaN` before this existed.
+ * Without this, a single malformed sprite reaching the engine unchecked used to be able to crash the
+ * whole app on render with no recovery but manually clearing localStorage - see
+ * docs/EDITOR_IMPROVEMENTS.md #2. Deliberately loose about *content* (a sprite with the wrong `type`
+ * string, say, is left to whatever already handles that) and strict only about the shape every other
+ * function in this file and in usePixelEditor.ts assumes without checking: finite positive integer
+ * dimensions, and every layer's `cells` array being exactly `width * height` long.
+ */
+function isValidSprite(sprite: unknown): sprite is Sprite {
+  if (!sprite || typeof sprite !== 'object') return false;
+  const s = sprite as Sprite;
+  if (typeof s.name !== 'string') return false;
+  if (!Number.isFinite(s.width) || !Number.isFinite(s.height) || s.width <= 0 || s.height <= 0) return false;
+  if (!Array.isArray(s.frames) || s.frames.length === 0) return false;
+  const cellCount = s.width * s.height;
+  return s.frames.every(
+    (layers) =>
+      Array.isArray(layers) &&
+      layers.length > 0 &&
+      layers.every((layer) => layer && Array.isArray(layer.cells) && layer.cells.length === cellCount)
+  );
+}
+
 export function loadSprites(): Sprite[] | null {
   try {
     const raw = localStorage.getItem(KEY_SPRITES);
     if (!raw) return null;
-    const parsed: Sprite[] = JSON.parse(raw);
-    return parsed.map(normalizeSprite);
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const normalized = parsed.map(normalizeSprite);
+    const valid = normalized.filter(isValidSprite);
+    if (valid.length < normalized.length) {
+      console.warn(`loadSprites: dropped ${normalized.length - valid.length} malformed sprite(s)`);
+    }
+    // Some sprites survived - still better than throwing every saved sprite away; only fall back to
+    // null (triggering the default sprite set) when literally nothing usable was left.
+    return valid.length > 0 ? valid : null;
   } catch (e) {
     console.warn('loadSprites failed', e);
     return null;
@@ -517,4 +551,60 @@ export function buildDefaultSprites(): Sprite[] {
       frameMs: DEFAULT_FRAME_MS,
     },
   ];
+}
+
+/** Every localStorage key this app writes - kept as one list so backup/reset (see below) can't drift
+ *  out of sync with a key added elsewhere in this file without updating this too. */
+const ALL_STORAGE_KEYS = [
+  KEY_SPRITES,
+  KEY_INSTANCES,
+  KEY_GROUPS,
+  KEY_ROOM_INSTANCES,
+  KEY_TANK_SIZE,
+  KEY_TANK_SHAPE,
+  KEY_TANK_BACKGROUND_SPRITE_ID,
+  KEY_TANK_BACKGROUND_TRANSFORM,
+  KEY_SAVED_COLORS,
+  KEY_PINNED_COLORS,
+  KEY_BRUSH_SIZES,
+  KEY_PALETTE_COLORS,
+  KEY_CANVAS_BG,
+  KEY_UI_THEME,
+  KEY_ONION,
+  KEY_TANK_CORNER_RADIUS_FRAC,
+  KEY_TANK_OVAL_TOP_CUT_FRAC,
+];
+
+/**
+ * Bundles every raw localStorage value this app owns into one downloadable JSON file - the "get my
+ * work out" escape hatch an ErrorBoundary offers when the app itself can no longer render (see
+ * docs/EDITOR_IMPROVEMENTS.md #1). Deliberately reads the *raw* strings, not through loadSprites() et
+ * al: if the app is crashing because a loader chokes on the data, this needs to work anyway. Returns
+ * false (and does nothing) if there was nothing to back up at all.
+ */
+export function downloadDataBackup(): boolean {
+  const dump: Record<string, string> = {};
+  for (const key of ALL_STORAGE_KEYS) {
+    const value = localStorage.getItem(key);
+    if (value !== null) dump[key] = value;
+  }
+  if (Object.keys(dump).length === 0) return false;
+  const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `pixel-fish-tank-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  return true;
+}
+
+/** Wipes every key this app owns - the "start over" escape hatch next to downloadDataBackup(), for
+ *  when saved data itself is what's broken (see docs/EDITOR_IMPROVEMENTS.md #2). Leaves every other
+ *  origin's localStorage untouched (unlike a blanket `localStorage.clear()`), and does not reload the
+ *  page itself - the caller decides when. */
+export function resetAllData(): void {
+  for (const key of ALL_STORAGE_KEYS) localStorage.removeItem(key);
 }

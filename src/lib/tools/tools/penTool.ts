@@ -142,7 +142,11 @@ export function createPenTool(erase: boolean): Tool {
   return {
     name: erase ? 'eraser' : 'pen',
     beginGesture(e) {
-      return new PenGesture(erase, e.cell, e.chainFrom ?? null);
+      // Right-click erases with any painting tool (`ERASABLE_TOOLS`/`eraseOverride` in
+      // usePixelEditor.ts) - resolved once per gesture, exactly like the original `currentPaintColor()`
+      // returning null for either the Eraser tool *or* a right-button drag. It also switches off
+      // Pixel Perfect for that gesture (see pixelPerfectActive), same as the original did.
+      return new PenGesture(erase || e.button === 2, e.cell, e.chainFrom ?? null);
     },
   };
 }

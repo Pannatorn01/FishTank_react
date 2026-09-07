@@ -88,7 +88,21 @@ const PREVIEW_CELL_PX_BASE = 96;
  *  background-sized canvas (see restartPreviewTimer's doc comment for that profile). Small sprites, the
  *  overwhelmingly common case here, still update live mid-stroke. */
 const PREVIEW_LIVE_CELL_LIMIT = 128 * 128;
+/** Ceiling on undo history depth for a small (16x16-ish) sprite - the overwhelmingly common case,
+ *  where 50 full-frame snapshots cost nothing worth measuring. Scaled down for larger canvases by
+ *  undoLimitFor below: a background sprite up to 1400x900 with several layers made 50 kept
+ *  `structuredClone`d snapshots a real, unbounded-with-canvas-size memory cost (see
+ *  docs/EDITOR_IMPROVEMENTS.md #3) - this is a scoped mitigation (cap the *count*), not the full fix
+ *  (diff-based undo instead of whole-frame snapshots), which that doc still lists as future work. */
 const UNDO_LIMIT = 50;
+/** Same total "cell-snapshots" budget regardless of canvas size: a 16x16 canvas keeps the full
+ *  UNDO_LIMIT steps, a 1400x900 background sprite keeps only a handful - still enough to undo a
+ *  mistake, but no longer scaling memory linearly with both canvas area and history depth at once. */
+const UNDO_CELL_BUDGET = UNDO_LIMIT * storage.DEFAULT_GRID_SIZE * storage.DEFAULT_GRID_SIZE;
+function undoLimitFor(width: number, height: number): number {
+  const cells = Math.max(1, width * height);
+  return Math.max(8, Math.min(UNDO_LIMIT, Math.round(UNDO_CELL_BUDGET / cells)));
+}
 export const MAX_BRUSH_SIZE = 20;
 /** Tools that share the brush-size stepper (see CanvasStatusBar's `showBrushOptions` / PixelCanvas's
  *  brush-footprint preview) and one shared size (see brushSizes/brushSizeToolKey), so switching between
@@ -4377,7 +4391,8 @@ class PixelEditorEngine {
   pushUndo(): void {
     if (this.curvePhase) this.clearCurveState();
     this.undoStack.push(this.snapshot());
-    if (this.undoStack.length > UNDO_LIMIT) this.undoStack.shift();
+    const limit = undoLimitFor(this.current.width, this.current.height);
+    while (this.undoStack.length > limit) this.undoStack.shift();
     this.redoStack = [];
     this.dirty = true;
   }
