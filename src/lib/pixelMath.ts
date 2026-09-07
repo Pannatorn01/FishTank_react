@@ -98,17 +98,29 @@ export function layersDiffRegion(a: Layer[], b: Layer[], width: number, height: 
 }
 
 export function bresenhamLine(x0: number, y0: number, x1: number, y1: number): Cell[] {
+  // A NaN/Infinite input (e.g. a pointer-position calculation gone wrong upstream) would otherwise spin
+  // this `while (true)` forever - `x === x1` never becomes true when either side is NaN, and Infinity
+  // arithmetic never converges either - hanging the tab and eventually crashing it with an
+  // out-of-memory error as `points` grows unbounded. Integer, finite inputs (the only inputs this was
+  // ever designed for) are unaffected by either guard below.
+  if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(x1) || !Number.isFinite(y1)) {
+    return [{ x: Number.isFinite(x0) ? x0 : 0, y: Number.isFinite(y0) ? y0 : 0 }];
+  }
   const points: Cell[] = [];
   const dx = Math.abs(x1 - x0);
   const dy = -Math.abs(y1 - y0);
   const sx = x0 < x1 ? 1 : -1;
   const sy = y0 < y1 ? 1 : -1;
+  // A correct run over finite integer coordinates always finishes within manhattan-distance-many steps
+  // - this cap is a pure safety net for a case that should be unreachable now, not a normal exit path.
+  const maxSteps = Math.abs(x1 - x0) + Math.abs(y1 - y0) + 1;
   let err = dx + dy;
   let x = x0;
   let y = y0;
   while (true) {
     points.push({ x, y });
     if (x === x1 && y === y1) break;
+    if (points.length > maxSteps) break;
     const e2 = 2 * err;
     if (e2 >= dy) {
       err += dy;
