@@ -38,20 +38,25 @@ cells.length === width*height) ถ้าไม่ผ่านให้ fallback 
 
 ## P1 — หนี้ทางสถาปัตยกรรม
 
-### 4. `usePixelEditor.ts` ยังใหญ่ 4,658 บรรทัด
-migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้วแค่ 6 ตัว (pen, eraser, rect, ellipse, magicWand, move)
-เหลืออีก 8 ตัวที่ยังเป็น if-chain เดิม: **line, spray, select, lasso, fill, curve, gradient, eyedropper**
+### 4. `usePixelEditor.ts` ยังใหญ่ (กำลังเล็กลงเรื่อยๆ)
+migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้ว 8 ตัว (pen, eraser, rect, ellipse, magicWand, move, select,
+lasso) เหลืออีก 6 ตัวที่ยังเป็น if-chain เดิม: **line, spray, fill, curve, gradient, eyedropper**
+การ migrate select/lasso รอบนี้ยังลบโค้ดที่ตายจริง (`startMoveGesture`, `moveStartCell`, legacy
+`moveBuffer` branch, `draftSelectionMode`) ออกไปด้วย หลังยืนยัน caller ครบทุกจุดแล้ว
 **แผนละเอียด + ลำดับที่แนะนำ + จุดเสี่ยง:** อยู่ใน `src/lib/tools/ARCHITECTURE.md` §Migration plan แล้ว
 (ไม่ต้องเขียนซ้ำที่นี่)
 
-### 5. ~~โค้ดเดิมที่ตายแล้ว~~ — ข้อนี้เขียนผิด ลองลบแล้วต้องคืนกลับ
-เข้าใจผิดว่า branch `if (this.moveBuffer)` ใน `onPointerMove` เข้าไม่ถึงแล้ว — ลองลบดูจริงแล้วพบว่า
-**ยังใช้งานอยู่**: `select`/`lasso` ตอนคลิกด้านในกรอบ selection ยังเรียก `startMoveGesture()` แบบเดิม
-โดยตรง (usePixelEditor.ts:2716, 2731) ไม่ผ่าน `activeGesture` เลย — ลบแล้วจะทำให้ลาก select/lasso
-ที่เลือกไว้ค้างกลางทาง (moveDelta ไม่อัปเดต) ได้คืนโค้ดกลับเรียบร้อยแล้ว
-**บทเรียน:** ก่อนสรุปว่าอะไร "unreachable" ต้องไล่ caller ทุกจุดจริง ๆ ไม่ใช่แค่ grep ชื่อ tool
-ส่วน tail ของ pen/shape ใน `onPointerMove`/`onPointerUp` **ยังไม่ได้ตรวจซ้ำ** หลังจากพลาดรอบนี้ —
-ห้ามสมมติว่าลบได้จนกว่าจะไล่ทุก caller แบบเดียวกัน
+### 5. โค้ดเดิมที่ตายแล้ว — ล่าสุด: ลบไปแล้วจริง (หลังพลาดไปหนึ่งรอบ)
+รอบก่อน: เข้าใจผิดว่า branch `if (this.moveBuffer)` ใน `onPointerMove` เข้าไม่ถึงแล้ว ลองลบดูจริงแล้วพบว่า
+**ตอนนั้นยังใช้งานอยู่** เพราะ `select`/`lasso` คลิกด้านในกรอบ selection ยังเรียก `startMoveGesture()`
+แบบเดิมโดยตรง ไม่ผ่าน `activeGesture` — ได้คืนโค้ดกลับตอนนั้น
+**อัปเดตตอนนี้ (migrate select/lasso แล้ว):** พอ select/lasso เปลี่ยนไปเรียก `TOOL_REGISTRY.move` แทน
+`startMoveGesture()` โดยตรง ทำให้ branch นั้น + `startMoveGesture()` + `moveStartCell` +
+`draftSelectionMode` **กลายเป็น dead code จริง** แล้ว — ลบออกไปแล้วรอบนี้ หลังจาก grep หา caller
+ทุกจุดยืนยันซ้ำก่อนลบทุกครั้ง (ไม่ใช่แค่เชื่อว่า "น่าจะ" unreachable เหมือนรอบก่อน)
+**บทเรียนที่ยังใช้ได้เสมอ:** ก่อนสรุปว่าอะไร "unreachable" ต้องไล่ caller ทุกจุดจริง ๆ ไม่ใช่แค่ grep
+ชื่อ tool ส่วน tail ของ pen/shape ที่เหลือใน `onPointerMove`/`onPointerUp` (สำหรับ tool ที่ยังไม่ migrate)
+**ยังไม่ได้ตรวจซ้ำ** — ห้ามสมมติว่าลบได้จนกว่าจะไล่ทุก caller แบบเดียวกัน
 
 ### 6. ยังไม่มีเทสต์ในส่วนที่เสี่ยงที่สุด
 มีเทสต์แล้ว: `src/lib/tools/` (39 tests) + `pixelMath` (4 tests)
