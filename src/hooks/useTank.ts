@@ -13,7 +13,7 @@ import {
   ROUNDED_RADIUS_MIN,
   roundedCornerRadius,
 } from '@/tank/sim/geometry';
-import type { BackgroundTransform, Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape } from '@/lib/types';
+import type { BackgroundTransform, FoodItem, Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape } from '@/lib/types';
 
 /** Re-exported from geometry.ts (their canonical home as of P3 - see docs/PIXI_MIGRATION_PLAN.md) so
  *  existing `from '@/hooks/useTank'` import sites (TankCanvas.tsx's shape sliders) didn't need to
@@ -51,6 +51,22 @@ export const TANK_SIZE_DEFAULT = { width: 900, height: 600 };
  *  outside its viewport the way an unbounded zoom could. */
 export const TANK_ZOOM_STEPS = [0.5, 0.75, 1];
 
+/** P5 §6 item 2 (hunger + feeding, docs/PIXI_MIGRATION_PLAN.md) balance constants. A full-to-empty
+ *  hunger decay of 1 real day means a fish left completely unfed needs feeding roughly daily to stay
+ *  above 0; §9 Q2's "4 days unfed = dead" then gives a comfortable grace window on top of that, not a
+ *  hair-trigger one. */
+const HUNGER_FULL_TO_EMPTY_MS = 24 * 60 * 60 * 1000;
+const STARVATION_DEATH_MS = 4 * 24 * 60 * 60 * 1000;
+/** ~3 pellets to refill an empty fish - keeps feeding a repeated small interaction rather than one
+ *  click maxing hunger out for a day. */
+const FOOD_HUNGER_GAIN = 0.34;
+const FOOD_FALL_SPEED = 22;
+/** Close enough that a pellet visibly touching the fish's sprite counts as eaten, not just "nearby". */
+const FOOD_EAT_RADIUS = 28;
+/** Matches tankScene.ts's Pixi version exactly - see the hunger-bar comment in drawInstance(). */
+const HUNGER_BAR_HEIGHT = 4;
+const HUNGER_BAR_GAP = 4;
+
 /** Horizontal/vertical speed ranges (px/s) per swim-speed preset - randomized within the range on pick
  *  so same-speed fish still don't move in perfect lockstep. */
 const SWIM_SPEED_PRESETS: Record<SwimSpeed, { vxMin: number; vxMax: number; vyMin: number; vyMax: number }> = {
@@ -83,6 +99,19 @@ class TankEngine {
    *  above the tank frame (so they can overlap it) by TankCanvas, which draws them as a DOM layer
    *  after (i.e. on top of) .tank-frame rather than through this engine's own <canvas>. */
   roomInstances: RoomInstance[] = [];
+
+  /** Food pellets dropped by the user (see feedAt, P5 §6 item 2) - fall slowly through the water until
+   *  a hungry fish reaches one and eats it (see the food-seeking branch in update()). Purely transient
+   *  simulation state, like fish swim positions between saves - never written to localStorage, so a
+   *  reload always starts with an empty tank of food regardless of what was falling when the tab was
+   *  last open. */
+  foodItems: FoodItem[] = [];
+
+  /** Wall-clock timestamp (epoch ms) hunger/starvation was last resolved up to - see tickHunger(). Set
+   *  from storage on init() (falling back to "now", i.e. no catch-up, the first time this ever runs)
+   *  and refreshed on every save() so the next load's catch-up only has to cover real closed-app time,
+   *  not the entire history back to when this field was introduced. */
+  private lastTickAt = 0;
 
   /** Logical tank size (the actual simulation space fish swim in) set via the size controls or by
    *  dragging the resize handle - null only very briefly before init() runs. A view/layout
@@ -249,6 +278,16 @@ class TankEngine {
     this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
     this.backgroundSpriteId = storage.loadTankBackgroundSpriteId();
     this.backgroundTransform = storage.loadTankBackgroundTransform() ?? { x: 0, y: 0, scale: 1, rotation: 0 };
+
+    // Hunger/starvation catch-up (P5 §6 item 2, docs/PIXI_MIGRATION_PLAN.md) - replays however much
+    // real time passed since the last save as one lump sum, so a fish left unfed while the tab was
+    // closed is exactly as hungry (or as starved-to-death) on reopen as it would be had the app
+    // somehow kept simulating in the background the whole time. The very first time this ever runs
+    // (no saved checkpoint yet) has nothing to catch up on - elapsed is 0, not "since the epoch".
+    const now = Date.now();
+    const savedLastTick = storage.loadTankLastTick();
+    this.tickHunger(savedLastTick ? Math.max(0, now - savedLastTick) : 0);
+    this.lastTickAt = now;
 
     this.rafId = requestAnimationFrame((t) => this.loop(t));
     document.addEventListener('keydown', this.onKeyDown);
@@ -448,9 +487,24 @@ class TankEngine {
   }
 
   resizeCanvas(): void {
-    if (!this.canvas || !this.wrap) return;
-    const rect = this.wrap.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
+    if (!this.canvas) return;
+    const rect = this.wrap?.getBoundingClientRect();
+    if (!rect || rect.width === 0 || rect.height === 0) {
+      // No live layout to measure yet - happens when Life mode is opened (or reloaded into directly)
+      // before Build mode's own DOM has ever actually been visible, since that's a `hidden` (display:
+      // none, no layout at all) sibling under the same TankSection - see docs/PIXI_MIGRATION_PLAN.md
+      // P5 for how this was found (Life mode's Pixi scene reads engine.canvas.width/height, which
+      // would otherwise stay unset forever in that case). Falls back to the logical tank size
+      // directly so the simulation has a real, correct size the moment it exists, rather than only
+      // once Build mode happens to be shown - which still fully overrides this with the real,
+      // zoom-aware DOM measurement the instant it *is* shown (see the ResizeObserver below).
+      if (!this.hasSized && this.canvas) {
+        this.canvas.width = this.tankWidth ?? TANK_SIZE_DEFAULT.width;
+        this.canvas.height = this.tankHeight ?? TANK_SIZE_DEFAULT.height;
+        this.hasSized = true;
+      }
+      return;
+    }
     // .tank-wrap's rendered size already reflects the current view zoom (the frame it's nested in
     // is drawn at tankWidth*displayScale) - dividing that back out here is what keeps the canvas's
     // own pixel buffer, and every instance's x/y, in one stable logical space independent of zoom.
@@ -706,6 +760,7 @@ class TankEngine {
       storage.saveTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC, this.tankOvalTopCutFrac);
       storage.saveTankBackgroundSpriteId(this.backgroundSpriteId);
       storage.saveTankBackgroundTransform(this.backgroundTransform);
+      storage.saveTankLastTick(this.lastTickAt);
       this.dirty = false;
     } catch (err) {
       console.warn('tank save failed', err);
@@ -792,6 +847,8 @@ class TankEngine {
       lifespanMs: sprite.type === 'fish' ? storage.randomFishLifespanMs() : 0,
       dead: false,
       diedAt: 0,
+      hunger: 1,
+      starvingSince: 0,
     };
     this.instances.push(inst);
     this.persist();
@@ -1656,8 +1713,92 @@ class TankEngine {
     }
   }
 
+  /** Drops a food pellet at (x, y) in tank-logical coordinates (P5 §6 item 2) - called from the Life
+   *  mode feed interaction. Purely appends to `foodItems`; falling and being eaten both happen in
+   *  update() every frame same as everything else in the tank. */
+  feedAt(x: number, y: number): void {
+    if (!this.canvas) return;
+    this.foodItems.push({
+      id: storage.uid('food'),
+      x: Math.max(0, Math.min(this.canvas.width, x)),
+      y: Math.max(0, y),
+      vy: FOOD_FALL_SPEED,
+    });
+  }
+
+  /** Resolves `elapsedMs` of real time's worth of hunger decay (and any resulting starvation death) in
+   *  one shot - called every frame with a tiny `elapsedMs` (dt in ms) during normal play, and once from
+   *  init() with however much real time passed while the tab was closed (see the catch-up comment
+   *  there). Both call sites share this rather than the closed-tab case getting its own separate
+   *  "simulate N days" loop, since a single linear-decay step covers either case identically - the
+   *  only difference is the size of `elapsedMs`.
+   *
+   *  Finding exactly *when* hunger crossed zero during this step (not just clamping it to 0) matters
+   *  for the very next thing this does with that: `starvingSince` has to be the real moment hunger hit
+   *  0, not "now", or a big catch-up jump (e.g. reopening the app after several days away) would reset
+   *  the 4-day starvation clock instead of correctly discovering it had already run out while closed. */
+  private tickHunger(elapsedMs: number): void {
+    if (elapsedMs <= 0) return;
+    const now = Date.now();
+    const stepStart = now - elapsedMs;
+    this.instances.forEach((inst) => {
+      if (inst.kind !== 'fish' || inst.dead) return;
+      if (inst.hunger > 0) {
+        const decayed = inst.hunger - elapsedMs / HUNGER_FULL_TO_EMPTY_MS;
+        if (decayed > 0) {
+          inst.hunger = decayed;
+        } else {
+          const fracToZero = inst.hunger / (elapsedMs / HUNGER_FULL_TO_EMPTY_MS);
+          inst.hunger = 0;
+          inst.starvingSince = stepStart + fracToZero * elapsedMs;
+        }
+      }
+      if (inst.hunger <= 0 && inst.starvingSince && now - inst.starvingSince >= STARVATION_DEATH_MS) {
+        inst.dead = true;
+        inst.diedAt = now;
+        inst.groupId = null;
+      }
+    });
+  }
+
+  /** Nearest not-yet-eaten food item to (cx, cy), or null - no attraction-radius cutoff, a hungry fish
+   *  always makes for whatever food exists rather than only what's "nearby" (a tank only ever has a
+   *  handful of pellets at once, so this is cheap and there's no realism lost). */
+  private nearestFood(cx: number, cy: number): FoodItem | null {
+    let best: FoodItem | null = null;
+    let bestDist = Infinity;
+    for (const food of this.foodItems) {
+      const dist = Math.hypot(food.x - cx, food.y - cy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = food;
+      }
+    }
+    return best;
+  }
+
+  private eatFood(inst: Instance, foodId: string): void {
+    this.foodItems = this.foodItems.filter((f) => f.id !== foodId);
+    inst.hunger = Math.min(1, inst.hunger + FOOD_HUNGER_GAIN);
+    inst.starvingSince = 0;
+  }
+
   private update(dt: number): void {
     if (!this.canvas || !this.hasSized) return;
+
+    this.tickHunger(dt * 1000);
+
+    if (this.foodItems.length) {
+      // Rests just above the sand strip fish can't swim into (see swimBoundsFor's own sandH) rather
+      // than at the tank's literal bottom edge - a pellet that sinks past where any fish can ever
+      // reach it (in the center-of-sprite sense update()'s food-seeking targets) would sit there
+      // uneaten forever, permanently stuck a few pixels out of reach.
+      const sandH = Math.max(18, this.canvas.height * 0.08);
+      const floorY = this.canvas.height - sandH - 16;
+      this.foodItems.forEach((food) => {
+        food.y = Math.min(floorY, food.y + food.vy * dt);
+      });
+    }
 
     // Schooling: fish belonging to a user-made group (see TankGroup) flock together, whatever their
     // species - the user picked those members deliberately via the marquee-select + Group action.
@@ -1721,8 +1862,31 @@ class TankEngine {
         if (inst.schoolOffsetY === undefined) inst.schoolOffsetY = (Math.random() - 0.5) * 40;
 
         const bounds = this.swimBoundsFor(inst);
-        const steer = inst.groupId ? schoolSteer.get(inst.groupId) : undefined;
-        const schooling = !!steer;
+        let steer = inst.groupId ? schoolSteer.get(inst.groupId) : undefined;
+        let schooling = !!steer;
+
+        // Hunger (P5 §6 item 2) takes priority over schooling - a hungry fish breaks formation to go
+        // eat rather than waiting for the whole group to drift past a pellet. Reaching the food is
+        // just steering `dir`/`targetY` toward it and letting the ordinary movement code below (same
+        // x/y-approach logic driving every other fish) carry it there - no separate movement path
+        // needed for "seeking".
+        if (this.foodItems.length) {
+          const { pw: fpw, ph: fph } = this.spritePx(sprite);
+          const cx = inst.x + fpw / 2;
+          const cy = inst.y + fph / 2;
+          const food = this.nearestFood(cx, cy);
+          if (food) {
+            const dist = Math.hypot(food.x - cx, food.y - cy);
+            if (dist <= FOOD_EAT_RADIUS) {
+              this.eatFood(inst, food.id);
+            } else {
+              steer = undefined;
+              schooling = false;
+              inst.dir = food.x >= cx ? 1 : -1;
+              inst.targetY = Math.max(bounds.yMin, Math.min(bounds.yMax, food.y - fph / 2));
+            }
+          }
+        }
         if (steer) {
           inst.dir = steer.dir;
           inst.targetY = Math.max(bounds.yMin, Math.min(bounds.yMax, steer.centerY + inst.schoolOffsetY));
@@ -1842,6 +2006,21 @@ class TankEngine {
     ctx.fillRect(0, 0, w, waterlineH);
   }
 
+  /** Small orange pellets (P5 §6 item 2) - drawn before fish so a fish eating one visually sits on top
+   *  of it for the one frame both exist together. */
+  private drawFoodItems(): void {
+    if (!this.ctx || !this.foodItems.length) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = '#f5a623';
+    this.foodItems.forEach((food) => {
+      ctx.beginPath();
+      ctx.arc(food.x, food.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+
   private drawInstance(inst: Instance): void {
     if (!inst.visible) return;
     const sprite = this.spriteFor(inst);
@@ -1865,6 +2044,16 @@ class TankEngine {
       this.ctx.strokeStyle = '#ffeb3b';
       this.ctx.lineWidth = 2;
       this.ctx.strokeRect(inst.x - 2, renderY - 2, pw + 4, ph + 4);
+    }
+
+    // Hunger status bar (P5 §6 item 2, §9 Q3) - mirrors tankScene.ts's Pixi version so Build mode
+    // (which can use either renderer - see rendererMode.ts) shows the same thing Life mode does.
+    if (inst.kind === 'fish' && !inst.dead && inst.hunger < 1) {
+      const barY = renderY - HUNGER_BAR_GAP - HUNGER_BAR_HEIGHT;
+      this.ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      this.ctx.fillRect(inst.x, barY, pw, HUNGER_BAR_HEIGHT);
+      this.ctx.fillStyle = inst.hunger > 0.5 ? '#4ade80' : inst.hunger > 0.2 ? '#facc15' : '#ef4444';
+      this.ctx.fillRect(inst.x, barY, pw * Math.max(0, inst.hunger), HUNGER_BAR_HEIGHT);
     }
   }
 
@@ -1955,6 +2144,7 @@ class TankEngine {
 
     if (this.selectedZone) this.strokeZoneRect(this.selectedZone, 'rgba(120, 255, 160, 0.9)');
 
+    this.drawFoodItems();
     this.computeDrawOrder().forEach((inst) => this.drawInstance(inst));
 
     if (this.marqueeRect) this.strokeZoneRect(this.marqueeRect, '#ffeb3b', 'rgba(255, 235, 59, 0.15)');

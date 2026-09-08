@@ -1,5 +1,6 @@
-import { Container, FillGradient, Graphics } from 'pixi.js';
+import { Container, FillGradient, type FederatedPointerEvent, Graphics } from 'pixi.js';
 import type { TankEngine } from '@/hooks/useTank';
+import { roomSceneMargin } from '@/lib/storage';
 import { createTankScene, type TankSceneHandle } from './tankScene';
 
 /**
@@ -23,7 +24,7 @@ export interface RoomSceneHandle {
   destroy(): void;
 }
 
-export function createRoomScene(stage: Container): RoomSceneHandle {
+export function createRoomScene(stage: Container, onFeed?: (tankX: number, tankY: number) => void): RoomSceneHandle {
   const background = new Graphics();
   const floor = new Graphics();
   // The tank is rendered into its own sub-container rather than directly into `stage` so it can be
@@ -31,11 +32,32 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
   // fighting createTankScene's own internal margin offset (see tankScene.ts's sceneRoot comment) -
   // that offset stays entirely inside tankSlot's local space either way.
   const tankSlot = new Container();
+  // Invisible - just a click target the size of the whole margin-inclusive tank scene (see
+  // tankScene.ts's sceneRoot doc comment for what that margin is), sitting behind everything else in
+  // tankSlot so a click anywhere on the tank (including its room-decor margin) reports a position
+  // without needing its own hit-test against the actual water shape - feedAt() already clamps
+  // whatever it's given into the tank's bounds, so an approximate hit area costs nothing but a pellet
+  // occasionally landing right at the glass instead of exactly where clicked.
+  const feedHitArea = new Graphics();
+  feedHitArea.eventMode = onFeed ? 'static' : 'none';
+  feedHitArea.cursor = 'pointer';
+  tankSlot.addChild(feedHitArea);
   stage.addChild(background, floor, tankSlot);
 
   const tankScene: TankSceneHandle = createTankScene(tankSlot);
 
   let lastRoomSizeKey = '';
+  // Kept in sync every render() call (see fitTankSlot) so the pointertap handler below - registered
+  // once, not per-frame - always converts against the tank's *current* margin offset rather than a
+  // stale one captured at mount time.
+  let tankMargin = { x: 0, y: 0 };
+
+  if (onFeed) {
+    feedHitArea.on('pointertap', (e: FederatedPointerEvent) => {
+      const local = e.getLocalPosition(tankSlot);
+      onFeed(local.x - tankMargin.x, local.y - tankMargin.y);
+    });
+  }
 
   function paintRoom(roomWidth: number, roomHeight: number): void {
     const wallGradient = new FillGradient({
@@ -52,6 +74,8 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     floor.clear().rect(0, roomHeight - floorHeight, roomWidth, floorHeight).fill(FLOOR_COLOR);
   }
 
+  let lastHitAreaSizeKey = '';
+
   function fitTankSlot(engine: TankEngine, roomWidth: number, roomHeight: number): void {
     const w = engine.canvas?.width ?? 0;
     const h = engine.canvas?.height ?? 0;
@@ -67,6 +91,14 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     tankSlot.scale.set(scale);
     // Centered horizontally, sitting on the floor line.
     tankSlot.position.set((roomWidth - w * scale) / 2, roomHeight - floorHeight - h * scale);
+
+    const hitAreaSizeKey = `${w}:${h}`;
+    if (hitAreaSizeKey !== lastHitAreaSizeKey) {
+      lastHitAreaSizeKey = hitAreaSizeKey;
+      const { marginX, marginY, sceneWidth, sceneHeight } = roomSceneMargin(w, h);
+      tankMargin = { x: marginX, y: marginY };
+      feedHitArea.clear().rect(0, 0, sceneWidth, sceneHeight).fill({ color: 0x000000, alpha: 0 });
+    }
   }
 
   function render(engine: TankEngine, roomWidth: number, roomHeight: number): void {

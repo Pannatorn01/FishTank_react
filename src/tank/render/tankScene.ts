@@ -27,6 +27,10 @@ const OVAL_ARC_SEGMENTS = 64;
  *  the Canvas2D renderer's `ctx.filter = 'grayscale(1)'` (see the `dead` doc comment in types.ts). */
 const DEAD_FISH_FILTER = new ColorMatrixFilter();
 DEAD_FISH_FILTER.grayscale(1, false);
+const HUNGER_BAR_HEIGHT = 4;
+const HUNGER_BAR_GAP = 4;
+const FOOD_COLOR = 0xf5a623;
+const FOOD_RADIUS = 4;
 
 function spriteDims(sprite: SpriteData): { width: number; height: number } {
   return { width: sprite.width || 16, height: sprite.height || 16 };
@@ -140,6 +144,7 @@ export function createTankScene(stage: Container): TankSceneHandle {
   const backgroundSprite = new Sprite();
   const waterline = new Graphics();
   const zoneBelowLayer = new Container();
+  const foodLayer = new Graphics();
   const instanceLayer = new Container();
   const overlayLayer = new Container();
   const outline = new Graphics();
@@ -148,7 +153,7 @@ export function createTankScene(stage: Container): TankSceneHandle {
   backgroundSprite.visible = false;
   backgroundSprite.anchor.set(0.5);
 
-  root.addChild(water, backgroundSprite, waterline, zoneBelowLayer, instanceLayer, overlayLayer);
+  root.addChild(water, backgroundSprite, waterline, zoneBelowLayer, foodLayer, instanceLayer, overlayLayer);
   // `mask` is added as root's own child (not left floating outside the scene graph) specifically so
   // it inherits root's transform - a mask that's never actually parented anywhere keeps Pixi's
   // default identity transform regardless of where the container using it as a mask ends up moving.
@@ -292,6 +297,16 @@ export function createTankScene(stage: Container): TankSceneHandle {
     if (selected) {
       v.outline.rect(-pw / 2 - 2, -ph / 2 - 2, pw + 4, ph + 4).stroke({ width: 2, color: SELECTION_COLOR });
     }
+    // Hunger status bar (P5 §6 item 2, §9 Q3 - per-fish status) - small enough to read as a status
+    // light rather than competing with the fish itself, hidden once full so a well-fed tank isn't
+    // covered in bars.
+    if (inst.kind === 'fish' && !inst.dead && inst.hunger < 1) {
+      const barW = pw;
+      const barY = -ph / 2 - HUNGER_BAR_GAP - HUNGER_BAR_HEIGHT;
+      v.outline.rect(-barW / 2, barY, barW, HUNGER_BAR_HEIGHT).fill({ color: 0x000000, alpha: 0.4 });
+      const fillColor = inst.hunger > 0.5 ? 0x4ade80 : inst.hunger > 0.2 ? 0xfacc15 : 0xef4444;
+      v.outline.rect(-barW / 2, barY, barW * Math.max(0, inst.hunger), HUNGER_BAR_HEIGHT).fill(fillColor);
+    }
   }
 
   function render(engine: TankEngine): void {
@@ -351,6 +366,11 @@ export function createTankScene(stage: Container): TankSceneHandle {
     if (engine.selectedZone) {
       drawZoneRect(zoneBelowLayer, engine.selectedZone, ZONE_SELECTED_COLOR, ZONE_SELECTED_ALPHA);
     }
+
+    foodLayer.clear();
+    engine.foodItems.forEach((food) => {
+      foodLayer.circle(food.x, food.y, FOOD_RADIUS).fill(FOOD_COLOR);
+    });
 
     const order = engine.visibleDrawOrder();
     const liveIds = new Set<string>();

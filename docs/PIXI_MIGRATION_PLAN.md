@@ -779,3 +779,44 @@ code-split bundle ของ tank engine ออกจาก editor เหมื�
 - ปลาที่ตายจากความหิว/น้ำเสีย (ข้อ 2-3 ของ §6 P5) ยังไม่ทำ - ตอนนี้ตายจากอายุขัยอย่างเดียว
 - "ลอย 7 วัน" ตาม §9 Q5 ยังไม่มีความหมายเชิงกลไก (ไม่ auto-ลบหลัง 7 วัน) - ตีความว่าเป็น flavor ไม่ใช่กติกาที่ต้อง enforce เว้นแต่ผู้ใช้อยากได้ auto-cleanup จริง ๆ ทีหลัง
 - ลูกปลาที่คลอดใหม่ (ข้อ 6) ยังไม่มี - เมื่อทำแล้วต้องเรียก `randomFishLifespanMs()` เดียวกันนี้ตอนสร้างลูกปลาด้วย
+
+---
+
+## 17. P5 กลไกการเลี้ยง — ข้อ 2: ความหิว + ให้อาหาร (2026-09-08)
+
+**สรุป: เสร็จและ verify แล้วด้วย Playwright จริง (เจอ+แก้บั๊ก 3 อันระหว่างตรวจ ก่อนจะ commit)**
+
+### สิ่งที่ทำจริง
+
+| ไฟล์ | เปลี่ยนอะไร |
+|---|---|
+| `src/lib/types.ts` | `Instance` เพิ่ม `hunger`/`starvingSince` · `FoodItem` type ใหม่ |
+| `src/lib/storage.ts` | `normalizeInstance()` backfill `hunger`/`starvingSince` · `KEY_TANK_LAST_TICK` + `loadTankLastTick`/`saveTankLastTick` (checkpoint สำหรับ catch-up ตอนเปิดแอปใหม่) |
+| `src/hooks/useTank.ts` | `foodItems`/`lastTickAt` field ใหม่ (foodItems **ไม่ persist** - ของชั่วคราวเหมือนตำแหน่งว่ายปลาระหว่าง session) · `feedAt(x,y)` วางเม็ดอาหาร · `tickHunger(elapsedMs)` ใช้ร่วมกันทั้งต่อเฟรม (dt) และตอน catch-up (init()) - หา "จุดที่หิวตกถึง 0" แม่นยำแม้ elapsed ก้อนใหญ่ ไม่ใช่แค่ clamp เป็น 0 ตอนโหลด (สำคัญเพราะกระทบนับ 4 วันอดตาย) · food-seeking override ใน swim loop (หิว > schooling) · `drawFoodItems()` + hunger bar ใน `drawInstance()` |
+| `src/tank/render/tankScene.ts` | `foodLayer` Graphics + hunger bar (ผูกกับ `v.outline` เดิม) ให้ตรงกับ Canvas2D |
+| `src/tank/render/roomScene.ts` | `feedHitArea` (Graphics โปร่งใสขนาดเท่าฉากตู้ทั้งก้อนรวม margin) รับคลิกใน Life mode แปลงเป็นพิกัด tank-logical ผ่าน `onFeed` callback |
+| `src/components/tank/LifePanel.tsx` | ส่ง `engine.feedAt` เป็น `onFeed` เข้า `createRoomScene` |
+
+### บั๊ก 3 อันที่เจอตอน verify (แก้ก่อน commit)
+
+1. **Life mode ว่างเปล่าถ้า reload แล้วเข้า Life ตรง ๆ โดยไม่เคยเปิด Build Tank ก่อนในเซสชันนั้น** - ต้นเหตุ: `engine.canvas.width/height` ไม่เคยถูกตั้งค่าเลย เพราะ `resizeCanvas()` วัดขนาดจาก DOM ของ Build mode ซึ่งถูกซ่อนด้วย `hidden` (`display:none` - ไม่มี layout เลย) ทำให้ `getBoundingClientRect()` คืน 0×0 เสมอจนกว่า Build mode จะถูกโชว์จริง แก้ใน `resizeCanvas()`: ถ้าไม่มี rect จริงให้ fallback ไปใช้ `tankWidth`/`tankHeight` (ขนาด config เชิงตรรกะ) ไปก่อน แล้วให้การวัด DOM จริงทับอีกทีเมื่อ Build mode ถูกแสดง (บั๊กนี้เป็นผลข้างเคียงจาก P4 ที่ Life/Build แชร์ engine เดียวกันแต่ Build's DOM อาจไม่เคยถูกเห็นเลย ไม่ใช่บั๊กที่เกิดจากโค้ด hunger เอง)
+2. **อาหารจมลึกกว่าที่ปลาว่ายไปถึง** - อาหารเดิมพักที่ `canvas.height - 12` แต่ปลามี "แถบทราย" กันไม่ให้ว่ายชนพื้นจริง (`sandH = max(18, h*0.08)`) ทำให้ตำแหน่งพักของอาหารอยู่นอกระยะที่ศูนย์กลางปลาเข้าถึงได้เกิน `FOOD_EAT_RADIUS` เสมอ - ปลาว่ายเข้าใกล้ได้แต่ไม่มีวันกินสำเร็จ แก้โดยให้อาหารพักที่ `h - sandH - 16` (สูงกว่าเดิม อยู่ในระยะเอื้อมของปลา) และขยาย `FOOD_EAT_RADIUS` 22→28
+3. **แถบความหิวโชว์แค่ Pixi (Life mode) ไม่โชว์ Canvas2D (Build mode ที่เป็น default renderer)** - ลืมใส่ตอนแรก เพิ่ม logic เดียวกันใน `drawInstance()`
+
+### ผลตรวจ (Playwright, 2 รอบ - รอบแรกเจอบั๊กข้างบน รอบสองยืนยันหลังแก้)
+
+| เกณฑ์ | ผล |
+|---|---|
+| Life mode render ได้แม้ reload ตรงเข้า Life โดยไม่ผ่าน Build ก่อน | ✅ (หลังแก้บั๊ก 1) น้ำ/เส้นขอบขึ้นทันที ไม่มี console error · กลับไป Build ทีหลังขนาดยังถูกต้อง (900×600 ไม่เพี้ยน) |
+| ให้อาหารแล้วปลาหิวว่ายไปกินสำเร็จจริง | ✅ (หลังแก้บั๊ก 2) เห็นลูกอาหารหายไปพร้อมแถบหิวขยายขึ้น/เปลี่ยนสีแดง→เหลือง ที่ ~t35s หลังคลิกวาง (สังเกตซ้ำได้ 2 รอบ) |
+| แถบหิวโชว์ทั้ง 2 renderer | ✅ (หลังแก้บั๊ก 3) Build mode (Canvas2D) โชว์แถบแดงตรงกับ Life mode (Pixi) |
+| catch-up ตอนเปิดแอปใหม่ (Q1) | ยัง verify แค่โค้ดรีวิว + unit-level reasoning ไม่ได้จำลองผ่าน Playwright จริง (ต้องปลอม `fishtank.tankLastTick.v1` คู่กับ `bornAt` ย้อนหลัง - ทำได้แต่ยังไม่ได้ทำรอบนี้) |
+| ปลาปกติ (หิวเต็ม) ไม่โชว์แถบ | ✅ เกือบทั้งหมด - เห็นแถบเขียวบางมากได้เพราะเวลาผ่านไปเสี้ยววินาทีตั้งแต่สร้างปลาหิวก็ลดจาก 1.0 ไปนิดหน่อยแล้ว (พฤติกรรมถูกต้องตามดีไซน์ ไม่ใช่บั๊ก) |
+| build/lint/test สะอาด | ✅ `tsc -b` เงียบ, build ผ่าน, `oxlint` warning เดิม 4 ตัว, `npm test` 140/140 (จำนวนเพิ่มจาก 89 เพราะมีเทสต์ใหม่จากงาน refactor เครื่องมือ editor ของผู้ใช้เอง ไม่เกี่ยวกับ P5) |
+
+### ข้อจำกัด/ของค้าง
+
+- ไม่ได้ verify offline catch-up (`tickHunger` เรียกจาก `init()`) ด้วย Playwright จริง - ความเสี่ยงปานกลาง เพราะ logic ซับซ้อนกว่าอายุขัย (ต้องหาจุดตัดศูนย์ให้แม่นด้วย) แนะนำ verify ก่อนใช้งานจริงจัง
+- Food-seeking บางครั้งอาจสั่นเล็กน้อยก่อนล็อกเป้าอาหารสำเร็จ (targetY ถูก randomize ทับกลางอากาศได้ในบางเฟรมที่ dy<2 แต่ยังไม่ถึง eat radius) - ไม่กระทบผลลัพธ์สุดท้าย เป็นแค่ภาพสั่นเล็กน้อย ไม่ fix รอบนี้
+- ยังไม่มี UI ให้ผู้ใช้กด "ให้อาหารทั้งตู้" ทีเดียว - ตอนนี้ต้องคลิกทีละจุดใน Life mode เท่านั้น
+- ข้อ 3-7 ของ §6 P5 (ขี้ปลา, น้ำ, ตะไคร่, ผสมพันธุ์, แมว/นก) ยังไม่ทำ

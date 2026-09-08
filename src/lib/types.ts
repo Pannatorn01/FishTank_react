@@ -174,6 +174,24 @@ export interface Instance {
   dead: boolean;
   /** Epoch ms this fish died - 0 while alive. Only meaningful once `dead` is true. */
   diedAt: number;
+  /** 0 (starving) .. 1 (full) - decays over real time (see tickHunger() in useTank.ts) and is restored
+   *  by eating a food pellet dropped via feedAt() (P5 §6 item 2). Only meaningful for kind 'fish'. */
+  hunger: number;
+  /** Epoch ms `hunger` first reached 0, or 0 while not currently starving - cleared the moment hunger
+   *  rises above 0 again (i.e. the fish eats). A fish starving continuously for
+   *  STARVATION_DEATH_MS (docs/PIXI_MIGRATION_PLAN.md §9 Q2 - 4 real days) dies, via the same
+   *  `dead`/`diedAt` fields old-age death uses - starvation is just a second way to trigger the same
+   *  outcome, not a separate state. */
+  starvingSince: number;
+}
+
+/** A single food pellet dropped into the tank (see TankEngine.feedAt / feedItems) - falls slowly
+ *  through the water until a hungry fish reaches it, or forever if none does (P5 §6 item 2). */
+export interface FoodItem {
+  id: string;
+  x: number;
+  y: number;
+  vy: number;
 }
 
 /** A decoration placed in the area around the tank (kind 'room' sprites) rather than inside its

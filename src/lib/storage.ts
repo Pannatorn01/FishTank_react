@@ -19,6 +19,7 @@ const KEY_INSTANCES = 'fishtank.instances.v1';
 const KEY_GROUPS = 'fishtank.groups.v1';
 const KEY_ROOM_INSTANCES = 'fishtank.roomInstances.v1';
 const KEY_TANK_SIZE = 'fishtank.tankSize.v1';
+const KEY_TANK_LAST_TICK = 'fishtank.tankLastTick.v1';
 const KEY_TANK_SHAPE = 'fishtank.tankShape.v1';
 export const TANK_SHAPES: TankShape[] = ['rectangle', 'rounded', 'oval'];
 /** Which 'background'-type Sprite (drawn in the pixel editor, see SpriteType) is painted behind the
@@ -176,6 +177,8 @@ function normalizeInstance(raw: Instance): Instance {
     lifespanMs: typeof raw.lifespanMs === 'number' ? raw.lifespanMs : randomFishLifespanMs(),
     dead: typeof raw.dead === 'boolean' ? raw.dead : false,
     diedAt: typeof raw.diedAt === 'number' ? raw.diedAt : 0,
+    hunger: typeof raw.hunger === 'number' ? raw.hunger : 1,
+    starvingSince: typeof raw.starvingSince === 'number' ? raw.starvingSince : 0,
   };
 }
 
@@ -317,6 +320,25 @@ export function loadTankSize(): { width: number; height: number } | null {
 export function saveTankSize(size: { width: number; height: number } | null): void {
   if (!size) localStorage.removeItem(KEY_TANK_SIZE);
   else localStorage.setItem(KEY_TANK_SIZE, JSON.stringify(size));
+}
+
+/** Wall-clock checkpoint for hunger/starvation catch-up (see tickHunger() in useTank.ts) - epoch ms
+ *  the care simulation was last resolved up to, refreshed on every save() so a reload only has to
+ *  replay the real time the tab was actually closed for. */
+export function loadTankLastTick(): number | null {
+  try {
+    const raw = localStorage.getItem(KEY_TANK_LAST_TICK);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  } catch (e) {
+    console.warn('loadTankLastTick failed', e);
+    return null;
+  }
+}
+
+export function saveTankLastTick(ms: number): void {
+  localStorage.setItem(KEY_TANK_LAST_TICK, String(ms));
 }
 
 export function loadTankShape(): TankShape | null {
@@ -671,6 +693,7 @@ const ALL_STORAGE_KEYS = [
   KEY_GROUPS,
   KEY_ROOM_INSTANCES,
   KEY_TANK_SIZE,
+  KEY_TANK_LAST_TICK,
   KEY_TANK_SHAPE,
   KEY_TANK_BACKGROUND_SPRITE_ID,
   KEY_TANK_BACKGROUND_TRANSFORM,

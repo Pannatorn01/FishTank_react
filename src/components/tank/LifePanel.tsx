@@ -37,7 +37,11 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
       }
       app = createdApp;
       app.canvas.classList.add('life-pixi-canvas');
-      scene = createRoomScene(app.stage);
+      // Feeding (P5 §6 item 2, docs/PIXI_MIGRATION_PLAN.md) - the first Life-mode interaction: tap
+      // anywhere on the tank to drop a food pellet at that spot. `engine.feedAt` clamps whatever
+      // coordinates it's given into the tank's own bounds, so this doesn't need its own precise
+      // hit-testing against the tank's shape (see feedHitArea's doc comment in roomScene.ts).
+      scene = createRoomScene(app.stage, (x, y) => engine.feedAt(x, y));
 
       const tick = () => {
         if (cancelled || !app || !scene) return;
