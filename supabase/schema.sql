@@ -186,17 +186,25 @@ drop policy if exists tanks_owner_rw on public.tanks;
 create policy tanks_owner_rw on public.tanks
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 
+-- Anything that lives *inside* a tank is checked twice: it must be your row, and it must be your
+-- tank. Checking only `user_id = auth.uid()` is not enough and was a real hole - user_id defaults to
+-- the caller, so anyone could insert rows carrying their own id but pointing at someone else's
+-- tank_id, and those rows would then show up inside that tank for its owner. Found by running the
+-- two-account probe against this project.
 drop policy if exists tank_instances_owner_rw on public.tank_instances;
 create policy tank_instances_owner_rw on public.tank_instances
-  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+  for all using (user_id = auth.uid() and public.owns_tank(public.tank_instances.tank_id))
+  with check (user_id = auth.uid() and public.owns_tank(public.tank_instances.tank_id));
 
 drop policy if exists tank_groups_owner_rw on public.tank_groups;
 create policy tank_groups_owner_rw on public.tank_groups
-  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+  for all using (user_id = auth.uid() and public.owns_tank(public.tank_groups.tank_id))
+  with check (user_id = auth.uid() and public.owns_tank(public.tank_groups.tank_id));
 
 drop policy if exists room_instances_owner_rw on public.room_instances;
 create policy room_instances_owner_rw on public.room_instances
-  for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+  for all using (user_id = auth.uid() and public.owns_tank(public.room_instances.tank_id))
+  with check (user_id = auth.uid() and public.owns_tank(public.room_instances.tank_id));
 
 drop policy if exists user_prefs_owner_rw on public.user_prefs;
 create policy user_prefs_owner_rw on public.user_prefs
