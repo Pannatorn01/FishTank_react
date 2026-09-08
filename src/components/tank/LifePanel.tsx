@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import type { Application } from 'pixi.js';
+import { Button } from '@/components/ui/button';
 import type { TankEngine } from '@/hooks/useTank';
+import { useLanguage } from '@/lib/i18n';
 import { createPixiApp, destroyPixiApp } from '@/tank/render/pixiApp';
 import { createRoomScene, type RoomSceneHandle } from '@/tank/render/roomScene';
 import { invalidateAll, invalidateSprite } from '@/tank/render/textureCache';
@@ -16,6 +18,7 @@ import { invalidateAll, invalidateSprite } from '@/tank/render/textureCache';
  * rather than being stretched by external CSS math tied to the tank's logical pixel size.
  */
 export function LifePanel({ engine }: { engine: TankEngine }) {
+  const { t } = useLanguage();
   const hostRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -66,6 +69,20 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
   return (
     <div className="life-layout">
       <div ref={hostRef} className="life-pixi-host" />
+      {/* Water level (P5 §6 item 4) - a plain DOM button rather than a Pixi-drawn one, matching every
+       *  other action button in this app (Save, zoom, etc.) - simpler than hand-rolling hit-testing
+       *  and a hover/pressed state inside the Pixi scene for something that isn't part of the tank
+       *  itself. */}
+      <Button
+        type="button"
+        size="sm"
+        variant="secondary"
+        className="life-refill-button"
+        title={t('life.refillWaterTitle')}
+        onClick={() => engine.refillWater()}
+      >
+        <i className="fa-solid fa-faucet-drip" /> {t('life.refillWater')}
+      </Button>
     </div>
   );
 }

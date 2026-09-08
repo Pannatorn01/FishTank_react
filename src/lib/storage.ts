@@ -20,6 +20,7 @@ const KEY_GROUPS = 'fishtank.groups.v1';
 const KEY_ROOM_INSTANCES = 'fishtank.roomInstances.v1';
 const KEY_TANK_SIZE = 'fishtank.tankSize.v1';
 const KEY_TANK_LAST_TICK = 'fishtank.tankLastTick.v1';
+const KEY_TANK_WATER_LEVEL = 'fishtank.tankWaterLevel.v1';
 const KEY_TANK_SHAPE = 'fishtank.tankShape.v1';
 export const TANK_SHAPES: TankShape[] = ['rectangle', 'rounded', 'oval'];
 /** Which 'background'-type Sprite (drawn in the pixel editor, see SpriteType) is painted behind the
@@ -339,6 +340,25 @@ export function loadTankLastTick(): number | null {
 
 export function saveTankLastTick(ms: number): void {
   localStorage.setItem(KEY_TANK_LAST_TICK, String(ms));
+}
+
+/** 1 (full) .. 0 (empty) - evaporates over real time (see tickWaterLevel() in useTank.ts), caught up
+ *  from the same `fishtank.tankLastTick.v1` checkpoint hunger uses, and restored to 1 by the Life-mode
+ *  refill button (P5 §6 item 4). */
+export function loadTankWaterLevel(): number | null {
+  try {
+    const raw = localStorage.getItem(KEY_TANK_WATER_LEVEL);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : null;
+  } catch (e) {
+    console.warn('loadTankWaterLevel failed', e);
+    return null;
+  }
+}
+
+export function saveTankWaterLevel(level: number): void {
+  localStorage.setItem(KEY_TANK_WATER_LEVEL, String(level));
 }
 
 export function loadTankShape(): TankShape | null {
@@ -694,6 +714,7 @@ const ALL_STORAGE_KEYS = [
   KEY_ROOM_INSTANCES,
   KEY_TANK_SIZE,
   KEY_TANK_LAST_TICK,
+  KEY_TANK_WATER_LEVEL,
   KEY_TANK_SHAPE,
   KEY_TANK_BACKGROUND_SPRITE_ID,
   KEY_TANK_BACKGROUND_TRANSFORM,

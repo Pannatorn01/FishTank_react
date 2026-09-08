@@ -4,6 +4,8 @@ const en: Dict = {
   'tab.editor': 'Draw Fish/Decor',
   'tab.tank': 'Build Tank',
   'tab.life': 'Life',
+  'life.refillWater': 'Refill water',
+  'life.refillWaterTitle': 'Top the tank back off to full - water slowly evaporates over real days',
 
   'tool.pen.desc': 'Pen — draw pixels one at a time (B) • Shift+click to draw a straight line from where you last drew • hold Alt to pick a color • right-click to erase',
   'tool.line.desc': 'Line — drag to draw a straight line (L) • hold Shift to snap to 0/45/90° • hold Alt to pick a color • right-click to erase • Esc while dragging cancels the shape',
