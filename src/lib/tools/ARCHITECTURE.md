@@ -65,7 +65,7 @@ from `mirrorCells`/`paintAllowed` - `withSymmetry(..., withSelectionClip(..., si
 first, then selection-clips each mirrored copy, matching the original `applyBrushAt`'s order exactly.
 
 **dirtyRect.ts**'s `DirtyRectTracker` is a shared bounding-box accumulator replacing each tool's own
-inline bbox math (`cellsDirtyRects`/`strokeDirtyRects`).
+inline bbox math (the engine's old `strokeDirtyRects`/`cellsDirtyRects`; the latter is now gone).
 
 **selectionMask.ts** holds the mask/outline machinery three tools need: `polygonMask`,
 `traceMaskOutline` (+ its `chainBoundaryEdges`/`maskBoundaryEdges` helpers), `settleSelection` (merge
@@ -86,7 +86,8 @@ combine-mode rules above. `constrainToAngle` is now **exported** from `shapeTool
 square, so this is one shared function now, not two copies. The engine's own `constrainShapeEnd` (the
 original home of this logic, plus the square-constrain branch) has zero remaining callers after
 Gradient's migration and was deleted outright - the last piece of the pre-migration shape-tool code
-(`thickenPath` and `shapePreviewCells` on the engine still stay; curve still uses them).
+(`thickenPath` on the engine still stays; curve still uses it. `shapePreviewCells` was removed - see
+below).
 
 **Eyedropper and Fill are both "instant action" gestures**, the same shape as Magic Wand: all the work
 happens synchronously in `beginGesture` (which needs `ToolContext.getVisibleColor(x, y)` for
@@ -229,8 +230,7 @@ routing checks ahead of it for the two tools that can instead start a Move:
 
 `onPointerMove` replays coalesced events only for Pen/Eraser (matching the original's own
 coalesced-event handling). `onPointerUp` has no event of its own (see its empty signature) - it
-replays `lastToolPointerEvent`, the last position `onPointerMove` saw, same as the legacy shape commit
-reading whatever `shapePreviewCells` was last set to. `resetGestureState()` erases any left-over
+replays `lastToolPointerEvent`, the last position `onPointerMove` saw. `resetGestureState()` erases any left-over
 overlay (`lastGesturePreviewRects`) and calls `onCancel` before dropping `activeGesture`.
 
 Migrating Select/Lasso removed the *last* caller of the legacy `startMoveGesture()`/`moveStartCell`/
@@ -245,9 +245,10 @@ Migrating Line similarly let three more things be removed for real, again only a
 remaining callers: the `if (this.tool === 'line')` branches in `onPointerDown`/`onPointerMove`/
 `onPointerUp`, `computeShapeCells()` in full (its rect/ellipse branches had already been dead since
 those two migrated earlier and were never cleaned up - line joining them made the whole method
-removable), and the `shapeStart` field. **Not removed**, deliberately: `constrainShapeEnd` and
-`thickenPath` on the engine (gradient and curve still call them respectively), and `shapePreviewCells`
-(curve and `redrawShapePreview` both still depend on it).
+removable), and the `shapeStart` field. **Not removed** at the time (gradient/curve still needed them):
+`constrainShapeEnd` and `thickenPath` on the engine. `constrainShapeEnd` went with Gradient's
+migration; `thickenPath` is still live for curve. `shapePreviewCells` (and `redrawShapePreview`) went
+with Curve's migration - see the shape-tool section above.
 
 Migrating Eyedropper and Fill removed, after the same re-verification discipline: the `if (this.tool
 === 'eyedropper')` and `if (this.tool === 'fill')` branches in `onPointerDown`, and the engine's own
@@ -295,13 +296,10 @@ trick as `movePreview`/`gradientPreview`. `isNearCurveControl` also stays on the
 hit-testing needs the canvas's on-screen geometry, which only the engine has) - called from the new
 `onPointerDown` wiring, not from tool code.
 
-`shapePreviewCells`/`redrawShapePreview()` (and the two `drawGrid(this.shapePreviewCells ?? undefined)`
-call sites in `refresh()`/`attachCanvas()`) are now **fully dead** - Curve was their last writer, and
-nothing else was ever added to `shapePreviewCells` after Rect/Ellipse/Line's own migration. Left in
-place rather than removed in this same change: touching `refresh()`/`attachCanvas()` (core repaint
-entry points every tool goes through) for a field that's already inert felt like more risk than the
-change was worth bundled into an already-large diff. Flagged in `docs/EDITOR_IMPROVEMENTS.md` as a
-small, low-risk, standalone follow-up.
+`shapePreviewCells`/`redrawShapePreview()`/`cellsDirtyRects()` were **removed** (2026-09-08) once Curve
+- their last writer - was migrated. `refresh()`/`attachCanvas()` now just call `drawGrid()` with no
+overlay argument, and the no-op `redrawShapePreview(null)` in `resetGestureState()` is gone. A
+cancelled overlay preview is erased via `lastGesturePreviewRects` instead.
 
 ### Deviations found during implementation (worth flagging for future migration steps)
 

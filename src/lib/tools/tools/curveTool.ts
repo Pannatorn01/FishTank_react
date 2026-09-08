@@ -121,9 +121,9 @@ class CurveGesture implements Gesture {
     return this.phase === 'drag-end' ? 'drag-end' : 'bend';
   }
 
-  /** Mirror-expands `cells`, diffs against the previously-shown preview for a dirty-rect union (ports
-   *  `redrawShapePreview`'s own old-vs-new bounding box), and mirrors phase/control into
-   *  ToolPreview.curvePreview for the DOM-drawn bend handle. */
+  /** Mirror-expands `cells`, diffs against the previously-shown preview for a dirty-rect union (the
+   *  old-vs-new bounding box the engine's `redrawShapePreview` used to compute), and mirrors
+   *  phase/control into ToolPreview.curvePreview for the DOM-drawn bend handle. */
   private setPreview(cells: Cell[], ctx: ToolContext): ToolPreview {
     const mirrored = mirrorExpand(cells, ctx.symmetry, ctx.symmetryAxisX, ctx.symmetryAxisY);
     const dirty = new DirtyRectTracker();

@@ -250,7 +250,6 @@ class PixelEditorEngine {
    *  sampled a color on click, but nothing said so until the click had already happened; this drives the
    *  eyedropper cursor on .pixel-canvas-wrap so the mode is visible while the key is down. */
   altPickActive = false;
-  shapePreviewCells: Cell[] | null = null;
   shapeFilled = false;
   selection: SelectionBox | null = null;
   selectStart: Cell | null = null;
@@ -357,13 +356,12 @@ class PixelEditorEngine {
   private activeGesture: Gesture | null = null;
   /** The ToolPointerEvent last given to `activeGesture.onPointerMove` - the real DOM `pointerup` event
    *  carries no position of its own (see onPointerUp's empty signature), so `onPointerUp` replays this
-   *  instead, exactly like the legacy code finalizing a shape/curve from whatever `shapePreviewCells`
-   *  was last set to rather than re-deriving a position from the up-event. */
+   *  instead rather than re-deriving a position from the up-event. */
   private lastToolPointerEvent: ToolPointerEvent | null = null;
   /** Canvas-clamped rect(s) `activeGesture`'s last preview drew as an *overlay* (not yet committed to
    *  the frame - see ToolPreview's own doc comment) - so a cancelled gesture (Escape, blur) can erase
-   *  it. Ports `redrawShapePreview(null)`'s role for the legacy shape/curve preview, which this
-   *  bypasses for migrated tools since they no longer write to `shapePreviewCells`. */
+   *  it - the targeted erase a cancelled overlay preview needs, since the overlay was drawn straight
+   *  onto the canvas and a full repaint no longer happens on every frame. */
   private lastGesturePreviewRects: SelectionBox[] | null = null;
   /** Any migrated tool whose Gesture implements `onTick` (currently only Spray) - ticks it on a fixed
    *  interval while its gesture is active, independent of pointer movement. Generic replacement for
@@ -554,13 +552,8 @@ class PixelEditorEngine {
     this.windowListeners = [];
   }
 
-  /**
-   * A pending curve's bezier preview lives in shapePreviewCells across mouse-up (unlike line/rect/
-   * ellipse, which commit and clear it immediately) so it must keep rendering here too - otherwise
-   * the curve preview vanishes the instant a bend-adjustment drag ends, leaving only the handle.
-   */
   private refresh(): void {
-    this.drawGrid(this.shapePreviewCells ?? undefined);
+    this.drawGrid();
     this.syncPreviewTimer();
     this.schedulePreviewRepaint();
     this.reactNotify();
@@ -571,7 +564,7 @@ class PixelEditorEngine {
     this.ctx = el ? el.getContext('2d') : null;
     if (el) {
       this.recomputeCanvasSize();
-      this.drawGrid(this.shapePreviewCells ?? undefined);
+      this.drawGrid();
     }
   }
 
@@ -1819,12 +1812,6 @@ class PixelEditorEngine {
     this.painting = false;
     this.gestureButtons = 0;
     this.lastPaintCell = null;
-    // redrawShapePreview(null), not a bare field assignment - an interrupted shape/curve drag can
-    // leave a preview actually painted on the canvas (see redrawShapePreview's dirty-rect repaint),
-    // and unlike the old full-canvas drawGrid() (which erased it as a side effect of repainting
-    // everything), a targeted repaint needs telling to actually erase that region. A no-op, at the
-    // cost of one bounding-box check, when there was nothing being previewed.
-    this.redrawShapePreview(null);
     this.selectStart = null;
     this.selectionDraft = null;
     this.lassoDraftPoints = null;
@@ -1843,10 +1830,9 @@ class PixelEditorEngine {
     this.strokeSnapshot = null;
     this.strokePoints = [];
     if (this.gradientStart) {
-      // Same reasoning as redrawShapePreview(null) above: drawGradientPreviewOverlay() paints straight
-      // onto the canvas bitmap without a preceding clear (see its own doc comment), so an interrupted
-      // gradient drag needs an explicit repaint of the box it covered, not just clearing the state that
-      // used to describe it.
+      // drawGradientPreviewOverlay() paints straight onto the canvas bitmap without a preceding clear
+      // (see its own doc comment), so an interrupted gradient drag needs an explicit repaint of the box
+      // it covered, not just clearing the state that used to describe it.
       this.redrawRegions([this.selection ?? { x0: 0, y0: 0, x1: this.current.width - 1, y1: this.current.height - 1 }]);
     }
     this.gradientStart = null;
@@ -2566,9 +2552,8 @@ class PixelEditorEngine {
   /** Starts a migrated tool's gesture: pushes the undo snapshot (skipped for NO_UNDO_TOOLS, which never
    *  touch a pixel - see `rollbackGestureUndo`'s "returns null when the gesture never pushed one" case
    *  for why that's safe to just skip rather than push-then-always-rollback), then immediately replays
-   *  the same event through `onPointerMove` once - every migrated tool's original behavior painted/
-   *  previewed immediately on mousedown (see e.g. `redrawShapePreview` at the top of the old line/rect/
-   *  ellipse branch), not just starting from the first pointermove. */
+   *  the same event through `onPointerMove` once - every tool's original behavior painted/previewed
+   *  immediately on mousedown, not just starting from the first pointermove. */
   private beginToolGesture(tool: Tool, tpe: ToolPointerEvent): void {
     if (!NO_UNDO_TOOLS.has(tool.name)) this.pushGestureUndo();
     this.painting = true;
@@ -2931,8 +2916,7 @@ class PixelEditorEngine {
 
     if (this.activeGesture) {
       // The real DOM pointerup carries no position (see this method's own empty signature) - finalize
-      // using the last position `onPointerMove` saw, exactly like the legacy shape/curve commit below
-      // reads whatever `shapePreviewCells` was last set to instead of re-deriving one.
+      // using the last position `onPointerMove` saw instead of re-deriving one.
       const tpe = this.lastToolPointerEvent ?? { cell: { x: 0, y: 0 }, shiftKey: false, altKey: false, ctrlKey: false, button: 0 };
       this.commitGestureResult(this.activeGesture.onPointerUp(tpe, this.buildToolContext()));
       return;
@@ -3305,8 +3289,8 @@ class PixelEditorEngine {
    * full clear+repaint was the actual measured bottleneck on a large, detailed canvas: profiling a
    * 1400×900 canvas with content that defeats paintFrameCells' run-length merging (no long same-color
    * runs - a real, not contrived, case for detailed pixel art) measured a full redraw at ~590ms per
-   * layer, so every pointer move during a stroke (see paintCell/strokeDirtyRects) or a shape/curve
-   * preview (see cellsDirtyRects) was gated on hundreds of milliseconds of work regardless of how
+   * layer, so every pointer move during a stroke (see paintCell/strokeDirtyRects) or a tool preview
+   * was gated on hundreds of milliseconds of work regardless of how
    * small the actual change was. Both only ever touch a small, boundable area, so bounding the repaint
    * to just that area makes its cost depend on the edit size, not the canvas size - confirmed back down
    * to sub-millisecond on the same worst-case content (see the before/after profile in the commit/PR
@@ -3338,50 +3322,6 @@ class PixelEditorEngine {
     this.reactNotify();
   }
 
-  /**
-   * Union bounding box (canvas cell coords) of two cell sets - `null` for "none". Used both for a
-   * shape/curve preview's own old-vs-new frame (see redrawShapePreview: "erase the old preview" only
-   * ever needs to clear where it actually was, not the whole canvas, and the new preview is drawn on
-   * top of that same repaint via redrawRegions' `overlay` param) and, with `null` as the second set,
-   * to bound the one-time repaint a shape/gradient commit needs (see onPointerUp) to just the cells
-   * that were previewed instead of the whole canvas.
-   */
-  private cellsDirtyRects(oldCells: Cell[] | null, newCells: Cell[] | null): SelectionBox[] {
-    const { width, height } = this.current;
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    const consider = (cells: Cell[] | null) => {
-      cells?.forEach((c) => {
-        if (c.x < x0) x0 = c.x;
-        if (c.x > x1) x1 = c.x;
-        if (c.y < y0) y0 = c.y;
-        if (c.y > y1) y1 = c.y;
-      });
-    };
-    consider(oldCells);
-    consider(newCells);
-    if (x1 < x0 || y1 < y0) return [];
-    x0 = Math.max(0, x0);
-    y0 = Math.max(0, y0);
-    x1 = Math.min(width - 1, x1);
-    y1 = Math.min(height - 1, y1);
-    if (x1 < x0 || y1 < y0) return [];
-    return [{ x0, y0, x1, y1 }];
-  }
-
-  /** Replaces shapePreviewCells with `newCells` and repaints only the union of its old and new bounding
-   *  box (see cellsDirtyRects) instead of refresh()'s full drawGrid() - the redraw path for every
-   *  line/rect/ellipse/curve preview frame while dragging. */
-  private redrawShapePreview(newCells: Cell[] | null): void {
-    const oldCells = this.shapePreviewCells;
-    this.shapePreviewCells = newCells;
-    const rects = this.cellsDirtyRects(oldCells, newCells);
-    if (!rects.length) {
-      this.reactNotify();
-      return;
-    }
-    const color = this.eraseOverride ? 'rgba(255,255,255,0.45)' : this.color;
-    this.redrawRegions(rects, newCells ? { cells: newCells, color } : undefined);
-  }
 
   private paintCell(x: number, y: number, isMove?: boolean): void {
     const { width, height } = this.current;
@@ -3940,7 +3880,7 @@ class PixelEditorEngine {
 
   /**
    * Undo/redo swap in a whole snapshotted frame stack, so - unlike a brush stroke or shape preview -
-   * there's no dirty region known in advance the way strokeDirtyRects/cellsDirtyRects give one.
+   * there's no dirty region known in advance the way strokeDirtyRects gives one.
    * But most undo steps (undoing one small brush stroke on a large canvas) only actually change a tiny
    * fraction of it, so layersDiffRegion compares the outgoing and incoming layers cell-by-cell (plain
    * !== on color strings - far cheaper than the fillRect calls a repaint needs) to find the changed

@@ -1,11 +1,11 @@
 import type { SelectionBox } from '../types';
 
-/** Accumulates cells/rects touched during a gesture into one canvas-clamped bounding box - ports
- *  `cellsDirtyRects` (usePixelEditor.ts:3489-3509) into a reusable accumulator every tool shares,
- *  instead of each tool computing its own bounding-box math inline. Matches the original's behavior
- *  of a single merged rect (not a list), since that's what every current call site actually needs -
- *  see `redrawRegions`' doc comment (usePixelEditor.ts:3444-3459) for why bounding the repaint to just
- *  the changed area (not the whole canvas) is the whole point. */
+/** Accumulates cells/rects touched during a gesture into one canvas-clamped bounding box - ports the
+ *  engine's old `cellsDirtyRects` into a reusable accumulator every tool shares, instead of each tool
+ *  computing its own bounding-box math inline. Matches the original's behavior of a single merged rect
+ *  (not a list), since that's what every current call site actually needs - see `redrawRegions`' doc
+ *  comment in usePixelEditor.ts for why bounding the repaint to just the changed area (not the whole
+ *  canvas) is the whole point. */
 export class DirtyRectTracker {
   private x0 = Infinity;
   private y0 = Infinity;

@@ -69,12 +69,11 @@ bend-idle ไม่เคย rollback undo entry ที่ push ไว้ตอ�
 **บทเรียนที่ยังใช้ได้เสมอ:** ก่อนสรุปว่าอะไร "unreachable" ต้องไล่ caller ทุกจุดจริง ๆ ไม่ใช่แค่ grep
 ชื่อ
 
-**เจอเพิ่มระหว่าง migrate curve (ตัวสุดท้าย) — ยังไม่ได้ลบ ทิ้งไว้เป็น follow-up แยก:**
-1. `shapePreviewCells` field + `redrawShapePreview()` method + `drawGrid(this.shapePreviewCells ??
-   undefined)` สองจุดใน `refresh()`/`attachCanvas()` — curve เป็น writer ตัวสุดท้ายของ field นี้ พอ
-   migrate แล้วไม่มีใครเขียนเข้าอีกเลย กลายเป็น dead code จริง แต่ไม่ได้ลบรอบนี้เพราะต้องแตะ
-   `refresh()`/`attachCanvas()` (จุดที่ทุก tool เดินผ่าน) ซึ่งเสี่ยงเกินความคุ้มค่าเมื่อรวมอยู่ใน diff
-   ที่ใหญ่อยู่แล้ว — เหมาะเป็น PR แยกเล็ก ๆ ต่างหาก
+**เจอเพิ่มระหว่าง migrate curve (ตัวสุดท้าย):**
+1. ✅ **ลบแล้ว (2026-09-08):** `shapePreviewCells` field + `redrawShapePreview()` + `cellsDirtyRects()`
+   (ตายตามไปด้วย เพราะ caller เหลือแค่ `redrawShapePreview`) + `redrawShapePreview(null)` no-op ใน
+   `resetGestureState()` `refresh()`/`attachCanvas()` ตอนนี้เรียก `drawGrid()` เปล่า ๆ
+   tsc / build / 140 tests / lint ผ่าน — ARCHITECTURE.md อัปเดตแล้ว
 2. ส่วน tail ของ pen/eraser ที่เหลือใน `onPointerMove` (บล็อก `if (this.tool === 'pen' || this.tool
    === 'eraser')` ที่ยังเรียก `paintCell`/`cellFromEventUnclamped` เดิม) **น่าจะตายสนิทแล้วตั้งแต่ตอน
    migrate pen** (pen เข้า TOOL_REGISTRY แล้ว, `activeGesture` check ด้านบนน่าจะ return ก่อนถึงบล็อกนี้
@@ -116,7 +115,14 @@ bend-idle ไม่เคย rollback undo entry ที่ push ไว้ตอ�
 PREVIEW / ONION SKIN / TRANSFORM มีช่องว่างด้านล่างเยอะมากขณะที่ MY LIBRARY ด้านล่างถูกบีบจนต้องเลื่อน
 **แนวทาง:** ให้แผงย่อขนาดตามเนื้อหา (`height: fit-content`) แล้วปล่อยพื้นที่ที่เหลือให้ LIBRARY
 
-### 12. คลิกที่ข้อความ checkbox 4 ตัวใน ToolOptionsBar ไม่ทำงาน (พบระหว่าง migrate gradient)
+### 12. ✅ แก้แล้ว — คลิกที่ข้อความ checkbox 4 ตัวใน ToolOptionsBar ไม่ทำงาน (พบระหว่าง migrate gradient)
+**แก้แล้ว (2026-09-08):** เปลี่ยน wrapper จาก `<label>` เป็น `<span>` และให้แต่ละ `Checkbox` มี `id`
+(`tool-opt-contiguous` / `tool-opt-shape-filled` / `tool-opt-pixel-perfect` / `tool-opt-dither`)
+กับ `<Label htmlFor={id}>` ชี้ไปแทน — ตัด nested-label ออก คลิกที่ข้อความติ๊กได้แล้ว
+tsc / build / 140 unit tests / lint ผ่าน
+
+<details><summary>รายละเอียดบั๊กเดิม</summary>
+
 **ไฟล์:** `src/components/editor/ToolOptionsBar.tsx:120-190` — ปุ่ม "Contiguous" (Magic Wand),
 "Filled" (Rect/Ellipse), "Pixel Perfect" (Pen), "Dither" (Gradient) ทั้ง 4 ใช้ pattern เดียวกัน:
 `<label className="mini-toggle"><Checkbox/><Label>ข้อความ</Label></label>` — คือ native `<label>`
@@ -129,6 +135,7 @@ checkbox เองเท่านั้นถึงจะติ๊กได้ �
 **แนวทาง:** ให้ Radix `Checkbox` มี `id` แล้วให้ `<Label htmlFor={id}>` ชี้ไปแทน (ตัด nested-label
 structure ออก เปลี่ยน wrapping element จาก `<label>` เป็น `<div>` ธรรมดา) — แก้จุดเดียวที่ pattern
 แล้วนำไปใช้ซ้ำทั้ง 4 จุด
+</details>
 
 ---
 
