@@ -25,6 +25,7 @@ import { createSelectTool } from '@/lib/tools/tools/selectTool';
 import { createLassoTool } from '@/lib/tools/tools/lassoTool';
 import { createEyedropperTool } from '@/lib/tools/tools/eyedropperTool';
 import { createFillTool } from '@/lib/tools/tools/fillTool';
+import { createGradientTool } from '@/lib/tools/tools/gradientTool';
 import { resolveMarqueeMode } from '@/lib/tools/selectionMask';
 import type { Gesture, GestureResult, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '@/lib/tools/types';
 import type {
@@ -150,6 +151,7 @@ const TOOL_REGISTRY: Partial<Record<ToolName, Tool>> = {
   lasso: createLassoTool(),
   eyedropper: createEyedropperTool(),
   fill: createFillTool(),
+  gradient: createGradientTool(),
 };
 /** Tools whose gestures never touch a pixel - adjusting a selection isn't an edit, so
  *  `beginToolGesture` skips `pushGestureUndo()` for these entirely (matches `applyMagicWandAt`'s own
@@ -2591,6 +2593,17 @@ class PixelEditorEngine {
       this.refresh();
       return;
     }
+    if (preview.gradientPreview) {
+      // Mirror into the legacy engine fields so the existing, unchanged drawGradientPreviewOverlay()
+      // keeps rendering the live drag with the canvas's own native ctx.createLinearGradient - same
+      // "mirror data into legacy fields for legacy rendering" trick as movePreview above.
+      const { start, end, eraseOverride } = preview.gradientPreview;
+      this.gradientStart = start;
+      this.gradientEnd = end;
+      this.eraseOverride = eraseOverride;
+      this.drawGradientPreviewOverlay();
+      return;
+    }
     if (preview.dirtyRects.length) {
       this.redrawRegions(preview.dirtyRects, preview.overlay ?? undefined);
       this.lastGesturePreviewRects = preview.overlay ? preview.dirtyRects : null;
@@ -2618,6 +2631,7 @@ class PixelEditorEngine {
       this.color = result.pickedColor;
       if (result.switchToPen) this.tool = 'pen';
     }
+    if (result.alsoSaveColor !== undefined) this.addSavedColor(result.alsoSaveColor);
     const wasMove = result.moveSelectionBy !== undefined;
     if (result.moveSelectionBy) {
       const { dx, dy } = result.moveSelectionBy;
@@ -2753,14 +2767,10 @@ class PixelEditorEngine {
       this.sprayPointerCell = cell;
       this.sprayTick();
       this.startSprayTimer();
-    } else if (this.tool === 'gradient') {
-      this.gradientStart = cell;
-      this.gradientEnd = cell;
-      this.drawGradientPreviewOverlay();
     }
-    // No trailing `else`: every other ToolName is either handled above this shared block (eyedropper,
-    // select, lasso, curve) or dispatched through TOOL_REGISTRY before it's ever reached (pen, eraser,
-    // rect, ellipse, magicWand, move).
+    // No trailing `else`: every other ToolName is either handled above this shared block (select,
+    // lasso, curve) or dispatched through TOOL_REGISTRY before it's ever reached (pen, eraser, rect,
+    // ellipse, line, magicWand, move, eyedropper, fill, gradient).
   }
 
   /** lastStrokeEndCell, but only when it still points at a cell this canvas actually has - a resize,
@@ -2855,13 +2865,6 @@ class PixelEditorEngine {
       return;
     }
 
-    if (this.tool === 'gradient') {
-      if (!cell || !this.gradientStart) return;
-      this.gradientEnd = e.shiftKey ? this.constrainShapeEnd(this.gradientStart, cell) : cell;
-      this.drawGradientPreviewOverlay();
-      return;
-    }
-
     if (this.tool === 'pen' || this.tool === 'eraser') {
       // Coalesced events are the positions the OS actually sampled between two browser frames, which a
       // fast flick can spread over a lot of distance. paintCell already Bresenhams between consecutive
@@ -2934,32 +2937,6 @@ class PixelEditorEngine {
     }
 
 
-    if (this.tool === 'gradient') {
-      // The exact per-cell color array (gradientCellsPreview) is only computed here, once, on commit -
-      // the live drag preview draws with the canvas's own native gradient instead (see
-      // drawGradientPreviewOverlay) and never needs the per-cell array at all. Baking it into the
-      // actual layer here, then - like the shape commit just below - what's left is a proper (z-order/
-      // opacity-respecting) repaint of just the cells it covered, not the whole canvas.
-      const preview = this.gradientStart && this.gradientEnd ? this.gradientCellsPreview(this.gradientStart, this.gradientEnd) : null;
-      const rects = preview ? this.cellsDirtyRects(preview, null) : [];
-      if (preview) {
-        const frame = this.activeCells();
-        const { width, height } = this.current;
-        preview.forEach((c) => {
-          if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height && this.paintAllowed(c.x, c.y)) frame[c.y * width + c.x] = c.color;
-        });
-        this.addSavedColor(this.color);
-        this.addSavedColor(this.gradientColor);
-      }
-      this.gradientStart = null;
-      this.gradientEnd = null;
-      this.gradientPreview = null;
-      this.eraseOverride = false;
-      if (rects.length) this.redrawRegions(rects);
-      else this.reactNotify();
-      return;
-    }
-
     // Pen/eraser/spray/fill all already left the canvas correctly painted (their own dirty-rect or
     // full-repaint redraw already ran on the last stroke step / on mousedown) - nothing here changes a
     // pixel, so this only needs a React re-render (e.g. for canUndo()/dirty-flag-driven UI), not another
@@ -2977,27 +2954,6 @@ class PixelEditorEngine {
     // that deferred preview repaint finally gets to run.
     this.flushPreviewRepaint();
     this.reactNotify();
-  }
-
-  /** Shift-constrain: line snaps to 0/45/90° increments, rect/ellipse snaps to a square/circle bounding box. */
-  private constrainShapeEnd(start: Cell, end: Cell): Cell {
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    if (dx === 0 && dy === 0) return end;
-    if (this.tool === 'line' || this.tool === 'gradient') {
-      const step = Math.PI / 4;
-      const angle = Math.round(Math.atan2(dy, dx) / step) * step;
-      const dist = Math.round(Math.hypot(dx, dy));
-      return {
-        x: start.x + Math.round(Math.cos(angle) * dist),
-        y: start.y + Math.round(Math.sin(angle) * dist),
-      };
-    }
-    const side = Math.max(Math.abs(dx), Math.abs(dy));
-    return {
-      x: start.x + (dx < 0 ? -side : side),
-      y: start.y + (dy < 0 ? -side : side),
-    };
   }
 
   /** Thickens a 1px path (e.g. a Bresenham line) to `brushSize` by stamping brushCellsAt at every
@@ -3056,36 +3012,13 @@ class PixelEditorEngine {
    * start/end axis: each cell's position is projected onto that axis and clamped to [0,1]. A
    * right-click reverses which color sits at which end, reusing eraseOverride as a swap flag.
    */
-  private gradientCellsPreview(start: Cell, end: Cell): MoveBufferCell[] {
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    const lenSq = dx * dx + dy * dy;
-    const box = this.selection ?? { x0: 0, y0: 0, x1: this.current.width - 1, y1: this.current.height - 1 };
-    const startColor = this.eraseOverride ? this.gradientColor : this.color;
-    const endColor = this.eraseOverride ? this.color : this.gradientColor;
-    const [sr, sg, sb] = hexToRgb(startColor);
-    const [er, eg, eb] = hexToRgb(endColor);
-    const out: MoveBufferCell[] = [];
-    for (let y = box.y0; y <= box.y1; y++) {
-      for (let x = box.x0; x <= box.x1; x++) {
-        let t = 0.5;
-        if (lenSq > 0) {
-          t = ((x + 0.5 - start.x) * dx + (y + 0.5 - start.y) * dy) / lenSq;
-          t = Math.min(1, Math.max(0, t));
-        }
-        const color = this.ditherEnabled
-          ? ditherColorAt(x, y, startColor, endColor, ditherGradientMix(t))
-          : rgbToHex(sr + (er - sr) * t, sg + (eg - sg) * t, sb + (eb - sb) * t);
-        out.push({ x, y, color });
-      }
-    }
-    return out;
-  }
-
   /**
    * Live drag preview for the gradient tool: paints the box directly with the canvas's own native
    * (GPU-composited) linear gradient instead of computing a per-cell color array and painting it cell by
-   * cell every frame (see gradientCellsPreview, still used - but only once, on commit, see onPointerUp).
+   * cell every frame (see gradientTool.ts's `gradientCellsPreviewOps`, still used for the commit - but
+   * only once, on release, see GradientGesture.onPointerUp). Called from applyToolPreview's
+   * `gradientPreview` branch, which mirrors the live drag's start/end/eraseOverride into this class's own
+   * fields first (same "mirror into legacy fields for legacy rendering" trick as Move's moveBuffer).
    * Profiling a drag on a 1400x900, 3-layer canvas found the old per-move path cost ~2440ms in drawGrid's
    * full repaint plus ~170ms recomputing the per-cell array - the worst of any tool in this file, and for
    * a reason specific to gradients: unlike a shape outline, a gradient fills its *entire* box every
@@ -3098,15 +3031,16 @@ class PixelEditorEngine {
    * re-clearing or repainting the layers underneath - those only need painting once, whenever the drag
    * *starts* (already true: the canvas already shows the correct base picture at that point, so
    * onPointerDown doesn't need an extra repaint either, just this call). ctx.createLinearGradient handles
-   * the same clamp-to-end-stop behavior as gradientCellsPreview's `Math.min(1, Math.max(0, t))` for
+   * the same clamp-to-end-stop behavior as gradientCellsPreviewOps's `Math.min(1, Math.max(0, t))` for
    * points beyond the start/end axis natively - the one case it doesn't match is a zero-length axis
    * (start === end, e.g. right on mousedown before any drag), which paints nothing at all rather than a
-   * solid color, so that case is special-cased to match gradientCellsPreview's own `t = 0.5` default.
+   * solid color, so that case is special-cased to match gradientCellsPreviewOps's own `t = 0.5` default.
    *
    * When dither mode is on, the smooth native gradient above would be a lie - the actual commit (see
-   * gradientCellsPreview, called from onPointerUp) is a per-cell Bayer-dithered stipple, not a blend, so
-   * this falls back to painting per-cell with the same ditherColorAt() call instead, trading the native
-   * gradient's speed for a preview that matches what dragging actually produces.
+   * gradientCellsPreviewOps, called from GradientGesture.onPointerUp) is a per-cell Bayer-dithered
+   * stipple, not a blend, so this falls back to painting per-cell with the same ditherColorAt() call
+   * instead, trading the native gradient's speed for a preview that matches what dragging actually
+   * produces.
    */
   private drawGradientPreviewOverlay(): void {
     if (!this.ctx || !this.gradientStart || !this.gradientEnd) return;

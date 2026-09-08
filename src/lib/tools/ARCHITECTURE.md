@@ -1,9 +1,9 @@
 # Pixel editor tool architecture
 
 Response to `.claude/prompt/edit-pixeleditor.md`: a from-scratch architecture for the drawing-tool
-engine. **Nine tools are migrated and wired into the live `PixelEditorEngine`**: Pen/Eraser,
-Rect/Ellipse/Line, Magic Wand, Move, Select, Lasso, Eyedropper, Fill. Every other tool (gradient,
-spray, curve) is untouched, still running on the original inline `if (this.tool === 'xxx')` handling
+engine. **Ten tools are migrated and wired into the live `PixelEditorEngine`**: Pen/Eraser,
+Rect/Ellipse/Line, Magic Wand, Move, Select, Lasso, Eyedropper, Fill, Gradient. Every other tool
+(spray, curve) is untouched, still running on the original inline `if (this.tool === 'xxx')` handling
 in `src/hooks/usePixelEditor.ts`.
 
 ## Why
@@ -33,7 +33,8 @@ src/lib/tools/
     lassoTool.ts                Lasso
     eyedropperTool.ts            Eyedropper
     fillTool.ts                   Fill
-  __tests__/             vitest unit tests for all of the above (94 tests, no DOM)
+    gradientTool.ts                Gradient
+  __tests__/             vitest unit tests for all of the above (106 tests, no DOM)
 ```
 
 **Tool** is a stateless factory: given a `ToolPointerEvent` (a pointer event already resolved to a
@@ -78,8 +79,12 @@ mirrorExpand, DirtyRectTracker, overlay preview, commit, onCancel), just a diffe
 uses it) and a different Shift-constrain rule: `constrainToAngle` (snap to the nearest 0/45/90°,
 keeping the dragged distance) instead of `constrainToSquare`. **These two constrain rules are not
 interchangeable** - don't be tempted to unify them, same reasoning as Magic Wand vs. Select/Lasso's
-combine-mode rules above. The engine's own `constrainShapeEnd` keeps its angle-snap branch too, since
-gradient (not yet migrated) still calls it.
+combine-mode rules above. `constrainToAngle` is now **exported** from `shapeTool.ts` and reused as-is by
+`gradientTool.ts` - Line and Gradient are the two tools that shift-constrain to an angle rather than a
+square, so this is one shared function now, not two copies. The engine's own `constrainShapeEnd` (the
+original home of this logic, plus the square-constrain branch) has zero remaining callers after
+Gradient's migration and was deleted outright - the last piece of the pre-migration shape-tool code
+(`thickenPath` and `shapePreviewCells` on the engine still stay; curve still uses them).
 
 **Eyedropper and Fill are both "instant action" gestures**, the same shape as Magic Wand: all the work
 happens synchronously in `beginGesture` (which needs `ToolContext.getVisibleColor(x, y)` for
@@ -100,11 +105,43 @@ inside the loop's continuation test, exactly like the color-match check, so two 
 selection connected only via a path *outside* it don't both fill from clicking one of them - a real
 correctness case, covered by its own test (`fillTool.test.ts`).
 
+**Gradient's live drag deliberately does *not* go through the generic per-cell `overlay` mechanism**
+every shape tool uses. The original's `drawGradientPreviewOverlay()` paints the whole box directly with
+the canvas's own native, GPU-composited `ctx.createLinearGradient` - a measured optimization (profiled
+at ~2440ms/frame without it on a large canvas, see that method's own doc comment) because a gradient,
+unlike a shape outline, repaints its *entire* box every frame, defeating the run-length-merged overlay
+repaint every other tool benefits from. Forcing it through `overlay` would silently reintroduce that
+regression, so instead `GradientGesture.onPointerMove` returns a new `ToolPreview.gradientPreview: {
+start, end, eraseOverride }` field, and `applyToolPreview` mirrors it straight into the engine's own
+pre-existing `gradientStart`/`gradientEnd`/`eraseOverride` fields and calls the existing, unchanged
+`drawGradientPreviewOverlay()` - the same "mirror data into legacy fields for legacy rendering" trick
+already established for Move's `movePreview`/`moveBuffer`. One consequence worth knowing: this is also
+why `resetGestureState()`'s existing `if (this.gradientStart) { redrawRegions(...) }` cleanup (written
+for the *original* gradient code, long before this migration) needed no changes at all - it already
+repaints the live-drag box correctly on Escape/interrupt for the migrated tool too, since the mirrored
+fields it reads are still being kept up to date.
+
+The **commit** (`onPointerUp`), unlike the live drag, is an ordinary portable pure function -
+`gradientCellsPreviewOps` computes the exact per-cell blend array once, exactly like the original's
+`gradientCellsPreview`, using `hexToRgb`/`rgbToHex`/`ditherColorAt`/`ditherGradientMix` from
+`pixelMath.ts` and `withSelectionClip` for the mask check. Gradient still does **not** mirror through
+symmetry at all (a pre-existing inconsistency in the original - commit only ever selection-clips, never
+`mirrorPoints`s - not something this migration fixes). Two more original quirks preserved exactly:
+right-click doesn't erase to `null` the way Pen/Fill do - it's a "reversed gradient" that swaps which
+color is the start vs. the end, so every op still carries a real color; and the commit **never rolls
+back its undo entry**, even for a fully-outside-selection drag that produces zero ops - there is no
+rollback call anywhere in the original's gradient commit, so `GestureResult.changed` is hardcoded
+`true` rather than derived from `ops.length`. A new `GestureResult.alsoSaveColor` field ports the
+original's extra, unconditional `addSavedColor(this.gradientColor)` call (it saved *both* ends of the
+gradient to the recent-colors swatch list, not just the primary color the engine already saves
+generically) - applied by `commitGestureResult` before the `changed` early-out, same placement as
+`pickedColor`.
+
 ### Integration into `PixelEditorEngine`
 
 A module-level `TOOL_REGISTRY` maps
-`pen`/`eraser`/`rect`/`ellipse`/`line`/`magicWand`/`move`/`select`/`lasso`/`eyedropper`/`fill` to their
-`Tool`. `NO_UNDO_TOOLS` (`magicWand`/`select`/`lasso`/`eyedropper`) skips `pushGestureUndo()` for
+`pen`/`eraser`/`rect`/`ellipse`/`line`/`magicWand`/`move`/`select`/`lasso`/`eyedropper`/`fill`/`gradient`
+to their `Tool`. `NO_UNDO_TOOLS` (`magicWand`/`select`/`lasso`/`eyedropper`) skips `pushGestureUndo()` for
 gestures that never touch a pixel - `fill` is deliberately **not** in that set, since it pushes undo
 and rolls it back on a no-op release instead, matching the original exactly (the *only* other tool with
 that specific rollback rule besides Fill itself). `onPointerDown` dispatches to the registry, with two
@@ -144,11 +181,25 @@ once `floodFill`/`globalReplace` were gone; it lives on as a pure function dupli
 `fillTool.ts` and `magicWandTool.ts` instead). `pickColor` itself stays on the engine - the separate
 Alt-temporary-pick path still calls it directly, independent of the Eyedropper tool.
 
+Migrating Gradient removed, after the same re-verification discipline: the `if (this.tool ===
+'gradient')` branches in `onPointerDown` (the shared push-undo block it used to sit in alongside spray),
+`onPointerMove`, and `onPointerUp`; the engine's own `gradientCellsPreview()` method (ported as
+`gradientCellsPreviewOps` in `gradientTool.ts`); and `constrainShapeEnd()` in full (see the
+`shapeTool.ts` paragraph above - Line had already stopped calling it, so Gradient was its last caller).
+`drawGradientPreviewOverlay()` stays on the engine, deliberately - its call site just moved from
+`onPointerDown`/`onPointerMove` to `applyToolPreview`'s new `gradientPreview` branch. The pre-existing
+`gradientPreview: MoveBufferCell[] | null` engine *field* (a different thing from the new
+`ToolPreview.gradientPreview` type, despite the name collision) was already dead before this migration
+- grepping for assignments found it's only ever set to `null`, never populated - and is out of scope
+here since removing it isn't something Gradient's migration needs; noted in `EDITOR_IMPROVEMENTS.md`
+instead.
+
 ### Deviations found during implementation (worth flagging for future migration steps)
 
-- **Pen/Eraser and Move never roll back their undo entry on a no-op release** (a click outside the
-  active selection, or a zero-delta move) - matching the *original*, which only rolls back Fill's undo
-  entry on a no-op, not Pen's or Move's. `GestureResult.changed` is `true` unconditionally for both.
+- **Pen/Eraser, Move, and Gradient never roll back their undo entry on a no-op release** (a click
+  outside the active selection, a zero-delta move, or a gradient drag that lands fully outside the
+  selection) - matching the *original*, which only rolls back Fill's undo entry on a no-op, not these
+  three. `GestureResult.changed` is `true` unconditionally for all three.
 - **Magic Wand skips `pushGestureUndo()` entirely** (it never touches a pixel), matching
   `applyMagicWandAt`'s own doc comment - `rollbackGestureUndo()` already no-ops safely when nothing was
   pushed, so this needed no special-casing in `commitGestureResult`.
@@ -168,23 +219,18 @@ Alt-temporary-pick path still calls it directly, independent of the Eyedropper t
 
 ## Migration plan
 
-Already migrated: **pen, eraser, rect, ellipse, line, magicWand, move, select, lasso, eyedropper,
-fill.**
+Already migrated: **pen, eraser, rect, ellipse, line, magicWand, move, select, lasso, eyedropper, fill,
+gradient.**
 
 Proposed order for the rest, each independently swappable behind the same `TOOL_REGISTRY` pattern:
 
-1. **gradient** - needs `ToolPreview`'s native-canvas-gradient fast path preserved as an escape hatch
-   (see the original's own perf rationale) or accept per-cell dither-preview cost, already the status
-   quo when dither is on. Once gradient is migrated, `constrainShapeEnd` on the engine has zero
-   remaining callers and its own angle-snap logic (now duplicated in `shapeTool.ts`'s
-   `constrainToAngle`) can finally be deleted - the last piece of the original shape-tool machinery.
-2. **spray** - timer-driven (`sprayTimer`/`sprayTick`), needs an optional `Gesture.onTick?()` hook added
+1. **spray** - timer-driven (`sprayTimer`/`sprayTick`), needs an optional `Gesture.onTick?()` hook added
    to the interface - the first required interface extension.
-3. **curve** - 2-phase drag (`drag-end` → `bend`), the most stateful remaining tool; do last, after the
+2. **curve** - 2-phase drag (`drag-end` → `bend`), the most stateful remaining tool; do last, after the
    simpler ones establish the pattern. Once curve is the only caller left, `thickenPath` and
    `shapePreviewCells`/`redrawShapePreview` can finally move too (or be retired if curve absorbs them).
 
-**Highest-risk points for whoever does steps 1-3:**
+**Highest-risk points for whoever does steps 1-2:**
 - **Never spread a native DOM event** (`{ ...pointerEvent }`) when building a `ToolPointerEvent`. On a
   native event - which is what `getCoalescedEvents()` returns, unlike React's synthetic event -
   `clientX`/`clientY` are prototype getters, not own enumerable properties, so a spread silently drops
@@ -196,15 +242,18 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
 - Blur/visibility-forced gesture-end and two-button-abort must route through `Gesture.onCancel` for
   every migrated tool - easy to silently miss for a new tool and leave a stuck gesture.
 - Any tool whose live-drag preview currently uses `gestureBaseBitmap` instead of dirty-rect repaint
-  (resize/rotate - not yet migrated, gradient's live drag) needs the same bitmap-cache carve-out Move
-  gets (`ToolPreview.movePreview`), not a forced fit into the overlay path.
+  (resize/rotate - not yet migrated) needs the same bitmap-cache carve-out Move gets
+  (`ToolPreview.movePreview`), not a forced fit into the overlay path. Gradient turned out **not** to
+  need this - its native-canvas-gradient trick is a different, dedicated `ToolPreview.gradientPreview`
+  mirror, not `gestureBaseBitmap` - so don't assume every "paints its own thing outside the overlay
+  path" tool wants the same mechanism; check what it actually optimizes for first.
 - Selection-shape tools sharing `selectionMask`/`lassoPoints` state (now: Magic Wand, Select, and
   Lasso, all migrated) mean the next tool to touch selection state should double-check nothing here
   assumed a specific one of the three.
 
 ## Test coverage
 
-`npm test` (`vitest run`) - 94 tests, all pure logic, no DOM/canvas:
+`npm test` (`vitest run`) - 106 tests, all pure logic, no DOM/canvas:
 - **paintPipeline**: selection-clip inside/outside a rect and a sparse mask; symmetry mirroring
   on-axis (no duplicate) and off-axis, composed with selection-clip.
 - **DirtyRectTracker**: single cell, disjoint-cell union, canvas-edge clamping, empty input.
@@ -235,6 +284,15 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
   adjacency; symmetry runs as N independent per-mirror-point floods (each sampling its own target color)
   rather than one mirrored result; right-click erases; `changed: false` when the clicked pixel already
   matches the fill color; `onCancel`.
+- **GradientTool**: the exact per-cell linear blend, hand-computed against known start/end colors (not
+  re-derived from the implementation's own formula); right-click reverses which color is the start vs.
+  the end without ever erasing to `null`; Shift-drag snaps to the nearest 45° increment; the live
+  `onPointerMove` preview returns `gradientPreview` (never `ops`/`overlay`); a selection restricts the
+  affected cells to its bounding box, and a non-rectangular mask further excludes cells inside that box;
+  a zero-length drag paints the whole box with the exact midpoint blend; dither mode picks only the
+  literal start/end hex for every cell, never a blended third color; `changed` is always `true` even
+  when a selection excludes every cell; `alsoSaveColor` always reports the secondary color; symmetry is
+  ignored entirely; `onCancel`.
 - Pure functions moved into `selectionMask.ts` are exercised indirectly through Magic Wand/Select/
   Lasso's own tests (all pre-existing Magic Wand tests still pass unchanged, confirming the move was
   behavior-preserving).
@@ -242,9 +300,9 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
 ## Verification performed
 
 - `npx tsc -b --noEmit` - clean.
-- `npx vitest run` - 94/94 passing.
+- `npx vitest run` - 106/106 passing.
 - `npm run build` - production build succeeds.
-- Manual Playwright smoke test against the running dev server, four rounds:
+- Manual Playwright smoke test against the running dev server, five rounds:
   - *Pen/Rect/MagicWand/Move round*: Pen L-stroke with corner trim, undo/redo across two strokes,
     filled and outline Rect, Magic Wand select-then-drag-to-move (both the outline-only and filled
     cases, including the click-inside-selection → Move routing), and Escape mid-Pen-stroke fully
@@ -272,4 +330,16 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
     switching tools via the toolbar, a stale pre-switch canvas coordinate missed the canvas because
     the options-bar height differs between tools and shifted the canvas's on-screen position - fixed
     by always recomputing `boundingBox()` immediately before each click, not a product-code bug.)
+  - *Gradient round*: a plain horizontal drag across the whole canvas producing a smooth red→white
+    blend confirmed via raw per-cell pixel readback; a Shift-held drag from a slightly diagonal raw
+    target snapping to a byte-for-byte identical result as the plain horizontal drag (proving the angle
+    snapped to exactly 0°, not just approximately); a right-click drag producing the color-reversed
+    blend (still fully opaque - a "reversed gradient", not a real erase); enabling Dither mode and
+    confirming the row collapsed to exactly two distinct hex values (the literal start/end colors) in a
+    solid/stipple/solid band pattern, never a smooth blend. (Toggling the Dither checkbox by clicking
+    its **text label** silently did nothing - a real, pre-existing UI bug unrelated to this migration,
+    logged in `EDITOR_IMPROVEMENTS.md`: the checkbox's wrapping `<label>` contains a second, *nested*
+    `<label>` around just the text, and a browser suppresses label-click-forwarding when the click
+    target is itself a label. Worked around in the test by clicking the `[role="checkbox"]` element
+    directly; confirmed via `aria-checked`/`data-state` before/after.)
   - No console/runtime errors in any run.

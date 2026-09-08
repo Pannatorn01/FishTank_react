@@ -100,6 +100,13 @@ export interface GestureResult {
    *  default `switchToPen = true` - the separate Alt-temporary-pick path never goes through this Tool
    *  at all, so it never sets this). */
   switchToPen?: boolean;
+  /** Gradient only: an additional color to remember as a recently-used color, alongside the primary
+   *  `ctx.color` the engine already saves generically (see `hadColor` in commitGestureResult) - ports
+   *  the original's own extra `addSavedColor(this.gradientColor)` call (usePixelEditor.ts:2952), which
+   *  saved both ends of the gradient, not just the primary color. Applied unconditionally, even when
+   *  `changed` is false, matching the original's placement inside its unconditional `if (preview)`
+   *  block rather than after any "did this actually change a pixel" check. */
+  alsoSaveColor?: string;
   /** Curve only: true when this result is a PHASE TRANSITION, not the gesture's real end (e.g. the
    *  drag that draws the initial line finishing and handing off to bending the control point) - the
    *  engine must NOT clear `activeGesture`/`lastToolPointerEvent` and must NOT resolve the pushed undo

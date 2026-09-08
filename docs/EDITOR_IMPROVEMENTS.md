@@ -1,7 +1,8 @@
 # Draw Fish/Decor — รายการสิ่งที่ควรปรับปรุง (Backlog)
 
 > รายการนี้มาจากการ audit โค้ดจริง (ไม่ใช่การเดา) — แต่ละข้อระบุไฟล์/บรรทัดไว้ให้กระโดดไปแก้ได้เลย
-> Created: 2026-09-07 · Status: **ยังไม่เริ่มแก้ — เป็น backlog ล้วน**
+> Created: 2026-09-07 · Updated: 2026-09-08 · Status: **แก้ไปหลายข้อแล้ว (ดู "สถานะ" ในแต่ละข้อ) —
+> ที่เหลือยังเป็น backlog**
 >
 > เกี่ยวข้องกับ: [`src/lib/tools/ARCHITECTURE.md`](../src/lib/tools/ARCHITECTURE.md) (แผน migrate เครื่องมือวาด)
 > และ [`PIXI_MIGRATION_PLAN.md`](./PIXI_MIGRATION_PLAN.md) (ดู §0 — ข้อขัดแย้งที่ต้องเคลียร์)
@@ -10,28 +11,30 @@
 
 ## P0 — ความเสี่ยงข้อมูลหาย / แอปพัง
 
-### 1. ไม่มี Error Boundary เลยทั้งแอป
-**อาการ:** ถ้า component ไหน throw ตอน render → หน้าขาวทั้งหน้า ผู้ใช้เสียงานที่ยังไม่ได้เซฟทันที
+### 1. ไม่มี Error Boundary เลยทั้งแอป (แก้แล้ว)
+**อาการเดิม:** ถ้า component ไหน throw ตอน render → หน้าขาวทั้งหน้า ผู้ใช้เสียงานที่ยังไม่ได้เซฟทันที
 ไม่มีข้อความบอก ไม่มีปุ่มกู้คืน (ตรงกับอาการหน้าขาวที่เคยเจอ)
-**หลักฐาน:** `grep -rn "ErrorBoundary\|componentDidCatch" src/` → ไม่เจอเลย
-**แนวทาง:** ครอบ `PixelEditorPanel` + `TankPanel` ด้วย ErrorBoundary ที่แสดงปุ่ม
-"ดาวน์โหลด sprite เป็นไฟล์" + "รีเซ็ตหน้า" เพื่อให้กู้งานออกมาได้ก่อน reload
+**สถานะ:** แก้แล้ว — `src/components/ErrorBoundary.tsx` (ใหม่) ครอบทั้ง `<App />` จาก `main.tsx:11-13`
+(ครอบกว้างกว่าที่เสนอไว้เดิม คือทั้งแอป ไม่ใช่แค่สองแผง) มีปุ่มดาวน์โหลด backup / reload / รีเซ็ตข้อมูล
 
-### 2. โหลดข้อมูลจาก localStorage โดยไม่ตรวจ schema
+### 2. โหลดข้อมูลจาก localStorage โดยไม่ตรวจ schema (แก้แล้ว)
 **ไฟล์:** `src/lib/storage.ts:108-253` (ทุก `load*()` มี try/catch แต่เช็คแค่ JSON parse ผ่านหรือไม่)
-**อาการ:** ข้อมูลที่ parse ได้แต่รูปร่างผิด (เช่น `frames` เป็น null, `width` เป็น string) จะไหลเข้า
+**อาการเดิม:** ข้อมูลที่ parse ได้แต่รูปร่างผิด (เช่น `frames` เป็น null, `width` เป็น string) จะไหลเข้า
 engine ตรง ๆ แล้วไปพังตอน render — ทางออกเดียวของผู้ใช้คือเปิด DevTools ล้าง localStorage เอง
-**แนวทาง:** ใส่ validator ตอน load (เช็ค width/height เป็น finite number, frames เป็น array,
-cells.length === width*height) ถ้าไม่ผ่านให้ fallback เป็นค่า default แทนที่จะปล่อยพัง
-+ เพิ่มปุ่ม "รีเซ็ตข้อมูลทั้งหมด" ใน UI จะได้ไม่ต้องพึ่ง DevTools
+**สถานะ:** แก้แล้ว — เพิ่ม `isValidSprite()` (`storage.ts:113`) เข้าไปกรองใน `loadSprites()` +
+`downloadDataBackup()` + `resetAllData()` แล้ว
 
-### 3. Undo stack กินหน่วยความจำแบบ O(ขนาด canvas × 50)
-**ไฟล์:** `src/hooks/usePixelEditor.ts:91` (`UNDO_LIMIT = 50`), `snapshot()` ใช้
+### 3. Undo stack กินหน่วยความจำแบบ O(ขนาด canvas × 50) (แก้บางส่วนแล้ว)
+**ไฟล์เดิม:** `src/hooks/usePixelEditor.ts:91` (`UNDO_LIMIT = 50` คงที่), `snapshot()` ใช้
 `structuredClone(this.current.frames)` — clone ทุก layer ของทุก frame ต่อ 1 undo step
-**ตัวเลขจริง:** background sprite 1400×900 × 3 layers = ~3.8 ล้าน cell ต่อ 1 snapshot
+**ตัวเลขจริงตอนนั้น:** background sprite 1400×900 × 3 layers = ~3.8 ล้าน cell ต่อ 1 snapshot
 × 50 steps ≈ 190 ล้าน entry ค้างใน memory
-**แนวทาง:** เปลี่ยนเป็น diff-based undo (เก็บเฉพาะ cell ที่เปลี่ยน + bounding box) หรืออย่างน้อย
-ลด `UNDO_LIMIT` แบบ dynamic ตามขนาด canvas
+**สถานะ:** แก้บางส่วนแล้ว — เพิ่ม `undoLimitFor(width, height)` (`usePixelEditor.ts:105-108`, ใช้จริง
+ที่บรรทัด 4030) คำนวณ limit แบบ dynamic จาก `UNDO_CELL_BUDGET` คงที่ (`UNDO_LIMIT × 16×16`) หารด้วย
+จำนวน cell จริงของ canvas — sprite เล็กยังได้ 50 steps เต็ม, background sprite ใหญ่ได้แค่ไม่กี่ step
+(ขั้นต่ำ 8) แทนที่จะเก็บ 50 steps เท่ากันหมดไม่ว่าขนาดจะใหญ่แค่ไหน
+**ยังไม่ได้แก้:** ยังเป็น full-snapshot ต่อ step อยู่ (ไม่ใช่ diff-based) — แค่ "เก็บน้อย step ลงเมื่อ
+canvas ใหญ่" ไม่ใช่ "แต่ละ step กินน้อยลง" ถ้าจะแก้ให้สุดต้องเปลี่ยนเป็น diff-based undo จริง ๆ
 > หมายเหตุ: ไม่ใช่สาเหตุของ OOM ที่เจอไปแล้ว (อันนั้นคือ NaN loop ซึ่งแก้แล้ว) แต่เป็นความเสี่ยงจริงคนละตัว
 
 ---
@@ -39,10 +42,10 @@ cells.length === width*height) ถ้าไม่ผ่านให้ fallback 
 ## P1 — หนี้ทางสถาปัตยกรรม
 
 ### 4. `usePixelEditor.ts` ยังใหญ่ (กำลังเล็กลงเรื่อยๆ)
-migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้ว 11 ตัว (pen, eraser, rect, ellipse, line, magicWand, move,
-select, lasso, eyedropper, fill) เหลืออีก 3 ตัวที่ยังเป็น if-chain เดิม: **gradient, spray, curve**
+migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้ว 12 ตัว (pen, eraser, rect, ellipse, line, magicWand, move,
+select, lasso, eyedropper, fill, gradient) เหลืออีก 2 ตัวที่ยังเป็น if-chain เดิม: **spray, curve**
 (curve เป็นตัวใหญ่สุด ต้องขยาย interface รองรับ gesture ข้ามหลาย pointerdown-cycle — ดูรายละเอียดใน
-ARCHITECTURE.md §Migration plan)
+ARCHITECTURE.md §Migration plan; spray ต้องเพิ่ม `Gesture.onTick` hook สำหรับ timer-driven gesture)
 การ migrate select/lasso ลบโค้ดตายจริง (`startMoveGesture`, `moveStartCell`, legacy `moveBuffer`
 branch, `draftSelectionMode`) ออกไปด้วย หลังยืนยัน caller ครบทุกจุด — migrate line รอบถัดมาลบ
 `computeShapeCells()` เต็มตัว + `shapeStart` field ออกไปด้วยเหตุผลเดียวกัน (branch rect/ellipse ใน
@@ -64,14 +67,17 @@ branch, `draftSelectionMode`) ออกไปด้วย หลังยืน�
 **ยังไม่ได้ตรวจซ้ำ** — ห้ามสมมติว่าลบได้จนกว่าจะไล่ทุก caller แบบเดียวกัน
 
 ### 6. ยังไม่มีเทสต์ในส่วนที่เสี่ยงที่สุด
-มีเทสต์แล้ว: `src/lib/tools/` (94 tests รวม eyedropper/fill) + `pixelMath` (4 tests)
-**ยังไม่มีเลย:** `storage.ts` (520 บรรทัด — พังแล้วข้อมูลผู้ใช้หาย), `useTank.ts` (2,083 บรรทัด)
-**แนวทาง:** เริ่มจาก `storage.ts` ก่อน — เทสต์ round-trip save→load + ข้อมูลเสีย/ขาดฟิลด์
+มีเทสต์แล้ว: `src/lib/tools/` (106 tests รวม eyedropper/fill/gradient) + `pixelMath` (4 tests) +
+`storage.ts` (12 tests — เพิ่มมาจากอีก session หนึ่งระหว่างนี้ ไม่ใช่ของ backlog นี้)
+**ยังไม่มีเลย:** `useTank.ts` (2,083 บรรทัด)
+**แนวทาง:** เขียนเทสต์ให้ `useTank.ts` ต่อ — ยังไม่มีการ audit ว่าจุดเสี่ยงที่สุดในนั้นคือจุดไหน
 
-### 7. `docs/PIXI_MIGRATION_PLAN.md` ขัดกับงานที่ทำไปแล้ว
+### 7. `docs/PIXI_MIGRATION_PLAN.md` ขัดกับงานที่ทำไปแล้ว (มีหมายเหตุอัปเดตแล้ว บางส่วน)
 ไฟล์นั้นเขียนว่า *"ห้ามแตะ src/hooks/usePixelEditor.ts และเครื่องมือวาดใน editor"*
-แต่ตอนนี้ refactor เครื่องมือวาดไปแล้ว 6 ตัว
-**แนวทาง:** อัปเดต §5 ของไฟล์นั้นให้ตรงกับความจริง ก่อนเริ่ม Pixi migration จะได้ไม่สับสน
+แต่ตอนนี้ refactor เครื่องมือวาดไปแล้ว 12 จาก 14 ตัว (เหลือ spray/curve)
+**สถานะ:** §0 ของไฟล์นั้นมีหมายเหตุอัปเดต (2026-09-08) บอกจำนวนที่ migrate ไปแล้ว + เตือนว่า §5.D
+"ทำงานถูกแล้วไม่ต้องแก้" ไม่ตรงความจริงทั้งหมดแล้ว — **ยังไม่ได้แก้ §5.D เองแบบเต็ม ๆ** แค่แปะหมายเหตุ
+ไว้ให้เช็ค ARCHITECTURE.md ก่อนอ้างอิงจุดไหนว่า "เดิมและนิ่งแล้ว"
 
 ---
 
@@ -95,15 +101,30 @@ branch, `draftSelectionMode`) ออกไปด้วย หลังยืน�
 PREVIEW / ONION SKIN / TRANSFORM มีช่องว่างด้านล่างเยอะมากขณะที่ MY LIBRARY ด้านล่างถูกบีบจนต้องเลื่อน
 **แนวทาง:** ให้แผงย่อขนาดตามเนื้อหา (`height: fit-content`) แล้วปล่อยพื้นที่ที่เหลือให้ LIBRARY
 
+### 12. คลิกที่ข้อความ checkbox 4 ตัวใน ToolOptionsBar ไม่ทำงาน (พบระหว่าง migrate gradient)
+**ไฟล์:** `src/components/editor/ToolOptionsBar.tsx:120-190` — ปุ่ม "Contiguous" (Magic Wand),
+"Filled" (Rect/Ellipse), "Pixel Perfect" (Pen), "Dither" (Gradient) ทั้ง 4 ใช้ pattern เดียวกัน:
+`<label className="mini-toggle"><Checkbox/><Label>ข้อความ</Label></label>` — คือ native `<label>`
+ครอบ native `<label>` อีกที (Radix `Label` render เป็น `<label>` ของมันเอง)
+**อาการยืนยันแล้วจริง (ไม่ใช่เดา):** ทดสอบผ่าน Playwright คลิกที่ข้อความ "Dither" โดยตรง แล้วเช็ค
+`aria-checked`/`data-state` ก่อน-หลังคลิก — **ไม่เปลี่ยนเลย** ต้องคลิกที่กล่องสี่เหลี่ยม 20px ของ
+checkbox เองเท่านั้นถึงจะติ๊กได้ เหตุผล: เบราว์เซอร์ระงับ label-click-forwarding เมื่อ click target
+เป็น `<label>` อีกอันซ้อนอยู่ข้างใน (nested label ไม่ forward click ไปยัง control ของ label แม่)
+**ผลกระทบ:** ผู้ใช้ทั่วไปมักคลิกที่ข้อความ (เป้าใหญ่กว่า ดูเป็นธรรมชาติกว่า) แล้วจะรู้สึกว่าปุ่มพัง
+**แนวทาง:** ให้ Radix `Checkbox` มี `id` แล้วให้ `<Label htmlFor={id}>` ชี้ไปแทน (ตัด nested-label
+structure ออก เปลี่ยน wrapping element จาก `<label>` เป็น `<div>` ธรรมดา) — แก้จุดเดียวที่ pattern
+แล้วนำไปใช้ซ้ำทั้ง 4 จุด
+
 ---
 
 ## P3 — คุณภาพโค้ด / ประสิทธิภาพ (ไม่เร่ง)
 
-### 12. Bundle เป็นก้อนเดียว 546 kB
-`npm run build` เตือน chunk > 500 kB — ยังไม่มี code splitting ระหว่างแท็บ editor กับ tank
-**แนวทาง:** `React.lazy` แยก TankPanel ออกจาก bundle แรก
+### 13. Bundle เป็นก้อนเดียว 546 kB (แก้แล้ว)
+**สถานะ:** แก้แล้ว — `src/App.tsx:12` แยก `TankPanel` ด้วย `lazy(() => import(...))` +
+`hasVisitedTank` gate แล้ว ยืนยันจาก `npm run build`: `TankPanel-*.js` เป็น chunk แยก (57 kB) ไม่รวม
+อยู่ใน bundle แรกอีกต่อไป
 
-### 13. จุดเล็ก ๆ ที่สะอาดดีอยู่แล้ว (บันทึกไว้ว่าไม่ต้องแก้)
+### 14. จุดเล็ก ๆ ที่สะอาดดีอยู่แล้ว (บันทึกไว้ว่าไม่ต้องแก้)
 - `any` / `@ts-ignore` ทั้งโปรเจกต์มีแค่ 2 จุด
 - non-null assertion ใน `usePixelEditor.ts` มีแค่ 3 จุด
 - `touch-action: none` ตั้งไว้ครบแล้ว (`index.css:746, 913, 931, 1014`) — touch ใช้งานได้
@@ -118,8 +139,8 @@ PREVIEW / ONION SKIN / TRANSFORM มีช่องว่างด้านล�
   ยืนยันด้วยการทดสอบจริง: ก่อนแก้ลากขวาทับเส้นแล้วไม่มีอะไรเกิดขึ้น หลังแก้ลบออกหมด
   → แก้ที่ `penTool.ts:createPenTool` + ล็อกด้วย unit test 2 ตัว
   (`rect`/`ellipse` ไม่มีปัญหานี้ — `ShapeGesture` อ่าน `button` อยู่แล้ว)
-  > **ที่ต้องเช็คต่อ:** tool ที่ยังไม่ migrate (line, curve, fill, spray, gradient) ยังใช้
-  > `eraseOverride` ของเดิมอยู่ — ตอน migrate แต่ละตัวต้องไม่ลืม modifier นี้เหมือนกัน
+  > **ที่ต้องเช็คต่อ:** tool ที่ยังไม่ migrate (curve, spray) ยังใช้ `eraseOverride` ของเดิมอยู่ —
+  > ตอน migrate แต่ละตัวต้องไม่ลืม modifier นี้เหมือนกัน (line/fill/gradient เช็คแล้วตอน migrate)
 
 ## บทเรียนจากบั๊กที่เพิ่งแก้ (กันพลาดซ้ำ)
 

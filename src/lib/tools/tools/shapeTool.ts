@@ -17,9 +17,10 @@ function constrainToSquare(start: Cell, end: Cell): Cell {
 }
 
 /** Shift-constrain to the nearest 0/45/90° increment, keeping the dragged distance - the line/gradient
- *  branch of `constrainShapeEnd` (usePixelEditor.ts:3033-3040). Gradient still calls the engine's own
- *  copy of this (not yet migrated); this is Line's copy. */
-function constrainToAngle(start: Cell, end: Cell): Cell {
+ *  branch of the now-removed `constrainShapeEnd` (originally usePixelEditor.ts:2982-3001). Exported for
+ *  gradientTool.ts's own reuse - Line and Gradient are the two tools that shift-constrain to an angle
+ *  rather than a square. */
+export function constrainToAngle(start: Cell, end: Cell): Cell {
   const dx = end.x - start.x;
   const dy = end.y - start.y;
   if (dx === 0 && dy === 0) return end;
