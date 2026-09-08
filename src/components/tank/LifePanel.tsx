@@ -88,6 +88,11 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
       >
         <i className="fa-solid fa-faucet-drip" /> {t('life.refillWater')}
       </Button>
+      {/* Nothing about the tank itself hints that tapping vs. dragging do two different things (see
+       *  roomScene.ts's tap-vs-drag state machine) - especially before any algae has actually grown in
+       *  yet, at which point there's nothing visible to even suspect is scrubbable. A plain caption
+       *  under the tank spells it out once instead of leaving it to be discovered by accident. */}
+      <p className="life-hint">{t('life.hint')}</p>
     </div>
   );
 }

@@ -25,6 +25,15 @@ const CLEANLINESS_BAR_MARGIN = 14;
  *  rather than a scrub - matches the TAP_MOVE_THRESHOLD useTank.ts's own marquee/drag code uses for
  *  the same tap-vs-drag distinction. */
 const TAP_VS_DRAG_THRESHOLD = 6;
+/** Scrub brush (P5 §6 item 5) - a small sponge that follows the pointer while actively scrubbing, so
+ *  the gesture reads as "wiping something off the glass" instead of an invisible drag. Sized relative
+ *  to a typical fish sprite (see DISPLAY_SCALE in tankScene.ts - a 16-cell fish is ~64px) rather than
+ *  the room/screen scale, since it's drawn in the tank's own local coordinate space (a child of
+ *  tankSlot) and shrinks along with everything else in the tank when the room scales it down to fit. */
+const SCRUB_BRUSH_WIDTH = 34;
+const SCRUB_BRUSH_HEIGHT = 22;
+const SCRUB_BRUSH_COLOR = 0xf4d35e;
+const SCRUB_BRUSH_OUTLINE = 0x8a6d1f;
 
 export interface RoomSceneHandle {
   /** Repaints the room + the embedded tank from the engine's current state - call once per animation
@@ -57,7 +66,23 @@ export function createRoomScene(
   const tapHitArea = new Graphics();
   tapHitArea.eventMode = onTap || onScrub ? 'static' : 'none';
   tapHitArea.cursor = 'pointer';
-  tankSlot.addChild(tapHitArea);
+  // A little sponge that tracks the pointer for as long as an active scrub gesture lasts (see the
+  // pointer state machine below) - purely decorative, never itself a hit target, so it's not
+  // interactive and sits above tapHitArea in paint order without shadowing it.
+  const scrubBrush = new Graphics()
+    .roundRect(-SCRUB_BRUSH_WIDTH / 2, -SCRUB_BRUSH_HEIGHT / 2, SCRUB_BRUSH_WIDTH, SCRUB_BRUSH_HEIGHT, 5)
+    .fill(SCRUB_BRUSH_COLOR)
+    .stroke({ width: 2, color: SCRUB_BRUSH_OUTLINE });
+  for (let i = 1; i <= 3; i++) {
+    const x = -SCRUB_BRUSH_WIDTH / 2 + (SCRUB_BRUSH_WIDTH * i) / 4;
+    scrubBrush
+      .moveTo(x, -SCRUB_BRUSH_HEIGHT / 2 + 3)
+      .lineTo(x, SCRUB_BRUSH_HEIGHT / 2 - 3)
+      .stroke({ width: 1.5, color: SCRUB_BRUSH_OUTLINE, alpha: 0.5 });
+  }
+  scrubBrush.eventMode = 'none';
+  scrubBrush.visible = false;
+  tankSlot.addChild(tapHitArea, scrubBrush);
   stage.addChild(background, floor, tankSlot, cleanlinessBar);
 
   const tankScene: TankSceneHandle = createTankScene(tankSlot);
@@ -93,7 +118,11 @@ export function createRoomScene(
       if (dist <= 0) return;
       dragTotalDist += dist;
       lastDragPoint = p;
-      if (dragTotalDist > TAP_VS_DRAG_THRESHOLD) onScrub?.(dist);
+      if (dragTotalDist > TAP_VS_DRAG_THRESHOLD) {
+        onScrub?.(dist);
+        scrubBrush.visible = true;
+        scrubBrush.position.set(p.x, p.y);
+      }
     });
     const endDrag = () => {
       if (dragStart && dragTotalDist <= TAP_VS_DRAG_THRESHOLD) {
@@ -102,6 +131,7 @@ export function createRoomScene(
       dragStart = null;
       lastDragPoint = null;
       dragTotalDist = 0;
+      scrubBrush.visible = false;
     };
     tapHitArea.on('pointerup', endDrag);
     tapHitArea.on('pointerupoutside', endDrag);
@@ -174,6 +204,9 @@ export function createRoomScene(
 
   function destroy(): void {
     tankScene.destroy();
+    // tankScene.destroy() only tears down its own sceneRoot (removing itself from tankSlot as a side
+    // effect) - tapHitArea/scrubBrush are tankSlot's own direct children, torn down here instead.
+    tankSlot.destroy({ children: true });
     stage.removeChildren();
     background.destroy();
     floor.destroy();

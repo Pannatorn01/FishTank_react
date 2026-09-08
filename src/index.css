@@ -1862,6 +1862,21 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 /* Top-right so it never collides with the Pixi-drawn cleanliness bar in the top-left corner of the
  * same scene (see roomScene.ts's cleanlinessBar). */
 .life-refill-button { position: absolute; top: 10px; right: 10px; }
+.life-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 10px;
+  transform: translateX(-50%);
+  margin: 0;
+  padding: 4px 10px;
+  max-width: min(90%, 480px);
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 0.68rem;
+  text-align: center;
+  border-radius: 4px;
+  pointer-events: none;
+}
 
 /* A fixed strip below the canvas (not floating over it) that hosts every contextual action -
  * undo/redo plus whatever selection/marquee/zone toolbar applies right now - so buttons never
