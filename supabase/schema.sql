@@ -106,10 +106,69 @@ create table if not exists public.user_prefs (
 
 -- ---------------------------------------------------------------- row-level security
 --
--- Every reference to the policy's own row is written table-qualified (public.sprites.id, not id).
--- Inside a subquery that joins another table with a column of the same name, a bare column name is
--- ambiguous and Postgres rejects the whole policy - which is exactly how this file failed the first
--- time it was run. Qualifying is the habit that prevents it.
+-- Two rules learned the hard way here, both from running this file against a real database:
+--
+-- 1. Qualify every reference to the policy's own row (public.sprites.id, not id). Inside a subquery
+--    that joins another table with a column of the same name, a bare name is ambiguous (42702).
+--
+-- 2. A policy that queries another table runs *that* table's policies too. So a policy on `tanks` that
+--    reads `tank_shares`, while `tank_shares`'s own policy reads `tanks`, is infinite recursion
+--    (42P17) - which is exactly what happened. The fix is the helper functions below: they are
+--    SECURITY DEFINER, so they run as the table owner and are not subject to RLS, which breaks the
+--    cycle. They are the only place allowed to look across tables; every policy is then a single call.
+
+-- Is the current user the owner of this tank? Reads `tanks` without invoking its policies.
+create or replace function public.owns_tank(t_id text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.tanks t where t.id = t_id and t.user_id = auth.uid());
+$$;
+
+-- Has this tank been shared with the current user? Reads `tank_shares` without invoking its policies.
+create or replace function public.tank_shared_with_me(t_id text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.tank_shares s where s.tank_id = t_id and s.viewer_id = auth.uid());
+$$;
+
+-- May the current user look at this tank at all - as its owner, because it is public/unlisted, or
+-- because it was shared with them? This is the single question every "contents of a tank" policy asks.
+create or replace function public.can_view_tank(t_id text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.tanks t
+    where t.id = t_id
+      and t.deleted_at = 0
+      and not t.hidden_by_admin
+      and (
+        t.user_id = auth.uid()
+        or t.visibility in ('public', 'unlisted')
+        or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid())
+      )
+  );
+$$;
+
+-- Is this sprite used by a tank the current user may look at? Keeps a shared tank from rendering empty
+-- without exposing the rest of its owner's library.
+create or replace function public.sprite_in_visible_tank(s_id text) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1
+    from public.tank_instances i
+    join public.tanks t on t.id = i.tank_id
+    where i.sprite_id = s_id
+      and t.deleted_at = 0
+      and not t.hidden_by_admin
+      and (
+        t.visibility in ('public', 'unlisted')
+        or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid())
+      )
+  );
+$$;
+
+grant execute on function public.owns_tank(text) to anon, authenticated;
+grant execute on function public.tank_shared_with_me(text) to anon, authenticated;
+grant execute on function public.can_view_tank(text) to anon, authenticated;
+grant execute on function public.sprite_in_visible_tank(text) to anon, authenticated;
+
 alter table public.sprites        enable row level security;
 alter table public.tanks          enable row level security;
 alter table public.tank_instances enable row level security;
@@ -118,8 +177,7 @@ alter table public.room_instances enable row level security;
 alter table public.tank_shares    enable row level security;
 alter table public.user_prefs     enable row level security;
 
--- Owners do anything with their own rows. Written as four explicit policies rather than `for all`
--- so that the read policies below can widen SELECT without also widening writes.
+-- Owners do anything with their own rows.
 drop policy if exists sprites_owner_rw on public.sprites;
 create policy sprites_owner_rw on public.sprites
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
@@ -144,11 +202,11 @@ drop policy if exists user_prefs_owner_rw on public.user_prefs;
 create policy user_prefs_owner_rw on public.user_prefs
   for all using (user_id = auth.uid()) with check (user_id = auth.uid());
 
--- Only the tank's owner manages who it is shared with; a viewer can see the row naming them.
+-- Only a tank's owner manages who it is shared with; a viewer can see the row naming them.
 drop policy if exists tank_shares_owner_rw on public.tank_shares;
 create policy tank_shares_owner_rw on public.tank_shares
-  for all using (exists (select 1 from public.tanks t where t.id = public.tank_shares.tank_id and t.user_id = auth.uid()))
-  with check (exists (select 1 from public.tanks t where t.id = public.tank_shares.tank_id and t.user_id = auth.uid()));
+  for all using (public.owns_tank(public.tank_shares.tank_id))
+  with check (public.owns_tank(public.tank_shares.tank_id));
 
 drop policy if exists tank_shares_viewer_read on public.tank_shares;
 create policy tank_shares_viewer_read on public.tank_shares
@@ -162,43 +220,22 @@ create policy tanks_shared_read on public.tanks
     and not hidden_by_admin
     and (
       visibility in ('public', 'unlisted')
-      or exists (select 1 from public.tank_shares s where s.tank_id = public.tanks.id and s.viewer_id = auth.uid())
+      or public.tank_shared_with_me(public.tanks.id)
     )
   );
 
 -- What is inside a readable tank has to be readable too, or a shared tank shows up empty.
 drop policy if exists tank_instances_shared_read on public.tank_instances;
 create policy tank_instances_shared_read on public.tank_instances
-  for select using (
-    exists (
-      select 1 from public.tanks t
-      where t.id = public.tank_instances.tank_id and t.deleted_at = 0 and not t.hidden_by_admin
-        and (t.visibility in ('public', 'unlisted')
-             or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid()))
-    )
-  );
+  for select using (public.can_view_tank(public.tank_instances.tank_id));
 
 drop policy if exists tank_groups_shared_read on public.tank_groups;
 create policy tank_groups_shared_read on public.tank_groups
-  for select using (
-    exists (
-      select 1 from public.tanks t
-      where t.id = public.tank_groups.tank_id and t.deleted_at = 0 and not t.hidden_by_admin
-        and (t.visibility in ('public', 'unlisted')
-             or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid()))
-    )
-  );
+  for select using (public.can_view_tank(public.tank_groups.tank_id));
 
 drop policy if exists room_instances_shared_read on public.room_instances;
 create policy room_instances_shared_read on public.room_instances
-  for select using (
-    exists (
-      select 1 from public.tanks t
-      where t.id = public.room_instances.tank_id and t.deleted_at = 0 and not t.hidden_by_admin
-        and (t.visibility in ('public', 'unlisted')
-             or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid()))
-    )
-  );
+  for select using (public.can_view_tank(public.room_instances.tank_id));
 
 -- Sprites are readable when they are public (the gallery) or when a tank you can see uses them.
 -- Everything else in the owner's library stays private.
@@ -206,14 +243,7 @@ drop policy if exists sprites_shared_read on public.sprites;
 create policy sprites_shared_read on public.sprites
   for select using (
     (deleted_at = 0 and not hidden_by_admin and visibility = 'public')
-    or exists (
-      select 1
-      from public.tank_instances i
-      join public.tanks t on t.id = i.tank_id
-      where i.sprite_id = public.sprites.id and t.deleted_at = 0 and not t.hidden_by_admin
-        and (t.visibility in ('public', 'unlisted')
-             or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid()))
-    )
+    or public.sprite_in_visible_tank(public.sprites.id)
   );
 
 -- ---------------------------------------------------------------- server-assigned revisions

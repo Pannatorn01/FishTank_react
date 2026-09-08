@@ -626,8 +626,8 @@ create policy read_used_in_shared on sprites for select using (
 - [x] **P4-2** `currentTankId` + `localUserId` ถูกสร้างตั้งแต่รันครั้งแรก (แม้ไม่มีอะไรให้ migrate)
 - [x] **P4-3** `TankEngine.tankId` + ทุก load/save ระบุตู้ · store `tanks` ใช้ `id` เป็น keyPath · `listTanks()` พร้อมใช้
 - [ ] **P4-4** (ยังไม่ทำ — ตั้งใจ) UI สลับ/สร้าง/ลบตู้ · โครงข้อมูลรองรับแล้ว เหลือแค่งาน UI
-- [x] **P5-1** `src/lib/supabase.ts` + [`.env.example`](../.env.example) (anon key เท่านั้น · `.env` เข้า .gitignore แล้ว) — **เหลือฝั่งคุณ: สร้างโปรเจกต์จริงแล้วเติมค่า**
-- [x] **P5-2** [`supabase/schema.sql`](../supabase/schema.sql) พร้อมรัน (ตาราง + RLS + trigger `bump_rev` · re-runnable) — **เหลือฝั่งคุณ: รันจริง + เทสต์ policy ด้วยบัญชีทดสอบ 2 คน**
+- [x] **P5-1** `src/lib/supabase.ts` + [`.env.example`](../.env.example) · โปรเจกต์จริงตั้งค่าแล้ว (`.env` เข้า .gitignore) · รับได้ทั้ง `VITE_SUPABASE_PUBLISHABLE_KEY` (ชื่อใหม่ที่ Supabase ใช้ตอนนี้) และ `VITE_SUPABASE_ANON_KEY` (ชื่อเก่า)
+- [x] **P5-2** [`supabase/schema.sql`](../supabase/schema.sql) **รันจริงบนโปรเจกต์แล้ว (2026-09-08)** — ตาราง 7 ตัว + RLS + `bump_rev` ครบ · ยืนยันด้วย REST: ผู้ใช้นิรนามอ่านได้ `200 []` ทุกตาราง (ไม่เห็นอะไรเลย = ถูก) และ insert โดนปฏิเสธ `42501 violates row-level security` · ⚠️ ยังเหลือ **เทสต์ด้วยบัญชีจริง 2 คน** ว่า A อ่านของ B ไม่ได้ (ต้องมี auth = P6 ก่อน)
 - [x] **P5-3** [`outbox.ts`](../src/lib/data/outbox.ts) — คิวใน IndexedDB store `outbox` + exponential backoff (cap 5 นาที) + coalesce เหลือรายการเดียวต่อ record
 - [x] **P5-4** [`syncEngine.ts`](../src/lib/data/syncEngine.ts) (flush + delta pull + merge) · [`rows.ts`](../src/lib/data/rows.ts) (map record ↔ row) · [`merge.ts`](../src/lib/data/merge.ts) (last-write-wins + tiebreak ด้วย `rev`)
 - [ ] **P5-5** ⚠️ **ยังทดสอบกับ Supabase จริงไม่ได้** (ไม่มี credential) — logic ทั้งหมดมี unit test 13 เคส แต่ยังไม่เคยยิงขึ้น server จริงสักครั้ง · ต้องทำเมื่อมีโปรเจกต์: ตัดเน็ต → ทำงาน → ต่อเน็ต → ข้อมูลครบไม่ซ้ำ · 2 เครื่องบัญชีเดียวกัน
