@@ -42,10 +42,11 @@ canvas ใหญ่" ไม่ใช่ "แต่ละ step กินน้อ
 ## P1 — หนี้ทางสถาปัตยกรรม
 
 ### 4. `usePixelEditor.ts` ยังใหญ่ (กำลังเล็กลงเรื่อยๆ)
-migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้ว 12 ตัว (pen, eraser, rect, ellipse, line, magicWand, move,
-select, lasso, eyedropper, fill, gradient) เหลืออีก 2 ตัวที่ยังเป็น if-chain เดิม: **spray, curve**
-(curve เป็นตัวใหญ่สุด ต้องขยาย interface รองรับ gesture ข้ามหลาย pointerdown-cycle — ดูรายละเอียดใน
-ARCHITECTURE.md §Migration plan; spray ต้องเพิ่ม `Gesture.onTick` hook สำหรับ timer-driven gesture)
+migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้ว 13 จาก 14 ตัว (pen, eraser, rect, ellipse, line, magicWand,
+move, select, lasso, eyedropper, fill, gradient, spray) เหลือแค่ **curve** ตัวเดียว
+(2-phase drag ต้องขยาย interface รองรับ gesture ข้ามหลาย pointerdown-cycle — ดูรายละเอียดใน
+ARCHITECTURE.md §Migration plan; type ที่ต้องใช้ (`keepActive`/`overlay`/`onResumeDown`/`onKeyDown`)
+เพิ่มไว้ใน `types.ts` แล้วแต่ยังไม่ได้ wire เข้า engine จริง)
 การ migrate select/lasso ลบโค้ดตายจริง (`startMoveGesture`, `moveStartCell`, legacy `moveBuffer`
 branch, `draftSelectionMode`) ออกไปด้วย หลังยืนยัน caller ครบทุกจุด — migrate line รอบถัดมาลบ
 `computeShapeCells()` เต็มตัว + `shapeStart` field ออกไปด้วยเหตุผลเดียวกัน (branch rect/ellipse ใน
@@ -67,7 +68,7 @@ branch, `draftSelectionMode`) ออกไปด้วย หลังยืน�
 **ยังไม่ได้ตรวจซ้ำ** — ห้ามสมมติว่าลบได้จนกว่าจะไล่ทุก caller แบบเดียวกัน
 
 ### 6. ยังไม่มีเทสต์ในส่วนที่เสี่ยงที่สุด
-มีเทสต์แล้ว: `src/lib/tools/` (106 tests รวม eyedropper/fill/gradient) + `pixelMath` (4 tests) +
+มีเทสต์แล้ว: `src/lib/tools/` (115 tests รวม eyedropper/fill/gradient/spray) + `pixelMath` (4 tests) +
 `storage.ts` (12 tests — เพิ่มมาจากอีก session หนึ่งระหว่างนี้ ไม่ใช่ของ backlog นี้)
 **ยังไม่มีเลย:** `useTank.ts` (2,083 บรรทัด)
 **แนวทาง:** เขียนเทสต์ให้ `useTank.ts` ต่อ — ยังไม่มีการ audit ว่าจุดเสี่ยงที่สุดในนั้นคือจุดไหน
@@ -139,8 +140,8 @@ structure ออก เปลี่ยน wrapping element จาก `<label>` �
   ยืนยันด้วยการทดสอบจริง: ก่อนแก้ลากขวาทับเส้นแล้วไม่มีอะไรเกิดขึ้น หลังแก้ลบออกหมด
   → แก้ที่ `penTool.ts:createPenTool` + ล็อกด้วย unit test 2 ตัว
   (`rect`/`ellipse` ไม่มีปัญหานี้ — `ShapeGesture` อ่าน `button` อยู่แล้ว)
-  > **ที่ต้องเช็คต่อ:** tool ที่ยังไม่ migrate (curve, spray) ยังใช้ `eraseOverride` ของเดิมอยู่ —
-  > ตอน migrate แต่ละตัวต้องไม่ลืม modifier นี้เหมือนกัน (line/fill/gradient เช็คแล้วตอน migrate)
+  > **ที่ต้องเช็คต่อ:** tool ที่ยังไม่ migrate (curve) ยังใช้ `eraseOverride` ของเดิมอยู่ — ตอน migrate
+  > ต้องไม่ลืม modifier นี้เหมือนกัน (line/fill/gradient/spray เช็คแล้วตอน migrate)
 
 ## บทเรียนจากบั๊กที่เพิ่งแก้ (กันพลาดซ้ำ)
 

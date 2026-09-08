@@ -26,6 +26,7 @@ import { createLassoTool } from '@/lib/tools/tools/lassoTool';
 import { createEyedropperTool } from '@/lib/tools/tools/eyedropperTool';
 import { createFillTool } from '@/lib/tools/tools/fillTool';
 import { createGradientTool } from '@/lib/tools/tools/gradientTool';
+import { createSprayTool } from '@/lib/tools/tools/sprayTool';
 import { resolveMarqueeMode } from '@/lib/tools/selectionMask';
 import type { Gesture, GestureResult, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '@/lib/tools/types';
 import type {
@@ -152,6 +153,7 @@ const TOOL_REGISTRY: Partial<Record<ToolName, Tool>> = {
   eyedropper: createEyedropperTool(),
   fill: createFillTool(),
   gradient: createGradientTool(),
+  spray: createSprayTool(),
 };
 /** Tools whose gestures never touch a pixel - adjusting a selection isn't an edit, so
  *  `beginToolGesture` skips `pushGestureUndo()` for these entirely (matches `applyMagicWandAt`'s own
@@ -298,7 +300,8 @@ class PixelEditorEngine {
    *  Shift (add) and Alt (subtract) still override it for a single click or drag. */
   selectionMode: SelectionMode = 'new';
   /** Spray: dots laid down per tick, as a multiple of the default (which scales with brush size - see
-   *  sprayTick). Under 1 it stipples slowly enough to build up an edge; over 1 it fills fast. */
+   *  sprayTool.ts's `scatterOps`). Under 1 it stipples slowly enough to build up an edge; over 1 it
+   *  fills fast. */
   sprayDensity = 1;
   /** Ordered (Bayer 4x4) dither between `color` and `gradientColor` instead of a flat fill - for the
    *  gradient tool (see gradientCellsPreview) and as a "dither brush" texture for pen/spray/shapes
@@ -360,8 +363,10 @@ class PixelEditorEngine {
    *  it. Ports `redrawShapePreview(null)`'s role for the legacy shape/curve preview, which this
    *  bypasses for migrated tools since they no longer write to `shapePreviewCells`. */
   private lastGesturePreviewRects: SelectionBox[] | null = null;
-  sprayTimer: ReturnType<typeof setInterval> | null = null;
-  sprayPointerCell: Cell | null = null;
+  /** Any migrated tool whose Gesture implements `onTick` (currently only Spray) - ticks it on a fixed
+   *  interval while its gesture is active, independent of pointer movement. Generic replacement for
+   *  the old spray-only `sprayTimer`/`sprayPointerCell`/`sprayTick` trio - see `startGestureTimer`. */
+  private gestureTimer: ReturnType<typeof setInterval> | null = null;
   /** Curve tool: null = idle, 'drag-end' = dragging the initial line, 'bend' = adjusting the control-point handle. */
   curvePhase: 'drag-end' | 'bend' | null = null;
   curveStart: Cell | null = null;
@@ -530,7 +535,7 @@ class PixelEditorEngine {
       cancelAnimationFrame(this.previewRepaintRafId);
       this.previewRepaintRafId = null;
     }
-    if (this.sprayTimer) clearInterval(this.sprayTimer);
+    if (this.gestureTimer) clearInterval(this.gestureTimer);
     // Reset to null, not just cancelled - React 18 StrictMode's dev-mode double-invoke (mount →
     // cleanup → mount again) means a fresh init() can follow this destroy() in the same tick. Its
     // new reactNotify closure still reads this same instance field, so leaving a stale (cancelled,
@@ -655,7 +660,7 @@ class PixelEditorEngine {
     // lifted move buffer) for the incoming tool's handlers to interpret as their own.
     if (this.painting) this.resetGestureState();
     if (this.tool === 'curve' && this.curvePhase) this.commitCurve();
-    if (this.tool === 'spray') this.stopSprayTimer();
+    if (this.activeGesture) this.stopGestureTimer();
     this.tool = tool;
     if (this.canvas && !SELECTION_AWARE_TOOLS.has(tool)) this.canvas.style.cursor = '';
     // Re-evaluated against the new tool: Alt means nothing on e.g. the Select tool, so the eyedropper
@@ -1825,7 +1830,7 @@ class PixelEditorEngine {
     this.gradientStart = null;
     this.gradientEnd = null;
     this.gradientPreview = null;
-    this.stopSprayTimer();
+    this.stopGestureTimer();
   }
 
   /** pushUndo, plus enough bookkeeping to take the entry back off the stack again - see
@@ -2429,7 +2434,7 @@ class PixelEditorEngine {
   endResizeDrag(): void {
     if (!this.resizeHandle) return;
     this.painting = false;
-    this.stopSprayTimer();
+    this.stopGestureTimer();
     this.commitResize();
     this.refresh();
   }
@@ -2482,7 +2487,7 @@ class PixelEditorEngine {
   endRotateDrag(): void {
     if (!this.rotateOrigin) return;
     this.painting = false;
-    this.stopSprayTimer();
+    this.stopGestureTimer();
     this.commitRotate();
     this.refresh();
   }
@@ -2554,6 +2559,7 @@ class PixelEditorEngine {
     }
     this.activeGesture = gesture;
     this.lastToolPointerEvent = tpe;
+    if (gesture.onTick) this.startGestureTimer();
     this.applyToolPreview(gesture.onPointerMove(tpe, ctx));
   }
 
@@ -2758,19 +2764,9 @@ class PixelEditorEngine {
       this.redrawShapePreview(this.mirroredExpand([cell]));
       return;
     }
-
-    this.pushGestureUndo();
-    this.painting = true;
-    this.eraseOverride = e.button === 2;
-
-    if (this.tool === 'spray') {
-      this.sprayPointerCell = cell;
-      this.sprayTick();
-      this.startSprayTimer();
-    }
-    // No trailing `else`: every other ToolName is either handled above this shared block (select,
-    // lasso, curve) or dispatched through TOOL_REGISTRY before it's ever reached (pen, eraser, rect,
-    // ellipse, line, magicWand, move, eyedropper, fill, gradient).
+    // Every ToolName reaches a `return` above this point: select/lasso/curve are handled inline, and
+    // every other tool (pen, eraser, rect, ellipse, line, magicWand, move, eyedropper, fill, gradient,
+    // spray) is dispatched through TOOL_REGISTRY. Nothing falls through to here.
   }
 
   /** lastStrokeEndCell, but only when it still points at a cell this canvas actually has - a resize,
@@ -2858,13 +2854,6 @@ class PixelEditorEngine {
       return;
     }
 
-    if (this.tool === 'spray') {
-      if (!cell) return;
-      this.sprayPointerCell = cell;
-      this.sprayTick();
-      return;
-    }
-
     if (this.tool === 'pen' || this.tool === 'eraser') {
       // Coalesced events are the positions the OS actually sampled between two browser frames, which a
       // fast flick can spread over a lot of distance. paintCell already Bresenhams between consecutive
@@ -2903,7 +2892,7 @@ class PixelEditorEngine {
     if (!this.painting) return;
     this.painting = false;
     this.gestureButtons = 0;
-    this.stopSprayTimer();
+    this.stopGestureTimer();
 
     if (this.activeGesture) {
       // The real DOM pointerup carries no position (see this method's own empty signature) - finalize
@@ -3121,40 +3110,22 @@ class PixelEditorEngine {
     this.cancelCurve();
   }
 
-  private startSprayTimer(): void {
-    if (this.sprayTimer) clearInterval(this.sprayTimer);
-    this.sprayTimer = setInterval(() => this.sprayTick(), SPRAY_INTERVAL_MS);
+  /** Starts ticking the active migrated tool's `Gesture.onTick` (currently only Spray) on a fixed
+   *  interval, independent of pointer movement - ports `startSprayTimer`/`sprayTick`'s wall-clock-timer
+   *  role generically, so any future timer-driven tool needs no engine changes, just `onTick`. */
+  private startGestureTimer(): void {
+    if (this.gestureTimer) clearInterval(this.gestureTimer);
+    this.gestureTimer = setInterval(() => {
+      if (!this.activeGesture?.onTick) return;
+      this.applyToolPreview(this.activeGesture.onTick(this.buildToolContext()));
+    }, SPRAY_INTERVAL_MS);
   }
 
-  private stopSprayTimer(): void {
-    if (this.sprayTimer) {
-      clearInterval(this.sprayTimer);
-      this.sprayTimer = null;
+  private stopGestureTimer(): void {
+    if (this.gestureTimer) {
+      clearInterval(this.gestureTimer);
+      this.gestureTimer = null;
     }
-    this.sprayPointerCell = null;
-  }
-
-  /** Scatters a handful of random dots within the brush-size radius around the last known pointer cell. */
-  private sprayTick(): void {
-    if (!this.sprayPointerCell) return;
-    const { width, height } = this.current;
-    const frame = this.activeCells();
-    const color = this.currentPaintColor();
-    const radius = this.brushSize + 1;
-    const dots = Math.max(1, Math.round(radius * this.sprayDensity));
-    for (let i = 0; i < dots; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random()) * radius;
-      const x = Math.round(this.sprayPointerCell.x + Math.cos(angle) * r);
-      const y = Math.round(this.sprayPointerCell.y + Math.sin(angle) * r);
-      this.mirrorCells(x, y).forEach((m) => {
-        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height && this.paintAllowed(m.x, m.y)) {
-          frame[m.y * width + m.x] = this.ditherEnabled && color ? ditherColorAt(m.x, m.y, color, this.gradientColor, 0.5) : color;
-        }
-      });
-    }
-    if (color) this.addSavedColor(color);
-    this.refresh();
   }
 
   /**

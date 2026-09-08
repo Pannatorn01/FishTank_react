@@ -1,10 +1,11 @@
 # Pixel editor tool architecture
 
 Response to `.claude/prompt/edit-pixeleditor.md`: a from-scratch architecture for the drawing-tool
-engine. **Ten tools are migrated and wired into the live `PixelEditorEngine`**: Pen/Eraser,
-Rect/Ellipse/Line, Magic Wand, Move, Select, Lasso, Eyedropper, Fill, Gradient. Every other tool
-(spray, curve) is untouched, still running on the original inline `if (this.tool === 'xxx')` handling
-in `src/hooks/usePixelEditor.ts`.
+engine. **Eleven tools are migrated and wired into the live `PixelEditorEngine`**: Pen/Eraser,
+Rect/Ellipse/Line, Magic Wand, Move, Select, Lasso, Eyedropper, Fill, Gradient, Spray. Only **Curve**
+is untouched, still running on the original inline `if (this.tool === 'xxx')` handling in
+`src/hooks/usePixelEditor.ts` - see its own §Migration plan entry for why it's the one tool that
+needed real interface work first.
 
 ## Why
 
@@ -34,7 +35,8 @@ src/lib/tools/
     eyedropperTool.ts            Eyedropper
     fillTool.ts                   Fill
     gradientTool.ts                Gradient
-  __tests__/             vitest unit tests for all of the above (106 tests, no DOM)
+    sprayTool.ts                    Spray
+  __tests__/             vitest unit tests for all of the above (115 tests, no DOM)
 ```
 
 **Tool** is a stateless factory: given a `ToolPointerEvent` (a pointer event already resolved to a
@@ -137,11 +139,31 @@ gradient to the recent-colors swatch list, not just the primary color the engine
 generically) - applied by `commitGestureResult` before the `changed` early-out, same placement as
 `pickedColor`.
 
+**Spray needed the first real interface extension: `Gesture.onTick?(ctx): ToolPreview | null`.** Every
+other tool so far is purely event-driven (a `Gesture` only ever hears about pointer events), but Spray
+is *also* timer-driven - the original's `sprayTick()` scatters dots on a fixed 55ms interval
+(`SPRAY_INTERVAL_MS`) for as long as the gesture is held, **independent of whether the pointer is
+moving at all** (hold still and it keeps stippling). A pure event-driven `Gesture` has no way to express
+"also do something on a wall-clock schedule," so the engine now owns a single generic timer:
+`beginToolGesture` checks `if (gesture.onTick) this.startGestureTimer();` right after creating the
+gesture, and the timer's own callback just calls `this.activeGesture?.onTick?.(ctx)` through the same
+`applyToolPreview` every other preview goes through - no new rendering path, no tool-specific code on
+the engine at all. This replaces the old spray-only `sprayTimer`/`sprayPointerCell`/`sprayTick` trio
+1:1 with `gestureTimer`/`startGestureTimer`/`stopGestureTimer`, generic enough that a future
+timer-driven tool needs zero engine changes, just an `onTick` implementation. One original subtlety
+`SprayGesture` had to preserve: the original scatters dots on **every pointermove event too**, not only
+on the timer - `onPointerMove` and `onTick` both call the same private `scatterOps` helper, they're not
+"track position on move, only paint on tick." `stopGestureTimer()` is called from every place the old
+`stopSprayTimer()` was (`onPointerUp`'s unconditional top-of-method call, `resetGestureState`,
+`endResizeDrag`/`endRotateDrag`'s defensive cleanup) plus one new generic call in `setTool()`
+(`if (this.activeGesture) this.stopGestureTimer();`, replacing the old `if (this.tool === 'spray')`
+check - harmless for the ten other tools that never start a timer).
+
 ### Integration into `PixelEditorEngine`
 
 A module-level `TOOL_REGISTRY` maps
-`pen`/`eraser`/`rect`/`ellipse`/`line`/`magicWand`/`move`/`select`/`lasso`/`eyedropper`/`fill`/`gradient`
-to their `Tool`. `NO_UNDO_TOOLS` (`magicWand`/`select`/`lasso`/`eyedropper`) skips `pushGestureUndo()` for
+`pen`/`eraser`/`rect`/`ellipse`/`line`/`magicWand`/`move`/`select`/`lasso`/`eyedropper`/`fill`/
+`gradient`/`spray` to their `Tool`. `NO_UNDO_TOOLS` (`magicWand`/`select`/`lasso`/`eyedropper`) skips `pushGestureUndo()` for
 gestures that never touch a pixel - `fill` is deliberately **not** in that set, since it pushes undo
 and rolls it back on a no-op release instead, matching the original exactly (the *only* other tool with
 that specific rollback rule besides Fill itself). `onPointerDown` dispatches to the registry, with two
@@ -194,12 +216,22 @@ Migrating Gradient removed, after the same re-verification discipline: the `if (
 here since removing it isn't something Gradient's migration needs; noted in `EDITOR_IMPROVEMENTS.md`
 instead.
 
+Migrating Spray removed, after the same re-verification discipline: the `if (this.tool === 'spray')`
+branches in `onPointerDown`/`onPointerMove` (the last two things reaching either method's old shared
+trailing block - once they're gone the whole block was unreachable and was deleted too, leaving both
+methods ending in a plain comment noting every `ToolName` returns earlier now); and the spray-only
+`sprayTimer`/`sprayPointerCell` fields plus `startSprayTimer`/`stopSprayTimer`/`sprayTick` methods,
+replaced by the generic `gestureTimer`/`startGestureTimer`/`stopGestureTimer` described above.
+`currentPaintColor()` and `mirrorCells()` (the engine's own pre-migration symmetry helper, distinct
+from `paintPipeline.ts`'s pure `mirrorPoints`) both stay - Curve still calls them directly.
+
 ### Deviations found during implementation (worth flagging for future migration steps)
 
-- **Pen/Eraser, Move, and Gradient never roll back their undo entry on a no-op release** (a click
-  outside the active selection, a zero-delta move, or a gradient drag that lands fully outside the
-  selection) - matching the *original*, which only rolls back Fill's undo entry on a no-op, not these
-  three. `GestureResult.changed` is `true` unconditionally for all three.
+- **Pen/Eraser, Move, Gradient, and Spray never roll back their undo entry on a no-op release** (a click
+  outside the active selection, a zero-delta move, a gradient drag that lands fully outside the
+  selection, or a spray gesture that happens to change no pixel) - matching the *original*, which only
+  rolls back Fill's undo entry on a no-op, not these four. `GestureResult.changed` is `true`
+  unconditionally for all of them.
 - **Magic Wand skips `pushGestureUndo()` entirely** (it never touches a pixel), matching
   `applyMagicWandAt`'s own doc comment - `rollbackGestureUndo()` already no-ops safely when nothing was
   pushed, so this needed no special-casing in `commitGestureResult`.
@@ -220,17 +252,17 @@ instead.
 ## Migration plan
 
 Already migrated: **pen, eraser, rect, ellipse, line, magicWand, move, select, lasso, eyedropper, fill,
-gradient.**
+gradient, spray.**
 
-Proposed order for the rest, each independently swappable behind the same `TOOL_REGISTRY` pattern:
+Only one tool left:
 
-1. **spray** - timer-driven (`sprayTimer`/`sprayTick`), needs an optional `Gesture.onTick?()` hook added
-   to the interface - the first required interface extension.
-2. **curve** - 2-phase drag (`drag-end` → `bend`), the most stateful remaining tool; do last, after the
-   simpler ones establish the pattern. Once curve is the only caller left, `thickenPath` and
-   `shapePreviewCells`/`redrawShapePreview` can finally move too (or be retired if curve absorbs them).
+1. **curve** - 2-phase drag (`drag-end` → `bend`), the most stateful remaining tool, needing the
+   `keepActive`/`overlay`/`onResumeDown`/`onKeyDown` interface additions already added to `types.ts`
+   (see their own doc comments there) but not yet wired into the engine or used by any real `Gesture`.
+   Once curve is done, `thickenPath` and `shapePreviewCells`/`redrawShapePreview` can finally move too
+   (or be retired if curve absorbs them) - the last pieces of the pre-migration shape/curve machinery.
 
-**Highest-risk points for whoever does steps 1-2:**
+**Highest-risk points for whoever does curve:**
 - **Never spread a native DOM event** (`{ ...pointerEvent }`) when building a `ToolPointerEvent`. On a
   native event - which is what `getCoalescedEvents()` returns, unlike React's synthetic event -
   `clientX`/`clientY` are prototype getters, not own enumerable properties, so a spread silently drops
@@ -253,7 +285,7 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
 
 ## Test coverage
 
-`npm test` (`vitest run`) - 106 tests, all pure logic, no DOM/canvas:
+`npm test` (`vitest run`) - 115 tests, all pure logic, no DOM/canvas:
 - **paintPipeline**: selection-clip inside/outside a rect and a sparse mask; symmetry mirroring
   on-axis (no duplicate) and off-axis, composed with selection-clip.
 - **DirtyRectTracker**: single cell, disjoint-cell union, canvas-edge clamping, empty input.
@@ -293,6 +325,13 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
   literal start/end hex for every cell, never a blended third color; `changed` is always `true` even
   when a selection excludes every cell; `alsoSaveColor` always reports the secondary color; symmetry is
   ignored entirely; `onCancel`.
+- **SprayTool**: `onPointerMove` scatters dots immediately, not just on a timer tick (`Math.random`
+  mocked to make dot placement deterministic); dot count scales with brush size and density exactly as
+  `dots = round((brushSize + 1) * density)`; right-click erases; dither mode picks only the literal
+  primary/secondary hex, never a blend; a selection restricts dots to inside it; symmetry mirrors each
+  dot with one shared color (not Fill's independent-per-mirror sampling); `onTick` scatters around the
+  *last* position `onPointerMove` reported, not the original `beginGesture` cell; `onPointerUp` paints
+  nothing further and always reports `changed: true`; `onCancel`.
 - Pure functions moved into `selectionMask.ts` are exercised indirectly through Magic Wand/Select/
   Lasso's own tests (all pre-existing Magic Wand tests still pass unchanged, confirming the move was
   behavior-preserving).
@@ -300,9 +339,9 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
 ## Verification performed
 
 - `npx tsc -b --noEmit` - clean.
-- `npx vitest run` - 106/106 passing.
+- `npx vitest run` - 115/115 passing.
 - `npm run build` - production build succeeds.
-- Manual Playwright smoke test against the running dev server, five rounds:
+- Manual Playwright smoke test against the running dev server, six rounds:
   - *Pen/Rect/MagicWand/Move round*: Pen L-stroke with corner trim, undo/redo across two strokes,
     filled and outline Rect, Magic Wand select-then-drag-to-move (both the outline-only and filled
     cases, including the click-inside-selection → Move routing), and Escape mid-Pen-stroke fully
@@ -342,4 +381,12 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
     `<label>` around just the text, and a browser suppresses label-click-forwarding when the click
     target is itself a label. Worked around in the test by clicking the `[role="checkbox"]` element
     directly; confirmed via `aria-checked`/`data-state` before/after.)
+  - *Spray round*: painted-pixel count kept growing while the pointer held perfectly still (proving the
+    wall-clock timer paints on its own, not only in response to pointermove), a drag scattered dots
+    along the whole path, a right-click-held drag over the same area reduced the count (erase works),
+    Escape mid-drag rolled the count back to exactly 0 and the timer stopped (no further growth
+    afterward), and switching tools mid-drag via a toolbar click also stopped the timer cleanly (count
+    unchanged 300ms later) - confirmed a keyboard tool-shortcut mid-drag does *not* switch tools at all
+    (a separate, pre-existing, intentional guard: only Escape is let through while `painting` is true),
+    so that path had to be tested via a toolbar click instead, not treated as a bug.
   - No console/runtime errors in any run.
