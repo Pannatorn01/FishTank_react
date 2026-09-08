@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Instance, RoomInstance, Sprite, TankGroup } from '../types';
 import type { TankState } from './adapter';
 import type { IndexedDbAdapter } from './indexedDbAdapter';
-import { latestUpdatedAt, mergeRecords, type Syncable } from './merge';
+import { mergeRecords, type Syncable } from './merge';
 import { coalesce, isDue, makeEntry, withFailure, type OutboxEntry } from './outbox';
 import {
   childToRow,
@@ -23,6 +23,16 @@ const TABLE_TANKS = 'tanks';
 const TABLE_INSTANCES = 'tank_instances';
 const TABLE_GROUPS = 'tank_groups';
 const TABLE_ROOM = 'room_instances';
+
+/** Before any pull has happened. A timestamp, because the mark is compared against a Postgres
+ *  timestamptz column. */
+const EPOCH = '1970-01-01T00:00:00Z';
+
+/** The newest server stamp among rows just seen, never going backwards. ISO-8601 strings from Postgres
+ *  compare correctly as text, so no parsing is needed. */
+function latestServerStamp(rows: Array<{ server_updated_at?: string }>, previous: string): string {
+  return rows.reduce((max, r) => (r.server_updated_at && r.server_updated_at > max ? r.server_updated_at : max), previous);
+}
 
 export type SyncState = 'idle' | 'syncing' | 'offline' | 'error' | 'signed-out';
 
@@ -49,8 +59,13 @@ export class SyncEngine {
   private readonly local: IndexedDbAdapter;
   private readonly supabase: SupabaseClient;
   private timer: number | null = null;
-  private running = false;
+  /** The sync currently running, if any - see syncNow. */
+  private current: Promise<void> | null = null;
   private listeners = new Set<(status: SyncStatus) => void>();
+  /** Called after a pull actually changed something locally. The engine writes straight into the local
+   *  database, which the app's in-memory caches know nothing about - without this, work arriving from
+   *  another device would sit in storage, invisible until the next reload. */
+  onPulled: ((what: 'sprites' | 'tank') => void) | null = null;
   private status: SyncStatus = { state: 'idle', pending: 0, lastSyncedAt: null, lastError: null };
 
   constructor(local: IndexedDbAdapter, supabase: SupabaseClient) {
@@ -139,8 +154,22 @@ export class SyncEngine {
     return this.local.getMeta(CLAIMED_BY);
   }
 
-  async syncNow(): Promise<void> {
-    if (this.running) return;
+  /**
+   * Runs a sync, queueing behind one already in progress rather than dropping the request.
+   *
+   * Returning early when busy - the obvious implementation - quietly breaks every caller that needs
+   * the sync to have *happened*: the first-sign-in upload said "done" while its own writes were still
+   * sitting in the outbox, because the heartbeat happened to be mid-flight when it asked. Chaining
+   * costs nothing (syncs are cheap and idempotent) and means an awaited syncNow() always covers work
+   * queued before the call.
+   */
+  syncNow(): Promise<void> {
+    const run = (this.current ?? Promise.resolve()).then(() => this.runOnce());
+    this.current = run.catch(() => {});
+    return run;
+  }
+
+  private async runOnce(): Promise<void> {
     if (!navigator.onLine) {
       this.setStatus({ state: 'offline' });
       return;
@@ -152,7 +181,6 @@ export class SyncEngine {
       return;
     }
 
-    this.running = true;
     this.setStatus({ state: 'syncing', lastError: null });
     try {
       await this.flush();
@@ -162,7 +190,6 @@ export class SyncEngine {
       console.warn('sync failed', e);
       this.setStatus({ state: 'error', lastError: e instanceof Error ? e.message : String(e) });
     } finally {
-      this.running = false;
       await this.refreshPending();
     }
   }
@@ -238,21 +265,33 @@ export class SyncEngine {
   // ------------------------------------------------------------------ pull
 
   private async pull(): Promise<void> {
+    this.lastChildRows = [];
     await this.pullSprites();
     await this.pullTank();
   }
 
-  /** Only rows changed since the last successful pull. The mark is the newest `updated_at` actually
-   *  seen, not "now": a row written while this pull was in flight must still be picked up next time. */
+  /**
+   * Only rows changed since the last successful pull.
+   *
+   * The mark is a *server* timestamp (server_updated_at, stamped by the database on every write), not
+   * the client's updated_at. Filtering by the client's clock looks equivalent and is not: a record
+   * uploaded now can carry an older updated_at than one uploaded a minute ago - a sprite seeded on
+   * first run and uploaded at sign-in, say - and would then sit forever below the mark, never pulled,
+   * never learning the revision the server gave it. That is how this went wrong the first time.
+   *
+   * It is the newest value actually seen, not "now", so a row written while this pull was in flight is
+   * still picked up next time.
+   */
   private async pullSprites(): Promise<void> {
-    const mark = Number((await this.local.getMeta(MARK_SPRITES)) ?? 0);
+    const mark = (await this.local.getMeta(MARK_SPRITES)) || EPOCH;
     const { data, error } = await this.supabase
       .from(TABLE_SPRITES)
       .select('*')
-      .gt('updated_at', mark)
-      .order('updated_at', { ascending: true });
+      .gt('server_updated_at', mark)
+      .order('server_updated_at', { ascending: true });
     if (error) throw error;
-    const incoming = (data ?? []).map((row: SpriteRow) => rowToSprite(row));
+    const rows = (data ?? []) as SpriteRow[];
+    const incoming = rows.map((row) => rowToSprite(row));
     if (incoming.length === 0) return;
 
     const local = await this.local.allSpriteRecords();
@@ -263,18 +302,19 @@ export class SyncEngine {
     for (const sprite of localWins) {
       await this.local.outboxPut(makeEntry(TABLE_SPRITES, sprite.id, 'upsert', sprite));
     }
-    await this.local.setMetaValue(MARK_SPRITES, String(latestUpdatedAt(incoming as Syncable[], mark)));
+    await this.local.setMetaValue(MARK_SPRITES, latestServerStamp(rows, mark));
+    this.onPulled?.('sprites');
   }
 
   private async pullTank(): Promise<void> {
     const tankId = await this.local.getCurrentTankId();
-    const mark = Number((await this.local.getMeta(MARK_TANK)) ?? 0);
+    const mark = (await this.local.getMeta(MARK_TANK)) || EPOCH;
 
     const { data: tankRows, error: tankError } = await this.supabase
       .from(TABLE_TANKS)
       .select('*')
       .eq('id', tankId)
-      .gt('updated_at', mark);
+      .gt('server_updated_at', mark);
     if (tankError) throw tankError;
 
     const [instances, groups, room] = await Promise.all([
@@ -282,6 +322,7 @@ export class SyncEngine {
       this.pullChildren<TankGroup>(TABLE_GROUPS, tankId, mark),
       this.pullChildren<RoomInstance>(TABLE_ROOM, tankId, mark),
     ]);
+    const stamps = [...(tankRows ?? []), ...this.lastChildRows];
 
     const nothingNew = (tankRows ?? []).length === 0 && instances.length === 0 && groups.length === 0 && room.length === 0;
     if (nothingNew) return;
@@ -303,22 +344,23 @@ export class SyncEngine {
     merged.roomInstances = merged.roomInstances.filter((r) => r.deletedAt === 0);
 
     await this.local.saveTankState(merged, tankId);
-    const seen = [
-      ...(remoteTank ? [{ id: remoteTank.id, updatedAt: remoteTank.updated_at, deletedAt: 0, rev: 0 }] : []),
-      ...(instances as Syncable[]),
-      ...(groups as Syncable[]),
-      ...(room as Syncable[]),
-    ];
-    await this.local.setMetaValue(MARK_TANK, String(latestUpdatedAt(seen, mark)));
+    await this.local.setMetaValue(MARK_TANK, latestServerStamp(stamps, mark));
+    this.onPulled?.('tank');
   }
 
-  private async pullChildren<T extends Instance | TankGroup | RoomInstance>(table: string, tankId: string, mark: number): Promise<T[]> {
+  /** Rows from the most recent pullChildren calls, so pullTank can advance its mark past every row it
+   *  actually saw - including ones whose contents merged away to nothing. */
+  private lastChildRows: Array<{ server_updated_at?: string }> = [];
+
+  private async pullChildren<T extends Instance | TankGroup | RoomInstance>(table: string, tankId: string, mark: string): Promise<T[]> {
     const { data, error } = await this.supabase
       .from(table)
       .select('*')
       .eq('tank_id', tankId)
-      .gt('updated_at', mark);
+      .gt('server_updated_at', mark);
     if (error) throw error;
-    return (data ?? []).map((row: ChildRow) => rowToChild<T>(row));
+    const rows = (data ?? []) as ChildRow[];
+    this.lastChildRows = [...this.lastChildRows, ...(rows as Array<{ server_updated_at?: string }>)];
+    return rows.map((row) => rowToChild<T>(row));
   }
 }

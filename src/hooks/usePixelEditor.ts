@@ -22,7 +22,7 @@ import {
   buildHistoryEntry,
   trimHistory,
 } from '@/lib/undoHistory';
-import { getRepos } from '@/lib/data';
+import { getRepos, getSync } from '@/lib/data';
 import * as storage from '@/lib/storage';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { createPenTool } from '@/lib/tools/tools/penTool';
@@ -510,6 +510,13 @@ class PixelEditorEngine {
     this.reactNotify();
   }
 
+  /** Re-reads the library from the repository's cache (synchronously - see SpriteRepo). Used when
+   *  something other than this engine changed it, i.e. a sync from another device. */
+  reloadLibrary(): void {
+    this.sprites = getRepos().sprites.list();
+    this.reactNotify();
+  }
+
   /**
    * Loads the library and the user's editor preferences. Split out of the constructor because storage
    * is asynchronous now (see src/lib/data/adapter.ts): an engine is constructed with safe, empty state
@@ -536,6 +543,17 @@ class PixelEditorEngine {
     const { sprites: spriteRepo, prefs: prefsRepo } = getRepos();
     await spriteRepo.hydrate();
     this.sprites = spriteRepo.list();
+
+    if (this.sprites.length === 0) {
+      // An empty library on a signed-in device usually means "this browser has not caught up yet",
+      // not "this user has never drawn anything" - so ask the server before concluding anything.
+      // Seeding first would leave them with sample fish sitting next to their real library once the
+      // pull lands, on every new device, forever.
+      await getSync()?.syncNow();
+      await spriteRepo.refresh();
+      this.sprites = spriteRepo.list();
+    }
+
     if (this.sprites.length === 0) {
       // A first run that cannot write (storage already full, or Safari private mode where setItem
       // always throws) must not take the app down: keep the defaults in memory, mark the session
@@ -3929,11 +3947,22 @@ export function usePixelEditor() {
   const engine = engineRef.current;
 
   useEffect(() => {
+    // The library can change without this engine doing it: work pulled from another device is written
+    // into local storage by the sync engine, which then fires this event. The tank has always listened
+    // for it; the editor never needed to, because it used to be the only thing that changed the
+    // library.
+    const onLibraryChanged = () => {
+      engine.reloadLibrary();
+    };
+    window.addEventListener('ft:sprites-updated', onLibraryChanged);
     engine.init(() => setTick((t) => t + 1));
     // Not awaited: the engine renders its (empty, safe) initial state until `ready` flips, and every
     // consumer gates on that rather than on this promise.
     void engine.hydrate();
-    return () => engine.destroy();
+    return () => {
+      window.removeEventListener('ft:sprites-updated', onLibraryChanged);
+      engine.destroy();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

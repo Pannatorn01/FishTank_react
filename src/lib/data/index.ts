@@ -55,6 +55,16 @@ function attachSync(adapter: StorageAdapter, repos: Repos): void {
   // Signing in (or out, or a token refresh) changes what a sync would do, so it is worth one
   // immediately rather than waiting up to a minute for the heartbeat.
   supabase.auth.onAuthStateChange(() => void sync?.syncNow());
+  // Work pulled from another device is written straight into the local database, so the caches above
+  // it have to be told. The same events the editor already fires on a local change are reused, which
+  // is why nothing downstream needed changing for sync to show up live.
+  sync.onPulled = (what) => {
+    if (what === 'sprites') {
+      void repos.sprites.refresh().then(() => window.dispatchEvent(new CustomEvent('ft:sprites-updated')));
+    } else {
+      window.dispatchEvent(new CustomEvent('ft:tank-synced'));
+    }
+  };
   sync.start();
 }
 

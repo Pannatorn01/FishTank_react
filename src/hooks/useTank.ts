@@ -2646,6 +2646,13 @@ export function useTank() {
   const engine = engineRef.current;
 
   useEffect(() => {
+    // A tank that arrived from another device is already in local storage; reload it so it is on
+    // screen. Unsaved local edits win: they are only in memory, so reloading would destroy them, and
+    // the sync engine will carry them up on the next flush anyway.
+    const onTankSynced = () => {
+      if (!engine.dirty) void engine.refresh(() => true);
+    };
+    window.addEventListener('ft:tank-synced', onTankSynced);
     engine.init(() => setTick((t) => t + 1));
     engine.resizeCanvas();
     // Not awaited - the engine draws its empty initial tank until `ready` flips (see hydrate()).
@@ -2654,6 +2661,7 @@ export function useTank() {
     window.addEventListener('resize', onResize);
     return () => {
       window.removeEventListener('resize', onResize);
+      window.removeEventListener('ft:tank-synced', onTankSynced);
       engine.destroy();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
