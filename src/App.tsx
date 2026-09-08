@@ -3,13 +3,17 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { PixelEditorPanel } from '@/components/editor/PixelEditorPanel';
 
-// Lazy: TankPanel pulls in the tank simulation engine, canvas render loop, and GIF/video export
+// Lazy: TankSection pulls in the tank simulation engine, canvas render loop, and GIF/video export
 // (gifenc) - a meaningful slice of the ~550kB bundle (see docs/EDITOR_IMPROVEMENTS.md #12) that
-// someone who only ever uses the pixel editor shouldn't have to download at all. Both tabs used to
-// stay mounted unconditionally so the tank's own imperative engine (a running requestAnimationFrame
-// loop, instance state) survives switching tabs - see the `hasVisitedTank` gate below for how that's
-// preserved while still deferring the import/mount until the Fish Tank tab is opened at least once.
-const TankPanel = lazy(() => import('@/components/tank/TankPanel').then((m) => ({ default: m.TankPanel })));
+// someone who only ever uses the pixel editor shouldn't have to download at all. Once loaded it owns
+// both Build mode (TankPanel) and Life mode (LifePanel, added P4 - see
+// docs/PIXI_MIGRATION_PLAN.md §14) behind one `useTank()` engine instance, so the two modes always
+// agree on what's actually in the tank instead of each holding an independent copy. Every mode's
+// panel used to stay mounted unconditionally so the tank's own imperative engine (a running
+// requestAnimationFrame loop, instance state) survives switching tabs - see the `hasVisitedTank` gate
+// below for how that's preserved while still deferring the import/mount until Build or Life is opened
+// at least once.
+const TankSection = lazy(() => import('@/components/tank/TankSection').then((m) => ({ default: m.TankSection })));
 import { useEditorLayout } from '@/hooks/useEditorLayout';
 import { usePixelEditor } from '@/hooks/usePixelEditor';
 import { UI_SCALES, useUiScale, type UiScale } from '@/hooks/useUiScale';
@@ -18,15 +22,15 @@ import { useLanguage } from '@/lib/i18n';
 import { UI_THEMES } from '@/lib/storage';
 import type { SpriteType, UiTheme } from '@/lib/types';
 
-type Tab = 'editor' | 'tank';
+type Tab = 'editor' | 'tank' | 'life';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('editor');
-  // Once true, stays true - TankPanel keeps its own running engine/animation loop alive across tab
+  // Once true, stays true - TankSection keeps its own running engine/animation loop alive across tab
   // switches (see this file's Suspense boundary comment), so it must never unmount after first visit.
   const [hasVisitedTank, setHasVisitedTank] = useState(false);
   useEffect(() => {
-    if (tab === 'tank') setHasVisitedTank(true);
+    if (tab === 'tank' || tab === 'life') setHasVisitedTank(true);
   }, [tab]);
   const { t } = useLanguage();
   const { theme, setTheme } = useUiTheme();
@@ -103,6 +107,9 @@ export default function App() {
             <Button type="button" variant={tab === 'tank' ? 'default' : 'secondary'} onClick={() => setTab('tank')}>
               <i className="fa-solid fa-water" /> {t('tab.tank')}
             </Button>
+            <Button type="button" variant={tab === 'life' ? 'default' : 'secondary'} onClick={() => setTab('life')}>
+              <i className="fa-solid fa-house" /> {t('tab.life')}
+            </Button>
           </nav>
           {tab === 'editor' && (
             <nav className="header-editor-actions">
@@ -147,10 +154,10 @@ export default function App() {
             layoutApi={layoutApi}
           />
         </section>
-        <section className="tab-panel" hidden={tab !== 'tank'}>
+        <section className="tab-panel" hidden={tab !== 'tank' && tab !== 'life'}>
           {hasVisitedTank && (
             <Suspense fallback={<p className="tab-panel-loading">Loading…</p>}>
-              <TankPanel active={tab === 'tank'} />
+              <TankSection mode={tab === 'life' ? 'life' : 'build'} active={tab === 'tank' || tab === 'life'} />
             </Suspense>
           )}
         </section>

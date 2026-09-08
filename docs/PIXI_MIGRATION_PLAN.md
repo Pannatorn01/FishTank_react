@@ -697,3 +697,50 @@ transform ของ mask เองจริง ๆ** - บั๊กเลยซ�
 3. รวม input เป็นระบบเดียว (จาก P2 §13) - ยังไม่ทำ
 4. `TankBackgroundOverlay.tsx` → Pixi Graphics handles (จาก P2 §13) - ยังไม่ทำ
 5. ปิด flag / ลบ Canvas2D ทั้งหมด (จาก P2 §13) - ยังไม่ทำ - รอข้อ 3 ก่อน
+
+---
+
+## 15. P4 โครง Mode B — ผลลัพธ์ (2026-09-08)
+
+**สรุป: 3-tab switch (Draw / Build Tank / Life) เสร็จและ verify แล้ว Life เป็น view-only preview ตาม
+§9 Q10/Q9 - แสดงห้อง placeholder (ยังไม่มี asset จริง ตาม §9.2) + ตู้ปลาเดิมฝังอยู่ข้างใน ยังไม่มีกลไกเลี้ยง
+(P5)**
+
+### บั๊กสถาปัตยกรรมที่พบและแก้ระหว่างทำ (ก่อนเขียน UI จริงด้วยซ้ำ)
+
+`useTank()` เดิมถูกเรียกอยู่**ข้างใน** `TankPanel.tsx` เอง - เป็น local React state (`useRef`/`useState`)
+ไม่ใช่ singleton ข้ามคอมโพเนนต์ ถ้าเพิ่ม `LifePanel` แล้วให้มันเรียก `useTank()` เองอีกรอบ จะได้ engine คนละ
+ตัวกับ Build mode ทันที (เห็นข้อมูลตรงกันแค่ตอน save() แล้ว reload หน้าใหม่เท่านั้น) - แก้โดยย้าย `useTank()`
+ขึ้นไปที่ component ใหม่ `TankSection.tsx` (เจ้าของ engine ตัวเดียว) ให้ `TankPanel`/`LifePanel` รับ `engine`
+เป็น prop แทนที่จะเรียก hook เอง - `TankPanel.tsx` เปลี่ยนจาก `{ active }` (เรียก `useTank()` ข้างใน) เป็น
+`{ engine }` (รับมาจากพ่อ) ผลข้างเคียง: การ lazy-load `TankSection` (ไม่ใช่ `TankPanel` ตรง ๆ) ยังคง
+code-split bundle ของ tank engine ออกจาก editor เหมือนเดิม (69.92kB gzip 19.86kB ตาม `npm run build`
+- ไม่ได้ถูกดึงเข้า main bundle)
+
+### สิ่งที่ทำจริง
+
+| ไฟล์ | เปลี่ยนอะไร |
+|---|---|
+| `src/components/tank/TankSection.tsx` | ใหม่ - เรียก `useTank()` ครั้งเดียว, ย้าย 2 effect (sprite listeners + `engine.setActive`) มาจาก TankPanel เดิม, mount ทั้ง `TankPanel`/`LifePanel` พร้อมกันสลับด้วย `hidden` (ไม่ conditional-render) ให้ engine loop/Pixi app ไม่ต้อง teardown ทุกครั้งที่สลับโหมด |
+| `src/components/tank/TankPanel.tsx` | รับ `{ engine }` prop แทนการเรียก `useTank()`/listeners/active-effect เอง (ย้ายไป TankSection) |
+| `src/components/tank/LifePanel.tsx` | ใหม่ - Pixi Application แยกของตัวเอง (`autoDensity:true`, คนละตัวกับ TankPixiLayer ของ Build mode) วาด `roomScene.ts` ทุกเฟรม |
+| `src/tank/render/roomScene.ts` | ใหม่ - ห้อง placeholder (ผนัง gradient + พื้นแถบสีเข้ม ตาม §9.2) + ฝัง `createTankScene()` เดิมจาก P1-P3 ไว้ใน sub-container ที่ scale/position ให้พอดีวางบนพื้นห้อง (`TANK_FIT_FRAC = 0.62` ของพื้นที่ห้อง) |
+| `src/App.tsx` | `Tab = 'editor' \| 'tank' \| 'life'`, ปุ่มแท็บที่ 3 "Life", lazy-load `TankSection` แทน `TankPanel` ตรง ๆ, `hasVisitedTank` trigger ทั้ง `tank`/`life` |
+| `src/lib/i18n.ts` | `tab.tank`: "Fish Tank" → "Build Tank" (แยกความหมายจาก Life), เพิ่ม `tab.life`: "Life" |
+| `src/index.css` | `.tank-mode-panel[hidden]`, `.life-layout`/`.life-pixi-host`/`.life-pixi-canvas` |
+
+### ผลตรวจ
+
+| เกณฑ์ (§6 P4 Done-when) | ผล |
+|---|---|
+| สลับโหมดได้ | ✅ Playwright: 4 รอบ Life↔Build ไม่มี console error, canvas count คงที่ (ไม่ leak Pixi app) |
+| Build ยังทำงานครบ | ✅ ลากปลาจาก palette วางได้, สลับไป Life แล้วกลับมา state (ปลาที่วาง) ยังอยู่ครบ ไม่ reset/ไม่ซ้ำ |
+| ฉากห้อง render ได้ | ✅ screenshot ยืนยัน: ผนัง gradient ม่วงเข้ม + พื้นแถบเข้มกว่า + ตู้ปลา (น้ำ/ปลา) ย่อขนาดวางบนพื้นห้องชัดเจน ไม่ใช่จอเปล่า/ดำ |
+| editor ไม่มี regression | ✅ pen tool ยังวาดพิกเซลได้ปกติ (App.tsx เปลี่ยนแต่ editor tab ไม่ถูกแตะ) |
+| build/lint/test สะอาด | ✅ `tsc -b` เงียบ, `npm run build` ผ่าน, `oxlint` warning เดิม 4 ตัวเท่านั้น, `npm test` 89/89 |
+
+### ข้อจำกัดที่ตั้งใจ (ตาม §6 P4 เอง ไม่ใช่บั๊ก)
+
+- Life mode **ดูอย่างเดียว** - ไม่มี drag/click ใด ๆ ในตู้ (ตาม §9 Q10) - ของจริงมาใน P5
+- ห้องเป็น placeholder สีล้วน ไม่ใช่ภาพจริง (ตาม §9.2 - รอผู้ใช้อัปโหลด asset)
+- ตู้ใน Life mode สเกลลงตายตัวตามสัดส่วนห้อง (`TANK_FIT_FRAC`) - ยังไม่มี parallax/depth ตาม §6 เดิม (ของแต่งเสริม ไม่ block P5)

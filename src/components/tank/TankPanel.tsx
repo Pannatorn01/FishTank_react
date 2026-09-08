@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { useTank } from '@/hooks/useTank';
+import type { TankEngine } from '@/hooks/useTank';
 import { useLanguage } from '@/lib/i18n';
 import { TankBackgroundPanel } from './TankBackgroundPanel';
 import { TankCanvas } from './TankCanvas';
@@ -9,34 +9,9 @@ import { TankPalette } from './TankPalette';
 
 type SidebarTab = 'layers' | 'palette' | 'background';
 
-export function TankPanel({ active }: { active: boolean }) {
-  const engine = useTank();
+export function TankPanel({ engine }: { engine: TankEngine }) {
   const { t } = useLanguage();
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>('layers');
-
-  useEffect(() => {
-    const onSpritesUpdated = () => engine.refreshPalette();
-    const onSpriteDeleted = (e: Event) => {
-      const id = (e as CustomEvent<{ id: string }>).detail.id;
-      engine.removeInstancesBySprite(id);
-    };
-    window.addEventListener('ft:sprites-updated', onSpritesUpdated);
-    window.addEventListener('ft:sprite-deleted', onSpriteDeleted);
-    return () => {
-      window.removeEventListener('ft:sprites-updated', onSpritesUpdated);
-      window.removeEventListener('ft:sprite-deleted', onSpriteDeleted);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    engine.setActive(active);
-    if (active) {
-      engine.resizeCanvas();
-      engine.refreshPalette();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
 
   return (
     <div className="tank-layout">

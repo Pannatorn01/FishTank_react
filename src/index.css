@@ -1680,6 +1680,13 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 }
 
 /* ---------- Tank ---------- */
+/* Both Build (.tank-layout) and Life (.life-layout) mode panels live under one shared TankSection
+ * wrapper (see TankSection.tsx) and are toggled with `hidden`, not conditional rendering, so each
+ * keeps its own running engine/Pixi Application alive across mode switches - same reasoning as
+ * .tab-panel[hidden] just below. */
+.tank-mode-panel { height: 100%; }
+.tank-mode-panel[hidden] { display: none; }
+
 .tank-layout { display: flex; gap: 8px; height: 100%; }
 /* min-width:0 is load-bearing here: without it, a flex item's automatic minimum width is its
  * content's min-content size, not its flex-basis - so a wide row (the group header's drag-handle +
@@ -1811,6 +1818,12 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
  * docs/PIXI_MIGRATION_PLAN.md §13). */
 .tank-pixi-host { position: absolute; pointer-events: none; }
 .tank-pixi-canvas { display: block; width: 100%; height: 100%; }
+
+/* Life mode (P4) - a self-contained room preview, unlike .tank-pixi-host it isn't stacked on top of
+ * anything else and owns its own box outright. */
+.life-layout { height: 100%; min-height: 320px; }
+.life-pixi-host { width: 100%; height: 100%; }
+.life-pixi-canvas { display: block; width: 100%; height: 100%; }
 
 /* A fixed strip below the canvas (not floating over it) that hosts every contextual action -
  * undo/redo plus whatever selection/marquee/zone toolbar applies right now - so buttons never
