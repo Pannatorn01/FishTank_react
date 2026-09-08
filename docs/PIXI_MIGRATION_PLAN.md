@@ -13,13 +13,19 @@
 อ่าน docs/PIXI_MIGRATION_PLAN.md แล้วทำ Phase ต่อไปที่ยังไม่เสร็จตาม §10 Progress Log
 ห้ามข้าม checkpoint — แต่ละ Phase ต้องผ่าน "Done when" ครบก่อนไป Phase ถัดไป
 ห้ามแตะ src/hooks/usePixelEditor.ts และเครื่องมือวาดใน editor เพื่องานนี้ (เหตุผลใน §5)
-> **อัปเดต 2026-09-08:** ระหว่างนี้มีงานแยกต่างหาก refactor เครื่องมือวาดไปสถาปัตยกรรมใหม่ที่
-> `src/lib/tools/` **ครบทุกตัวแล้ว (14/14)**: pen, eraser, rect, ellipse, line, magicWand, move, select,
-> lasso, eyedropper, fill, gradient, spray, curve — ไม่มี tool ไหนเหลือ if-chain เดิมใน
-> `usePixelEditor.ts` อีกต่อไป ดู `src/lib/tools/ARCHITECTURE.md` และ `docs/EDITOR_IMPROVEMENTS.md`
-> กฎ "ห้ามแตะ" ข้อนี้ยังใช้ได้สำหรับงาน Pixi migration นี้เหมือนเดิม (แยก scope กัน) แต่
-> **"ทำงานถูกแล้วไม่ต้องแก้" ใน §5.D ไม่ตรงกับความจริงอีกต่อไปทั้งหมด** — ก่อนอ้างว่า editor ส่วนไหน
-> "เดิมและนิ่งแล้ว" ให้เช็ค ARCHITECTURE.md ก่อน
+> **อัปเดต 2026-09-08:** มีงานแยกต่างหาก (คนละ scope กับ Pixi migration นี้) ที่รื้อ editor engine ไปแล้ว
+> เยอะ — สรุปเพื่อไม่ให้เอกสารนี้ทำให้เข้าใจผิด:
+> - เครื่องมือวาด migrate ไป `src/lib/tools/` **ครบ 14/14** (pen, eraser, rect, ellipse, line, magicWand,
+>   move, select, lasso, eyedropper, fill, gradient, spray, curve) — ไม่มี if-chain เดิมใน `usePixelEditor.ts`
+> - undo/redo เปลี่ยนเป็น **diff-based** (`src/lib/undoHistory.ts`) — ไม่ใช่ full-snapshot ต่อ step แล้ว
+> - ลบ dead code จาก engine ไปหลายรอบ (`shapePreviewCells`/`redrawShapePreview`, legacy pen/eraser
+>   painting path + `applyBrushAt`/`mirrorCells`/`strokeStep`/... ~340 บรรทัด)
+> - `usePixelEditor.ts` เหลือ ~3,900 บรรทัด (จาก ~4,500 ในตาราง §3)
+>
+> กฎ "ห้ามแตะ editor" **ยังใช้ได้กับงาน Pixi migration นี้เหมือนเดิม** (Pixi bridge เชื่อมผ่าน `Sprite`
+> data + `paintLayers()` เท่านั้น ไม่ต้องรู้ engine ภายในเลย) แต่ตาราง §5.D / §3 / §7.D ที่พูดถึง editor
+> internals ล้าสมัยแล้ว — **ยึด `src/lib/tools/ARCHITECTURE.md` + `docs/EDITOR_IMPROVEMENTS.md` เป็นความจริง**
+> ก่อนอ้างว่า editor ส่วนไหน "เดิมและนิ่งแล้ว"
 ```
 
 ---
@@ -83,8 +89,9 @@ Pixi ให้ scene graph + event system + batching มาให้ ซึ่�
 
 ### ไฟล์
 ```
-src/hooks/useTank.ts          ~2100 บรรทัด  TankEngine class (Canvas2D) — state+sim+hit-test+draw+export ปนกันหมด
-src/hooks/usePixelEditor.ts   ~4500 บรรทัด  editor engine — ห้ามแตะ
+src/hooks/useTank.ts          ~2200 บรรทัด  TankEngine class (Canvas2D) — state+sim+hit-test+draw+export ปนกันหมด
+src/hooks/usePixelEditor.ts   ~3900 บรรทัด  editor engine — ไม่ต้องแตะเพื่องาน Pixi (แต่งานอื่นรื้อไปเยอะ ดู §0)
+src/lib/tools/                เครื่องมือวาดทั้ง 14 ตัว (Tool/Gesture) + paintPipeline + undoHistory — ดู ARCHITECTURE.md
 src/lib/pixelMath.ts          paintLayers() ← จุดเชื่อมเดียวระหว่าง editor กับ tank
 src/lib/storage.ts            localStorage keys  fishtank.*.v1
 src/lib/types.ts              Sprite / Layer / Instance / RoomInstance / TankGroup / SelectionBox / TankShape
@@ -225,11 +232,15 @@ window.addEventListener('ft:sprite-deleted', (e) => destroyFor(e.detail.id));
 
 ### สรุปสิ่งที่ต้องแก้ / ไม่ต้องแก้
 
-| ไฟล์ | ต้องแก้? |
+> **หมายเหตุ:** ตารางนี้ = "งาน Pixi migration นี้ไม่ต้องแก้ไฟล์พวกนี้" ยังจริงอยู่ (bridge เชื่อมผ่าน
+> `Sprite` data + `paintLayers()` เท่านั้น) — ไม่ได้แปลว่าไฟล์พวกนี้ห้ามแก้โดยงานอื่น (เครื่องมือวาด +
+> undo ถูกรื้อไปแล้วโดยงานแยก ดู §0)
+
+| ไฟล์ | งาน Pixi migration นี้ต้องแก้? |
 |---|---|
-| `src/hooks/usePixelEditor.ts` | ❌ ไม่แตะ |
-| เครื่องมือวาดทั้งหมด (pen / eraser / fill / line / curve / rect / ellipse / spray / gradient / select / lasso / magicWand / move) | ❌ ไม่แตะ |
-| `PixelCanvas.tsx`, `ToolRail.tsx`, ColorPalette, LayerPanel, FramePanel | ❌ ไม่แตะ |
+| `src/hooks/usePixelEditor.ts` | ❌ ไม่ต้อง |
+| เครื่องมือวาดทั้งหมด (ตอนนี้อยู่ที่ `src/lib/tools/` — pen / eraser / fill / line / curve / rect / ellipse / spray / gradient / select / lasso / magicWand / move / eyedropper) | ❌ ไม่ต้อง |
+| `PixelCanvas.tsx`, `ToolRail.tsx`, ColorPalette, LayerPanel, FramePanel | ❌ ไม่ต้อง |
 | `src/lib/pixelMath.ts` | ❌ ไม่แตะ (ใช้ต่อ ห้ามแก้ signature) |
 | `src/lib/types.ts` | ⚠️ เพิ่มฟิลด์ใหม่ตอน P5 เท่านั้น + ต้องมี migration |
 | `src/lib/storage.ts` | ⚠️ เพิ่ม key ใหม่ตอน P2 / P5 |
@@ -347,10 +358,11 @@ main       { display: flex; flex-direction: column; flex: 1; overflow: auto; min
 ### C. Export ต้องคมเสมอ ไม่ว่าจอจะซูมเท่าไร
 `compositeScene()` วาดที่ 100%-equivalent เสมอ · GIF 3 วิ = 30 เฟรม @100ms · WebM ต้องมี EBML header `1a45dfa3`
 
-### D. ห้ามแตะ editor (เพื่องานนี้)
-pen/eraser + Pixel Perfect gating, selection outline, rotation — **ไม่อยู่ในขอบเขตงานนี้**
-(pen/eraser/rect/ellipse/magicWand/move ถูก refactor ไป `src/lib/tools/` แล้วโดยงานอื่น แยก scope
-กันคนละงาน — ดูหมายเหตุอัปเดตที่ §0 ด้านบน)
+### D. ไม่ต้องแตะ editor เพื่องาน Pixi นี้
+pen/eraser + Pixel Perfect gating, selection outline, rotation — **ไม่อยู่ในขอบเขตงาน Pixi migration**
+(เครื่องมือวาดทั้ง 14 ตัว + undo/redo ถูก refactor ไป `src/lib/tools/` แล้วโดยงานอื่น คนละ scope —
+ดู §0). Pixi bridge เชื่อม editor↔tank ผ่าน `Sprite` data + `paintLayers()` เท่านั้น ไม่แตะ engine
+ภายใน ทั้ง code เดิมและ code ใหม่
 
 ### E. Dock drag ใช้ pointer events ไม่ใช่ native HTML5 DnD
 `src/hooks/useDockDrag.ts` — native DnD เคยทำให้ลากไม่ติด อย่าเอากลับมา
