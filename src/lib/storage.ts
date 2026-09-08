@@ -22,6 +22,8 @@ const KEY_GROUPS = 'fishtank.groups.v1';
 const KEY_ROOM_INSTANCES = 'fishtank.roomInstances.v1';
 const KEY_TANK_SIZE = 'fishtank.tankSize.v1';
 const KEY_TANK_LAST_TICK = 'fishtank.tankLastTick.v1';
+const KEY_TANK_WATER_LEVEL = 'fishtank.tankWaterLevel.v1';
+const KEY_TANK_ALGAE = 'fishtank.tankAlgae.v1';
 const KEY_TANK_SHAPE = 'fishtank.tankShape.v1';
 export const TANK_SHAPES: TankShape[] = ['rectangle', 'rounded', 'oval'];
 /** Which 'background'-type Sprite (drawn in the pixel editor, see SpriteType) is painted behind the
@@ -518,6 +520,44 @@ export function saveTankLastTick(ms: number): void {
   writeKey(KEY_TANK_LAST_TICK, String(ms));
 }
 
+/** 1 (full) .. 0 (empty) - evaporates over real time (see tickWaterLevel() in useTank.ts), caught up
+ *  from the same `fishtank.tankLastTick.v1` checkpoint hunger uses, and restored to 1 by the Life-mode
+ *  refill button (P5 §6 item 4). */
+export function loadTankWaterLevel(): number | null {
+  try {
+    const raw = localStorage.getItem(KEY_TANK_WATER_LEVEL);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : null;
+  } catch (e) {
+    console.warn('loadTankWaterLevel failed', e);
+    return null;
+  }
+}
+
+export function saveTankWaterLevel(level: number): void {
+  localStorage.setItem(KEY_TANK_WATER_LEVEL, String(level));
+}
+
+/** 0 (spotless) .. 1 (fully covered) - grows over real time (see tickAlgae() in useTank.ts), caught up
+ *  from the same checkpoint hunger/water level use, and reduced by scrubbing in Life mode (P5 §6
+ *  item 5). */
+export function loadTankAlgae(): number | null {
+  try {
+    const raw = localStorage.getItem(KEY_TANK_ALGAE);
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : null;
+  } catch (e) {
+    console.warn('loadTankAlgae failed', e);
+    return null;
+  }
+}
+
+export function saveTankAlgae(algae: number): void {
+  localStorage.setItem(KEY_TANK_ALGAE, String(algae));
+}
+
 export function loadTankShape(): TankShape | null {
   try {
     const raw = localStorage.getItem(KEY_TANK_SHAPE);
@@ -894,6 +934,8 @@ const ALL_STORAGE_KEYS = [
   KEY_ROOM_INSTANCES,
   KEY_TANK_SIZE,
   KEY_TANK_LAST_TICK,
+  KEY_TANK_WATER_LEVEL,
+  KEY_TANK_ALGAE,
   KEY_TANK_SHAPE,
   KEY_TANK_BACKGROUND_SPRITE_ID,
   KEY_TANK_BACKGROUND_TRANSFORM,

@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import type { Application } from 'pixi.js';
+import { Button } from '@/components/ui/button';
 import type { TankEngine } from '@/hooks/useTank';
+import { useLanguage } from '@/lib/i18n';
 import { createPixiApp, destroyPixiApp } from '@/tank/render/pixiApp';
 import { createRoomScene, type RoomSceneHandle } from '@/tank/render/roomScene';
 import { invalidateAll, invalidateSprite } from '@/tank/render/textureCache';
@@ -16,6 +18,7 @@ import { invalidateAll, invalidateSprite } from '@/tank/render/textureCache';
  * rather than being stretched by external CSS math tied to the tank's logical pixel size.
  */
 export function LifePanel({ engine }: { engine: TankEngine }) {
+  const { t } = useLanguage();
   const hostRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -42,8 +45,13 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
       // open water drops a food pellet there. `engine.handleTankTap` clamps whatever coordinates it's
       // given into the tank's own bounds when it falls through to feeding, so this doesn't need its
       // own precise hit-testing against the tank's shape (see tapHitArea's doc comment in
-      // roomScene.ts).
-      scene = createRoomScene(app.stage, (x, y) => engine.handleTankTap(x, y));
+      // roomScene.ts). Dragging instead of tapping scrubs algae (P5 §6 item 5) - roomScene.ts tells
+      // the two apart by total drag distance, so onTap only ever fires for an actual short tap.
+      scene = createRoomScene(
+        app.stage,
+        (x, y) => engine.handleTankTap(x, y),
+        (dist) => engine.scrubAlgae(dist),
+      );
 
       const tick = () => {
         if (cancelled || !app || !scene) return;
@@ -66,6 +74,25 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
   return (
     <div className="life-layout">
       <div ref={hostRef} className="life-pixi-host" />
+      {/* Water level (P5 §6 item 4) - a plain DOM button rather than a Pixi-drawn one, matching every
+       *  other action button in this app (Save, zoom, etc.) - simpler than hand-rolling hit-testing
+       *  and a hover/pressed state inside the Pixi scene for something that isn't part of the tank
+       *  itself. */}
+      <Button
+        type="button"
+        size="sm"
+        variant="secondary"
+        className="life-refill-button"
+        title={t('life.refillWaterTitle')}
+        onClick={() => engine.refillWater()}
+      >
+        <i className="fa-solid fa-faucet-drip" /> {t('life.refillWater')}
+      </Button>
+      {/* Nothing about the tank itself hints that tapping vs. dragging do two different things (see
+       *  roomScene.ts's tap-vs-drag state machine) - especially before any algae has actually grown in
+       *  yet, at which point there's nothing visible to even suspect is scrubbable. A plain caption
+       *  under the tank spells it out once instead of leaving it to be discovered by accident. */}
+      <p className="life-hint">{t('life.hint')}</p>
     </div>
   );
 }

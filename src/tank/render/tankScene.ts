@@ -34,6 +34,10 @@ const FOOD_RADIUS = 4;
 const WASTE_COLOR = 0x6b4a2f;
 const WASTE_RADIUS_X = 3;
 const WASTE_RADIUS_Y = 5;
+const ALGAE_COLOR = 0x3f6b1f;
+const ALGAE_ALPHA = 0.5;
+/** Matches useTank.ts's Canvas2D ALGAE_MAX_BAND_FRAC exactly. */
+const ALGAE_MAX_BAND_FRAC = 0.35;
 
 function spriteDims(sprite: SpriteData): { width: number; height: number } {
   return { width: sprite.width || 16, height: sprite.height || 16 };
@@ -143,9 +147,11 @@ export function createTankScene(stage: Container): TankSceneHandle {
   const sceneRoot = new Container();
   const root = new Container();
   const mask = new Graphics();
+  const air = new Graphics();
   const water = new Graphics();
   const backgroundSprite = new Sprite();
   const waterline = new Graphics();
+  const algaeLayer = new Graphics();
   const zoneBelowLayer = new Container();
   const wasteLayer = new Graphics();
   const foodLayer = new Graphics();
@@ -157,7 +163,7 @@ export function createTankScene(stage: Container): TankSceneHandle {
   backgroundSprite.visible = false;
   backgroundSprite.anchor.set(0.5);
 
-  root.addChild(water, backgroundSprite, waterline, zoneBelowLayer, wasteLayer, foodLayer, instanceLayer, overlayLayer);
+  root.addChild(air, water, backgroundSprite, waterline, algaeLayer, zoneBelowLayer, wasteLayer, foodLayer, instanceLayer, overlayLayer);
   // `mask` is added as root's own child (not left floating outside the scene graph) specifically so
   // it inherits root's transform - a mask that's never actually parented anywhere keeps Pixi's
   // default identity transform regardless of where the container using it as a mask ends up moving.
@@ -343,12 +349,35 @@ export function createTankScene(stage: Container): TankSceneHandle {
       outline.stroke({ width: OUTLINE_WIDTH, color: OUTLINE_COLOR, join: 'round' });
     }
 
-    const waterSizeKey = `${w}:${h}`;
+    // Water level (P5 §6 item 4) - included in the cache key (unlike most other size-keyed blocks
+    // here) since it changes continuously, not just on a resize/shape edit. Rounded to whole pixels so
+    // evaporation's continuous sub-pixel drift doesn't invalidate (and thus redraw) this every single
+    // frame for a change nobody could actually see.
+    const waterTop = Math.round((1 - engine.waterLevel) * h);
+    const waterSizeKey = `${w}:${h}:${waterTop}`;
     if (waterSizeKey !== lastWaterSizeKey) {
       lastWaterSizeKey = waterSizeKey;
-      water.clear().rect(0, 0, w, h).fill(waterGradient);
+      air.clear();
+      if (waterTop > 0) air.rect(0, 0, w, waterTop).fill(0x0d1a24);
+      water.clear().rect(0, waterTop, w, h - waterTop).fill(waterGradient);
       const waterlineH = Math.max(3, h * 0.02);
-      waterline.clear().rect(0, 0, w, waterlineH).fill({ color: 0xffffff, alpha: 0.35 });
+      waterline.clear().rect(0, waterTop, w, waterlineH).fill({ color: 0xffffff, alpha: 0.35 });
+    }
+
+    // Algae (P5 §6 item 5) - see the doc comment on useTank.ts's drawAlgae() for why this is 4
+    // overlapping edge bands rather than true per-region growth.
+    algaeLayer.clear();
+    const algaeBand = engine.algae * Math.min(w, h) * ALGAE_MAX_BAND_FRAC;
+    if (algaeBand > 0) {
+      algaeLayer
+        .rect(0, 0, w, algaeBand)
+        .fill({ color: ALGAE_COLOR, alpha: ALGAE_ALPHA })
+        .rect(0, h - algaeBand, w, algaeBand)
+        .fill({ color: ALGAE_COLOR, alpha: ALGAE_ALPHA })
+        .rect(0, 0, algaeBand, h)
+        .fill({ color: ALGAE_COLOR, alpha: ALGAE_ALPHA })
+        .rect(w - algaeBand, 0, algaeBand, h)
+        .fill({ color: ALGAE_COLOR, alpha: ALGAE_ALPHA });
     }
 
     const bgSprite = engine.backgroundSpriteId

@@ -865,3 +865,81 @@ code-split bundle ของ tank engine ออกจาก editor เหมื�
 - ยังไม่รวม `tankCleanliness` เข้ากับ waterLevel/algae (ข้อ 4-5) ตามที่ร่างไว้ใน §8 - ตอนนี้เป็นแค่ฟังก์ชันของ `wasteItems.length` อย่างเดียว จะขยายสูตรเมื่อสองข้อนั้นมาถึง
 - แถบความสะอาดอยู่ใน Life mode (Pixi) เท่านั้น ไม่มีใน Build mode (Canvas2D) - ต่างจากแถบหิวที่ทำ parity ไว้ทั้ง 2 renderer เพราะแถบนี้เป็นสถานะระดับตู้ ไม่ใช่ per-fish จึงผูกกับมุมมอง "ห้อง/ดูแล" ของ Life mode โดยเฉพาะ ไม่ใช่กับตัวตู้เอง
 - `poopDueAt` ไม่ persist - reload ระหว่างรอขี้ = ยกเลิกไปเฉย ๆ (ยอมรับได้ เป็นแค่จังหวะเวลา ไม่ใช่ state ที่ต้องแม่นยำแบบ 4 วันอดตาย)
+
+---
+
+## 19. P5 กลไกการเลี้ยง — ข้อ 4: ระดับน้ำ + เติมน้ำ (2026-09-08)
+
+**สรุป: เสร็จและ verify แล้วด้วย Playwright จริง - ตำแหน่งเส้นแบ่งน้ำ/อากาศตรงตามสูตรเป๊ะ (40% เต็ม → เส้นแบ่งอยู่ที่ 55-60% จากบน ตรงกับที่คำนวณไว้)**
+
+### สิ่งที่ทำจริง
+
+| ไฟล์ | เปลี่ยนอะไร |
+|---|---|
+| `src/lib/storage.ts` | `KEY_TANK_WATER_LEVEL` + `loadTankWaterLevel`/`saveTankWaterLevel` |
+| `src/hooks/useTank.ts` | `waterLevel` field (1..0, persist ผ่าน `save()`) · `tickWaterLevel(elapsedMs)` ง่ายกว่า `tickHunger` มาก (ไม่มีผลลัพธ์ "ตาย" ให้ต้องหาจุดตัดศูนย์แม่นยำ แค่ decay เชิงเส้น clamp 0) เรียกทั้งต่อเฟรมและตอน catch-up ใน `init()` ใช้ checkpoint `lastTickAt` ร่วมกับ hunger · `refillWater()` เติมเต็มทันที · `waterTopY()` ใหม่ - จุดเริ่มผิวน้ำปัจจุบัน ใช้ทั้งใน `swimBoundsFor`/`maxSwimY`/`randomTargetY` (ปลาว่ายขึ้นเหนือน้ำที่ระเหยไปแล้วไม่ได้ - มีผลจริงต่อ gameplay ไม่ใช่แค่ภาพ) · `drawBackground()` วาดโซน "อากาศว่าง" สีเข้ม (`#0d1a24`) เหนือผิวน้ำปัจจุบัน แทนน้ำเต็มตู้เหมือนเดิม |
+| `src/tank/render/tankScene.ts` | เพิ่ม `air` Graphics ให้ตรงกับ Canvas2D · water/waterline ขยับตาม `waterTop` (ปัดเศษเป็นพิกเซลเต็มกัน cache key เปลี่ยนทุกเฟรมจาก sub-pixel drift ของการระเหยที่ต่อเนื่อง) |
+| `src/lib/i18n.ts` | `life.refillWater`/`life.refillWaterTitle` |
+| `src/components/tank/LifePanel.tsx` | ปุ่ม "Refill water" มุมขวาบน (DOM ธรรมดา ไม่ใช่ Pixi - ตามแนวทางปุ่ม action อื่นในแอปนี้) เรียก `engine.refillWater()` |
+| `src/index.css` | `.life-refill-button` (ขวาบน ไม่ชนกับแถบความสะอาดที่ซ้ายบน) |
+
+### ผลตรวจ (Playwright, จำลอง waterLevel=0.4 ผ่าน localStorage)
+
+| เกณฑ์ | ผล |
+|---|---|
+| เส้นแบ่งน้ำ/อากาศอยู่ตำแหน่งถูกต้อง (40% เต็ม = เส้นแบ่งที่ 60% จากบน) | ✅ วัดสี pixel จริง: `#0d1a24` เป๊ะตั้งแต่ 5%-55% จากบน, gradient น้ำตั้งแต่ 60%-90% - เส้นแบ่งอยู่ระหว่าง 55-60% ตรงตามคาด |
+| ปลาว่ายอยู่แค่ในโซนน้ำ ไม่ลอยในโซนอากาศ | ✅ ยืนยันจากภาพ |
+| ตรงกันทั้ง Canvas2D (Build) และ Pixi (Life) | ✅ ทั้งสอง renderer แสดงเส้นแบ่งที่ตำแหน่งเดียวกัน |
+| ปุ่ม Refill ไม่ชนแถบความสะอาด | ✅ ปุ่มขวาบน (x:1266) แถบซ้ายบน (x:8) ไม่ทับกัน |
+| กด Refill แล้วน้ำเต็มทันที ไม่มี animation | ✅ ยืนยันภาพก่อน/หลังภายใน ~400ms |
+| สลับกลับ Build mode หลัง refill ยังเห็นน้ำเต็มตรงกัน | ✅ engine เดียวกัน ทั้ง 2 renderer sync กันอัตโนมัติ |
+| build/lint/test สะอาด | ✅ `tsc -b` เงียบ, build ผ่าน, `oxlint` warning เดิม 4 ตัว, `npm test` 197/197 |
+| console/page error | ✅ ไม่มีเลยตลอดการทดสอบ |
+
+### ข้อจำกัด/ของค้าง
+
+- `waterLevel` ยังไม่ผูกกับผลลัพธ์อื่นนอกจากพื้นที่ว่ายและภาพ - ยังไม่มี "ปลาป่วย/ตายเพราะน้ำแห้ง" (ตาม §9.1 ที่พูดถึง waterQuality ต่ำนานเกินไป → ตายเร็ว) เพราะ waterQuality ยังไม่ถูกสร้างเป็นค่ารวม (รอข้อ 5 ตะไคร่ มาผสมกันตามที่ร่างไว้ใน §8/§17)
+- ไม่มี UI แสดงตัวเลข % น้ำ - ใช้ระดับน้ำที่เห็นในภาพเป็นตัวบอกแทน (ตรงตามธรรมชาติของตู้ปลาจริงที่ดูจากระดับน้ำ ไม่ใช่ตัวเลข)
+
+---
+
+## 20. P5 กลไกการเลี้ยง — ข้อ 5: ตะไคร่ + ขัดกระจก (2026-09-08)
+
+**สรุป: เสร็จและ verify แล้วด้วย Playwright จริง 2 รอบ - รอบแรกเจอบั๊ก persistence จริง (ขัด/เติมน้ำใน Life mode หายหลัง reload) แก้แล้ว รอบสองยืนยันผ่านหมด ตามที่ผู้ใช้ระบุเอง: "จะเกิดไวขึ้นถ้าไม่เก็บขี้ปลา"**
+
+### สิ่งที่ทำจริง
+
+| ไฟล์ | เปลี่ยนอะไร |
+|---|---|
+| `src/lib/storage.ts` | `KEY_TANK_ALGAE` + `loadTankAlgae`/`saveTankAlgae` |
+| `src/hooks/useTank.ts` | `algae` field (0..1, persist) · `tickAlgae(elapsedMs, wasteCount)` เติบโตเร็วขึ้นตาม `wasteItems.length` (ต่างจาก `tickWaterLevel` ที่ไม่มีตัวแปรภายนอกมาเร่ง) - รับ `wasteCount` เป็น parameter แทนอ่านจาก `this.wasteItems.length` ตรง ๆ เพราะตอน catch-up ใน `init()` ไม่รู้ว่ามีขี้ปลาค้างอยู่เท่าไหร่ตอนปิดแอป (waste ไม่ persist) เลยส่ง 0 (ใช้แค่ base rate) ส่วนตอนเรียกต่อเฟรมส่งค่าจริง · `scrubAlgae(dragDistancePx)` ลดตะไคร่ตามระยะทางลากสะสม · `drawAlgae()` วาดแถบเขียวโปร่งใส 4 ขอบ (ไม่ใช่ทั่วทั้งตู้ - ประมาณการง่าย ๆ แทนการ track ตะไคร่แบบ per-region จริง) |
+| `src/tank/render/tankScene.ts` | `algaeLayer` Graphics ให้ตรงกับ Canvas2D |
+| `src/tank/render/roomScene.ts` | เปลี่ยนจาก `pointertap` handler เดี่ยว ๆ เป็น pointerdown/globalpointermove/pointerup state machine แยกแยะ "แตะ" (ระยะขยับ ≤6px → `onTap`) กับ "ลาก" (เกิน 6px → `onScrub` ต่อเนื่อง) - ใช้ threshold เดียวกับ `TAP_MOVE_THRESHOLD` ที่ useTank.ts ใช้อยู่แล้ว |
+| `src/components/tank/LifePanel.tsx` | ส่ง `onScrub` callback เพิ่มเข้า `createRoomScene` |
+
+### บั๊ก persistence ที่เจอตอน verify รอบแรก (แก้ก่อน commit)
+
+**อาการ:** ขัดตะไคร่/เติมน้ำใน Life mode ได้ผลจริงในเซสชันสด แต่ reload แล้วหายกลับไปค่าเดิม
+
+**ต้นเหตุ:** `scrubAlgae()`/`refillWater()`/`feedAt()`/`collectWasteAt()` (ซึ่งมีมาตั้งแต่ข้อ 2-3) ไม่เคยเรียก `this.persist()` เลย - เดิมถือว่าเป็น simulation state ที่รอ Save เหมือนตำแหน่งว่ายปลา แต่ต่างจากปลาตรงที่ **Life mode ไม่มีปุ่ม Save ของตัวเอง** (มีแค่ที่ Build Tank) ทำให้ผู้ใช้ไม่มีทางกด Save ปุ่มที่ Build Tank ได้เลยถ้ายังไม่เคยแก้อะไรที่นั่นมาก่อน (ปุ่มถูก disable อยู่จนกว่า `dirty` จะเป็น true)
+
+**วิธีแก้:** เพิ่ม `this.persist()` ใน `feedAt()`, `collectWasteAt()` (เฉพาะตอนเก็บสำเร็จจริง), `refillWater()`, `scrubAlgae()` - ทั้งหมดเป็น "การกระทำของผู้ใช้โดยตรง" (ต่างจาก `eatFood()`/tick ต่าง ๆ ที่เป็นผลจาก simulation อัตโนมัติ ไม่ต้อง persist) ตามธรรมเนียมเดียวกับที่ลากปลาทุกเฟรมก็เรียก `persist()` อยู่แล้ว
+
+### ผลตรวจ (Playwright, 2 รอบ)
+
+| เกณฑ์ | ผล |
+|---|---|
+| แถบตะไคร่เป็นขอบ 4 ด้าน ไม่ใช่สีทึบทั้งตู้ | ✅ กลางตู้ใสกว่าขอบ/มุมชัดเจน ตรงกันทั้ง Canvas2D และ Pixi |
+| ตะไคร่โตเร็วขึ้นเมื่อมีขี้ปลาค้าง | ✅ ยืนยันจากสูตร (โค้ดรีวิว) - ยังไม่ได้ทดสอบเปรียบเทียบอัตราจริงด้วย Playwright (ระยะเวลาที่ต้องรอสังเกตการเติบโตจริงยาวเกินจะทดสอบ) |
+| แตะสั้น (≤6px) = ให้อาหาร ไม่ขัดตะไคร่ | ✅ |
+| ลาก (>6px สะสม) = ขัดตะไคร่ ไม่ให้อาหารซ้อน | ✅ ลาก ~5500px แล้วตะไคร่หายหมดจากภาพ ไม่มีอาหารโผล่เพิ่ม |
+| ปุ่ม Save เปิดใช้งานหลังขัด/เติมน้ำใน Life mode | ✅ (หลังแก้บั๊ก) |
+| ขัด/เติมน้ำรอด reload หลังกด Save | ✅ ค่าก่อน/หลัง reload ตรงกันเป๊ะ |
+| build/lint/test สะอาด | ✅ `tsc -b` เงียบ, build ผ่าน, `oxlint` warning เดิม 4 ตัว, `npm test` 197/197 |
+| console/page error | ✅ ไม่มีเลยตลอด 2 รอบทดสอบ |
+
+### ข้อจำกัด/ของค้าง
+
+- ยังไม่ได้ verify อัตราเร่งจริงจาก waste count ด้วย Playwright (แค่ตรวจโค้ด/สูตร) - ความเสี่ยงต่ำเพราะเป็นการคูณเชิงเส้นตรงไปตรงมา
+- `tankCleanliness` (§18) ยังไม่รวม algae เข้าไปด้วยตามที่ร่างไว้ใน §8 - ยังเป็นแค่ฟังก์ชันของ waste อย่างเดียว
+- ตะไคร่แบบ "ขอบ 4 ด้าน" เป็นการประมาณง่าย ไม่ใช่ per-region เหมือนตะไคร่จริงที่ขึ้นเป็นหย่อม ๆ ไม่สม่ำเสมอ - ยอมรับได้สำหรับ scope นี้
