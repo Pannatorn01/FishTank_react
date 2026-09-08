@@ -114,7 +114,7 @@ export function SpriteLibrary({
               className="library-del"
               onClick={(e) => {
                 e.stopPropagation();
-                engine.deleteSprite(sprite.id!, () => confirm(t('library.deleteConfirm')), onError);
+                engine.deleteSprite(sprite.id, () => confirm(t('library.deleteConfirm')), onError);
               }}
             >
               <i className="fa-solid fa-xmark" />

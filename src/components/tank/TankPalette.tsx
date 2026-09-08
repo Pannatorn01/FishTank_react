@@ -42,7 +42,7 @@ export function TankPalette({ engine }: { engine: TankEngine }) {
           <div
             key={sprite.id}
             className="tank-palette-item"
-            onPointerDown={(e) => engine.startPaletteDrag(e, sprite.id!)}
+            onPointerDown={(e) => engine.startPaletteDrag(e, sprite.id)}
           >
             <PaletteThumb sprite={sprite} />
             <span className="tank-palette-item-name" title={sprite.name}>

@@ -25,7 +25,7 @@ function spriteDims(sprite: Sprite): { width: number; height: number } {
 const cache = new Map<string, Texture>();
 
 function keyFor(sprite: Sprite, frameIndex: number): string {
-  return `${sprite.id ?? 'unsaved'}:${frameIndex}`;
+  return `${sprite.id}:${frameIndex}`;
 }
 
 export function textureFor(sprite: Sprite, frameIndex = 0): Texture {

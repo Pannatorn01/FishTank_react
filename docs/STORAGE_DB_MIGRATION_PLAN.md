@@ -1,6 +1,6 @@
 # แผนย้ายชั้นเก็บข้อมูล: localStorage → Storage Adapter → Database
 
-> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0 เสร็จแล้ว · P1 เป็นงานถัดไป** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
+> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0 + P1 เสร็จแล้ว · P2 (บีบ pixel) เป็นงานถัดไป** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
 > ที่มา: audit โค้ดจริง ไม่ใช่การเดา
 > ทุกข้ออ้างอิง `ไฟล์:บรรทัด` ณ commit `86efa06` — ถ้าบรรทัดเลื่อน ให้ grep ชื่อฟังก์ชันที่ระบุไว้แทน
 >
@@ -49,7 +49,7 @@
 > ผลลัพธ์ที่ตามมาโดยตรง: **ห้ามใช้ Supabase client อ่าน/เขียนตรงจาก component เด็ดขาด**
 > ทุกอย่างต้องผ่าน repository (§3) ไม่งั้น offline-first จะพังทันทีที่เน็ตหลุด
 
-**ความคืบหน้า: P0 ทำเสร็จแล้วทั้ง 5 ข้อ** (ดู checklist §7) · งานถัดไปคือ P1
+**ความคืบหน้า: P0 (5 ข้อ) และ P1 (2 ข้อ) เสร็จแล้ว** (ดู checklist §7) · งานถัดไปคือ P2
 
 ---
 
@@ -239,6 +239,14 @@ export interface Sprite extends RecordMeta { id: string; /* ...เดิม... *
 **migration:** ทำใน `normalizeSprite()` / `normalizeInstance()` แบบเดียวกับที่ทำอยู่แล้วกับ lifecycle fields
 ([`storage.ts:173-184`](../src/lib/storage.ts#L173-L184)) — record เก่าที่ไม่มี `updatedAt` ให้ตั้งเป็น `Date.now()` ตอนโหลด
 และ **อย่าเขียนกลับทันที** ตามธรรมเนียมเดิมของไฟล์นี้ ("migrate on load, never write until the next real save")
+
+**ขอบเขตที่ทำจริงในเฟสนี้ (อ่านก่อนทำ P5):**
+- **sprite: tombstone ครบ** — ลบแล้วเหลือแถวที่ `deletedAt > 0` และ `frames: []`
+- **instance / group / roomInstance: มี `RecordMeta` ครบ แต่ยังไม่มี tombstone** — เพราะตู้ถูกเขียนทั้งก้อน
+  (array เดียว) การลบจึงหายไปกับการเขียนทับ ซึ่งไม่กำกวมตราบใดที่ยังอยู่เครื่องเดียว
+  → **ตอนทำ P5 ต้องเพิ่ม tombstone ให้ record ของตู้ด้วย** ไม่งั้น server จะเอาปลาที่ลบแล้วกลับมา
+- `updatedAt` ของ record ในตู้ถูกประทับพร้อมกันทั้งก้อนตอน `save()` (ไม่ใช่ต่อ record ที่แก้จริง)
+  เพราะโมเดลเซฟเป็น manual/batch — ความละเอียดระดับ record จะมาพร้อมการเขียนทีละ record ใน P4/P5
 
 **เสร็จเมื่อ:** ลบ sprite แล้วยังมีแถวอยู่ใน storage โดยมี `deletedAt > 0` และ UI ไม่แสดงมันแล้ว
 
@@ -576,8 +584,8 @@ create policy read_used_in_shared on sprites for select using (
 - [x] **P0-3** `TankEngine.save()` คืน `{ ok, error }` + `TankCanvas` แจ้ง error (ไม่ขึ้นติ๊ก "saved" เวลาเซฟไม่ผ่าน)
 - [x] **P0-4** `allOwnedKeys()` รวม `editorLayout` / `uiScale` / `sidePanel.collapsed.*` (3 ไฟล์นั้น import key จาก storage.ts แล้ว)
 - [x] **P0-5** `estimateUsage()` + `StorageBanner.tsx` เตือนที่ 70% พร้อมปุ่ม export backup
-- [ ] **P1-1** `RecordMeta` (`updatedAt` / `deletedAt` / `rev`) + `Sprite.id` ไม่เป็น null
-- [ ] **P1-2** ลบแบบ tombstone
+- [x] **P1-1** `RecordMeta` ใน types.ts (Sprite / Instance / TankGroup / RoomInstance) + `Sprite.id` เป็น `string` เสมอ (ออก id ตั้งแต่ `blankSprite()` — เลิกใช้ id เป็นตัวบอกว่า "เคยเซฟหรือยัง" เปลี่ยนไปหาใน library แทน)
+- [x] **P1-2** ลบแบบ tombstone — `saveSprites()` เทียบกับของเดิมในสตอเรจแล้วเขียน tombstone ให้ตัวที่หายไป (ตัด `frames` ทิ้งเพื่อคืนพื้นที่จริง) · `loadSprites()` กรอง tombstone ออกให้ UI ไม่ต้องรู้เรื่อง
 - [ ] **P2-1** `src/lib/pixelCodec.ts` (RLE) + round-trip test
 - [ ] **P2-2** อ่านได้ทั้งเก่า/ใหม่ เขียนแบบใหม่ + บันทึกตัวเลขขนาดจริงกลับมาที่เอกสารนี้
 - [ ] **P3-1** `StorageAdapter` + `LocalStorageAdapter` + repos

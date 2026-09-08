@@ -1,3 +1,21 @@
+/**
+ * Sync bookkeeping carried by every record that will eventually live in a database (see
+ * docs/STORAGE_DB_MIGRATION_PLAN.md P1). None of it is used by the app's own logic today - it exists
+ * now because backfilling timestamps onto records that were saved without them can only ever guess,
+ * and a guess made once real data exists is a guess that cannot be corrected.
+ */
+export interface RecordMeta {
+  /** epoch ms of the last change. The merge rule when two devices disagree: newer wins. */
+  updatedAt: number;
+  /** epoch ms this record was deleted, 0 while it is alive. A deleted record has to leave something
+   *  behind (a "tombstone"), otherwise a server cannot tell "the user deleted this" apart from "this
+   *  device has not uploaded it yet" and would helpfully restore it. */
+  deletedAt: number;
+  /** Revision assigned by the server; 0 until the record has been accepted by one. Breaks ties when
+   *  two devices' clocks disagree closely enough that updatedAt cannot. */
+  rev: number;
+}
+
 export type CellColor = string | null;
 export type Frame = CellColor[];
 /** Gradient tool blend shape: 'linear' interpolates along the drag axis, 'radial' by distance from the
@@ -31,8 +49,11 @@ export interface Layer {
   cells: Frame;
 }
 
-export interface Sprite {
-  id: string | null;
+export interface Sprite extends RecordMeta {
+  /** Never null: a sprite gets its id when it is created, not when it is first saved, so it can be
+   *  referred to (and later uploaded) before it has ever been written anywhere. Whether it has been
+   *  saved is answered by looking for it in the library, not by a null id. */
+  id: string;
   name: string;
   type: SpriteType;
   width: number;
@@ -121,7 +142,7 @@ export interface SelectionBox {
 }
 
 /** A user-created, flat (non-nested) group of tank instances - see TankEngine in useTank.ts. */
-export interface TankGroup {
+export interface TankGroup extends RecordMeta {
   id: string;
   name: string;
   /** Confines every member's wandering/schooling to this rectangle (tank canvas coordinates) - null
@@ -130,7 +151,7 @@ export interface TankGroup {
   zone: SelectionBox | null;
 }
 
-export interface Instance {
+export interface Instance extends RecordMeta {
   id: string;
   spriteId: string;
   kind: SpriteType;
@@ -222,7 +243,7 @@ export interface WasteItem {
  *  the tank's own sibling in the same scaled container - no per-frame reprojection math needed (see
  *  docs/PIXI_MIGRATION_PLAN.md §7-B/§12/§13). storage.ts's normalizeRoomInstances() migrates the old
  *  xFrac/yFrac-of-viewport shape onto this one for existing saved tanks. */
-export interface RoomInstance {
+export interface RoomInstance extends RecordMeta {
   id: string;
   spriteId: string;
   x: number;

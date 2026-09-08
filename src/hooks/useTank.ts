@@ -639,6 +639,7 @@ export class TankEngine {
   async addBackgroundFromImage(file: File): Promise<void> {
     const { width, height, frame } = await pixelateImageFile(file, storage.MAX_BACKGROUND_GRID_SIZE.width, storage.MAX_BACKGROUND_GRID_SIZE.height);
     const sprite: Sprite = {
+      ...storage.newRecordMeta(),
       id: storage.uid('sprite'),
       name: file.name.replace(/\.[^./\\]+$/, '') || t('sprite.defaultBackgroundName'),
       type: 'background',
@@ -781,6 +782,13 @@ export class TankEngine {
    */
   save(): { ok: boolean; error?: unknown } {
     let result: { ok: boolean; error?: unknown } = { ok: true };
+    // The tank is saved as one batch, so every record in it is stamped with the same moment rather
+    // than tracking which individual fish actually moved: pretending to per-record precision the save
+    // model does not have would be worse than none when these timestamps start deciding merges
+    // (RecordMeta in types.ts). Per-record stamping arrives with per-record writes - plan P4/P5.
+    this.instances = this.instances.map(storage.touchMeta);
+    this.groups = this.groups.map(storage.touchMeta);
+    this.roomInstances = this.roomInstances.map(storage.touchMeta);
     try {
       storage.saveInstances(this.instances);
       storage.saveGroups(this.groups);
@@ -858,6 +866,7 @@ export class TankEngine {
     const { vx, vy } = sprite.type === 'fish' ? randomSwimVelocity(swimSpeed) : { vx: 0, vy: 0 };
     const placed = this.clampTopLeftToShape(x - pw / 2, y - ph / 2, pw, ph, this.canvas.width, this.canvas.height);
     const inst: Instance = {
+      ...storage.newRecordMeta(),
       id: storage.uid('inst'),
       spriteId,
       kind: sprite.type,
@@ -1105,7 +1114,7 @@ export class TankEngine {
     const p = this.canvasPoint(clientX, clientY);
     if (!p) return;
     const { x, y } = this.clampRoomPosition(p.x, p.y);
-    const inst: RoomInstance = { id: storage.uid('room'), spriteId, x, y, visible: true };
+    const inst: RoomInstance = { ...storage.newRecordMeta(), id: storage.uid('room'), spriteId, x, y, visible: true };
     this.roomInstances.push(inst);
     this.persist();
   }
@@ -1323,7 +1332,7 @@ export class TankEngine {
   groupMarquee(): void {
     if (!this.marqueeIds || this.marqueeIds.length < 2) return;
     const ids = new Set(this.marqueeIds);
-    const group: TankGroup = { id: storage.uid('group'), name: `Group ${this.groups.length + 1}`, zone: null };
+    const group: TankGroup = { ...storage.newRecordMeta(), id: storage.uid('group'), name: `Group ${this.groups.length + 1}`, zone: null };
     this.groups.push(group);
 
     let lastMatchIdx = -1;

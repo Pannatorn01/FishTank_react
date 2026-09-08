@@ -6,6 +6,7 @@ import type {
   Layer,
   OnionColorMode,
   OnionSettings,
+  RecordMeta,
   ResizeAnchor,
   RoomInstance,
   Sprite,
@@ -149,6 +150,31 @@ export function estimateUsage(): { bytes: number; percent: number } {
   return { bytes, percent: Math.min(100, (bytes / STORAGE_BUDGET_BYTES) * 100) };
 }
 
+/** Meta for a record being created right now (see RecordMeta in types.ts). `rev` stays 0 until a
+ *  server has accepted it - there is no server yet, so it is 0 everywhere today. */
+export function newRecordMeta(): RecordMeta {
+  return { updatedAt: Date.now(), deletedAt: 0, rev: 0 };
+}
+
+/** Backfills RecordMeta onto a record saved before those fields existed - same "migrate on load, never
+ *  write until the next real save" convention as normalizeInstance/normalizeRoomInstances. A record with
+ *  no recorded edit time is treated as edited now: any other guess (0, or the file's own age) would make
+ *  it lose every future merge against a copy on another device, silently discarding real work. */
+export function normalizeMeta<T extends Partial<RecordMeta>>(raw: T): T & RecordMeta {
+  return {
+    ...raw,
+    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : Date.now(),
+    deletedAt: typeof raw.deletedAt === 'number' ? raw.deletedAt : 0,
+    rev: typeof raw.rev === 'number' ? raw.rev : 0,
+  };
+}
+
+/** Stamps a record as changed now. Called at save time rather than on every mutation: the tank is
+ *  saved as one batch (TankEngine.save), so per-field precision would be invented detail. */
+export function touchMeta<T extends RecordMeta>(record: T): T {
+  return { ...record, updatedAt: Date.now() };
+}
+
 export function uid(prefix?: string): string {
   return (prefix || 'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
@@ -170,7 +196,16 @@ export function normalizeSprite(sprite: Sprite): Sprite {
   const width = sprite.width || legacy.size || DEFAULT_GRID_SIZE;
   const height = sprite.height || legacy.size || DEFAULT_GRID_SIZE;
   const frames = legacy.frames.map((frame) => (isLegacyFrame(frame) ? [makeLayer(frame)] : (frame as Layer[])));
-  return { ...sprite, width, height, frames, frameMs: sprite.frameMs || DEFAULT_FRAME_MS };
+  return {
+    ...normalizeMeta(sprite),
+    // A sprite saved before ids were mandatory (or one hand-edited to drop it) still has to be
+    // addressable - give it one now rather than letting a null id reach code that assumes a string.
+    id: sprite.id || uid('sprite'),
+    width,
+    height,
+    frames,
+    frameMs: sprite.frameMs || DEFAULT_FRAME_MS,
+  };
 }
 
 /**
@@ -206,9 +241,12 @@ export function loadSprites(): Sprite[] | null {
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return null;
     const normalized = parsed.map(normalizeSprite);
-    const valid = normalized.filter(isValidSprite);
-    if (valid.length < normalized.length) {
-      console.warn(`loadSprites: dropped ${normalized.length - valid.length} malformed sprite(s)`);
+    // Tombstones are storage's business, not the editor's - a deleted sprite has no frames left and
+    // would only fail isValidSprite() below and be reported as "malformed".
+    const live = normalized.filter((s) => s.deletedAt === 0);
+    const valid = live.filter(isValidSprite);
+    if (valid.length < live.length) {
+      console.warn(`loadSprites: dropped ${live.length - valid.length} malformed sprite(s)`);
     }
     // Some sprites survived - still better than throwing every saved sprite away; only fall back to
     // null (triggering the default sprite set) when literally nothing usable was left.
@@ -219,8 +257,47 @@ export function loadSprites(): Sprite[] | null {
   }
 }
 
+/**
+ * Every sprite record as stored, tombstones included. Only the persistence layer wants this view - the
+ * app itself asks loadSprites() for the sprites a user can actually see.
+ */
+function loadSpriteRecords(): Sprite[] {
+  try {
+    const raw = localStorage.getItem(KEY_SPRITES);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(normalizeSprite) : [];
+  } catch (e) {
+    console.warn('loadSpriteRecords failed', e);
+    return [];
+  }
+}
+
+/**
+ * What a deleted sprite leaves behind: its identity and the moment it died, with the pixels dropped.
+ * Keeping the frames would mean a user could never actually reclaim space by deleting work, which is
+ * the whole point of the delete button today; keeping the record means a future server can tell a
+ * deletion apart from a device that simply has not uploaded that sprite yet (see RecordMeta).
+ */
+function tombstoneFor(sprite: Sprite, now: number): Sprite {
+  return { ...sprite, frames: [], updatedAt: now, deletedAt: now };
+}
+
+/**
+ * Writes the library. Callers pass the *live* sprites only (that is all the editor holds); the
+ * tombstones already in storage are carried across here, so nothing has to remember they exist.
+ * A sprite that reappears in `sprites` after being deleted - a re-import of the same id, say - loses
+ * its tombstone, which is correct: it is alive again.
+ */
 export function saveSprites(sprites: Sprite[]): void {
-  writeKey(KEY_SPRITES, JSON.stringify(sprites));
+  const now = Date.now();
+  const alive = new Set(sprites.map((s) => s.id));
+  const previous = loadSpriteRecords();
+  const carriedTombstones = previous.filter((s) => s.deletedAt > 0 && !alive.has(s.id));
+  const removed = previous
+    .filter((s) => s.deletedAt === 0 && !alive.has(s.id))
+    .map((s) => tombstoneFor(s, now));
+  writeKey(KEY_SPRITES, JSON.stringify([...sprites, ...carriedTombstones, ...removed]));
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -245,7 +322,7 @@ export function randomFishLifespanMs(): number {
  *  the new build) rather than being treated as already dead or requiring guesswork about its true age. */
 function normalizeInstance(raw: Instance): Instance {
   return {
-    ...raw,
+    ...normalizeMeta(raw),
     bornAt: typeof raw.bornAt === 'number' ? raw.bornAt : Date.now(),
     lifespanMs: typeof raw.lifespanMs === 'number' ? raw.lifespanMs : randomFishLifespanMs(),
     dead: typeof raw.dead === 'boolean' ? raw.dead : false,
@@ -273,7 +350,8 @@ export function saveInstances(instances: Instance[]): void {
 export function loadGroups(): TankGroup[] {
   try {
     const raw = localStorage.getItem(KEY_GROUPS);
-    return raw ? JSON.parse(raw) : [];
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.map((g) => normalizeMeta(g as TankGroup)) : [];
   } catch (e) {
     console.warn('loadGroups failed', e);
     return [];
@@ -343,6 +421,7 @@ export function normalizeRoomInstances(raw: unknown, tankWidth: number, tankHeig
     .map((r): RoomInstance | null => {
       if (isLegacyRoomInstance(r)) {
         return {
+          ...normalizeMeta(r as Partial<RecordMeta>),
           id: r.id,
           spriteId: r.spriteId,
           x: r.xFrac * roomWidth - marginX,
@@ -353,6 +432,7 @@ export function normalizeRoomInstances(raw: unknown, tankWidth: number, tankHeig
       const inst = r as Partial<RoomInstance>;
       if (typeof inst.id !== 'string' || typeof inst.spriteId !== 'string') return null;
       return {
+        ...normalizeMeta(inst),
         id: inst.id,
         spriteId: inst.spriteId,
         x: typeof inst.x === 'number' ? inst.x : 0,
@@ -732,6 +812,7 @@ function buildPlantFrame(size: number, phase: number): Frame {
 export function buildDefaultSprites(): Sprite[] {
   return [
     {
+      ...newRecordMeta(),
       id: uid('sprite'),
       name: 'Goldfish (sample)',
       type: 'fish',
@@ -744,6 +825,7 @@ export function buildDefaultSprites(): Sprite[] {
       frameMs: DEFAULT_FRAME_MS,
     },
     {
+      ...newRecordMeta(),
       id: uid('sprite'),
       name: 'Seaweed (sample)',
       type: 'object',

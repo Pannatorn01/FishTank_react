@@ -38,6 +38,9 @@ let idc = 0;
 function fish(over: Partial<Instance> = {}): Instance {
   idc++;
   return {
+    updatedAt: NOW,
+    deletedAt: 0,
+    rev: 0,
     id: 'f' + idc,
     spriteId: 'sprite-fish',
     kind: 'fish',
@@ -67,6 +70,9 @@ function fish(over: Partial<Instance> = {}): Instance {
 }
 
 const FISH_SPRITE: Sprite = {
+  updatedAt: NOW,
+  deletedAt: 0,
+  rev: 0,
   id: 'sprite-fish',
   name: 'Fish',
   type: 'fish',
@@ -145,7 +151,7 @@ describe('tickHunger', () => {
 
   it('a single catch-up step can both empty hunger and kill the fish (closed-tab replay)', () => {
     const f = fish({ hunger: 0.1, groupId: 'g1' });
-    const engine = makeEngine([f], [{ id: 'g1', name: 'G', zone: null }]);
+    const engine = makeEngine([f], [{ updatedAt: NOW, deletedAt: 0, rev: 0, id: 'g1', name: 'G', zone: null }]);
     call(engine, 'tickHunger', 6 * 24 * 60 * 60 * 1000); // 6 days
     expect(f.dead).toBe(true);
     expect(f.diedAt).toBe(NOW);
@@ -183,7 +189,7 @@ describe('undo/redo', () => {
   it('removeInstance is undoable and redoable, restoring group membership', () => {
     const a = fish({ id: 'a', groupId: 'g1' });
     const b = fish({ id: 'b', groupId: 'g1' });
-    const engine = makeEngine([a, b], [{ id: 'g1', name: 'G', zone: null }]);
+    const engine = makeEngine([a, b], [{ updatedAt: NOW, deletedAt: 0, rev: 0, id: 'g1', name: 'G', zone: null }]);
 
     engine.removeInstance('a');
     expect(engine.instances.map((i) => i.id)).toEqual(['b']);
@@ -271,7 +277,7 @@ describe('grouping', () => {
   it('pruneEmptyGroups dissolves a group left with fewer than two members', () => {
     const a = fish({ id: 'a', groupId: 'g1' });
     const b = fish({ id: 'b', groupId: 'g1' });
-    const engine = makeEngine([a, b], [{ id: 'g1', name: 'G', zone: null }]);
+    const engine = makeEngine([a, b], [{ updatedAt: NOW, deletedAt: 0, rev: 0, id: 'g1', name: 'G', zone: null }]);
     engine.removeInstance('b'); // g1 now has one member -> should dissolve
     expect(engine.groups).toHaveLength(0);
     expect(engine.instances.find((i) => i.id === 'a')!.groupId).toBeNull();
@@ -280,7 +286,7 @@ describe('grouping', () => {
   it('deleteGroup removes both the members and the group entry', () => {
     const engine = makeEngine(
       [fish({ id: 'a', groupId: 'g1' }), fish({ id: 'b', groupId: 'g1' }), fish({ id: 'c' })],
-      [{ id: 'g1', name: 'G', zone: null }],
+      [{ updatedAt: NOW, deletedAt: 0, rev: 0, id: 'g1', name: 'G', zone: null }],
     );
     engine.deleteGroup('g1');
     expect(engine.instances.map((i) => i.id)).toEqual(['c']);
@@ -290,7 +296,7 @@ describe('grouping', () => {
   it('ungroup keeps the instances and only clears membership + the group entry', () => {
     const engine = makeEngine(
       [fish({ id: 'a', groupId: 'g1' }), fish({ id: 'b', groupId: 'g1' })],
-      [{ id: 'g1', name: 'G', zone: null }],
+      [{ updatedAt: NOW, deletedAt: 0, rev: 0, id: 'g1', name: 'G', zone: null }],
     );
     engine.ungroup('g1');
     expect(engine.instances).toHaveLength(2);
@@ -302,7 +308,7 @@ describe('grouping', () => {
     const a = fish({ id: 'a', groupId: 'g1' });
     const b = fish({ id: 'b', groupId: 'g1' });
     const c = fish({ id: 'c' });
-    const engine = makeEngine([a, b, c], [{ id: 'g1', name: 'G', zone: null }]);
+    const engine = makeEngine([a, b, c], [{ updatedAt: NOW, deletedAt: 0, rev: 0, id: 'g1', name: 'G', zone: null }]);
     expect(call<string[]>(engine, 'coMoversFor', a)).toEqual(['b']);
     expect(call<string[]>(engine, 'coMoversFor', c)).toEqual([]);
 
@@ -329,7 +335,7 @@ describe('z-order', () => {
       fish({ id: 'x' }),
       fish({ id: 'b', groupId: 'g1' }),
       fish({ id: 'y' }),
-    ], [{ id: 'g1', name: 'G', zone: null }]);
+    ], [{ updatedAt: NOW, deletedAt: 0, rev: 0, id: 'g1', name: 'G', zone: null }]);
     engine.bringToFront('a');
     expect(engine.instances.map((i) => i.id)).toEqual(['x', 'y', 'a', 'b']);
   });
@@ -344,7 +350,7 @@ describe('z-order', () => {
       fish({ id: 'a', groupId: 'g1' }),
       fish({ id: 'x' }),
       fish({ id: 'b', groupId: 'g1' }),
-    ], [{ id: 'g1', name: 'G', zone: null }]);
+    ], [{ updatedAt: NOW, deletedAt: 0, rev: 0, id: 'g1', name: 'G', zone: null }]);
     (engine as unknown as { draggingInstance: Instance | null }).draggingInstance =
       engine.instances.find((i) => i.id === 'a')!;
     expect(engine.visibleDrawOrder().map((i) => i.id)).toEqual(['x', 'a', 'b']);
@@ -382,7 +388,7 @@ describe('swimBoundsFor', () => {
     const gz = { x0: 10, y0: 10, x1: 100, y1: 100 };
     const iz = { x0: 500, y0: 500, x1: 600, y1: 600 };
     const f = fish({ groupId: 'g1', zone: iz });
-    const engine = makeEngine([f], [{ id: 'g1', name: 'G', zone: gz }]);
+    const engine = makeEngine([f], [{ updatedAt: NOW, deletedAt: 0, rev: 0, id: 'g1', name: 'G', zone: gz }]);
     expect(call(engine, 'zoneFor', f)).toEqual(gz);
     f.groupId = null;
     expect(call(engine, 'zoneFor', f)).toEqual(iz);

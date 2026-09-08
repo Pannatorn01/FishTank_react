@@ -173,10 +173,14 @@ const ROTATE_HANDLE_OFFSET = 24;
 export const ROTATE_HANDLE_RADIUS = 7;
 const ROTATE_HIT_RADIUS = 11;
 
+/** A fresh, never-saved sprite. It gets a real id straight away (not on first save) so every code path
+ *  can assume `Sprite.id` is a string; whether it has been saved is answered by looking it up in
+ *  `sprites`, not by inspecting the id (see Sprite.id in types.ts). */
 function blankSprite(): Sprite {
   const size = storage.DEFAULT_GRID_SIZE;
   return {
-    id: null,
+    ...storage.newRecordMeta(),
+    id: storage.uid('sprite'),
     name: '',
     type: 'fish',
     width: size,
@@ -3739,7 +3743,8 @@ class PixelEditorEngine {
         if (!normalized || !Array.isArray(normalized.frames) || !normalized.frames.length || typeof normalized.width !== 'number' || typeof normalized.height !== 'number') {
           throw new Error('invalid sprite file');
         }
-        normalized.id = null;
+        normalized.id = storage.uid('sprite');
+        Object.assign(normalized, storage.newRecordMeta(), { id: normalized.id });
         this.current = normalized;
         this.frameIndex = 0;
         this.activeLayerIndex = 0;
@@ -3807,14 +3812,16 @@ class PixelEditorEngine {
     this.current.name = finalName;
     this.current.type = type;
 
+    // Whether this is a new sprite or an edit of an existing one is decided by looking it up in the
+    // library, not by a missing id - every sprite has had an id since it was created (see blankSprite).
+    this.current.updatedAt = Date.now();
     const previousSprites = this.sprites;
-    if (this.current.id) {
-      const idx = this.sprites.findIndex((s) => s.id === this.current.id);
-      if (idx >= 0) this.sprites[idx] = cloneSprite(this.current);
-    } else {
-      this.current.id = storage.uid('sprite');
-      this.sprites.push(cloneSprite(this.current));
-    }
+    const idx = this.sprites.findIndex((s) => s.id === this.current.id);
+    // A copy, not an in-place splice: the rollback below has to have something to roll back to.
+    const next = [...this.sprites];
+    if (idx >= 0) next[idx] = cloneSprite(this.current);
+    else next.push(cloneSprite(this.current));
+    this.sprites = next;
 
     try {
       storage.saveSprites(this.sprites);

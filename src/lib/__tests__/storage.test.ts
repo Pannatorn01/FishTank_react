@@ -34,6 +34,7 @@ function validSprite(overrides: Partial<Sprite> = {}): Sprite {
   const width = 4;
   const height = 4;
   return {
+    ...storage.newRecordMeta(),
     id: 'sprite_1',
     name: 'Test Fish',
     type: 'fish',
@@ -185,5 +186,64 @@ describe('keys written outside storage.ts (P0-4)', () => {
     expect(localStorage.getItem(storage.KEY_UI_SCALE)).toBeNull();
     expect(localStorage.getItem(`${storage.KEY_SIDE_PANEL_COLLAPSED_PREFIX}palette`)).toBeNull();
     expect(localStorage.getItem('someOtherApp.unrelatedKey')).toBe('keep me');
+  });
+});
+
+describe('record metadata and tombstones (P1)', () => {
+  it('backfills updatedAt/deletedAt/rev onto a sprite saved before they existed', () => {
+    const legacy = { id: 'old_1', name: 'Old', type: 'fish', width: 2, height: 1, frames: [[null, '#fff']] };
+    localStorage.setItem('fishtank.sprites.v1', JSON.stringify([legacy]));
+    const loaded = storage.loadSprites();
+    expect(loaded).toHaveLength(1);
+    expect(loaded![0].updatedAt).toBeGreaterThan(0);
+    expect(loaded![0].deletedAt).toBe(0);
+    expect(loaded![0].rev).toBe(0);
+  });
+
+  it('gives a sprite an id when an older record has none', () => {
+    const legacy = { name: 'No id', type: 'fish', width: 2, height: 1, frames: [[null, '#fff']] };
+    localStorage.setItem('fishtank.sprites.v1', JSON.stringify([legacy]));
+    expect(storage.loadSprites()![0].id).toMatch(/^sprite/);
+  });
+
+  it('leaves a tombstone when a sprite disappears from the saved list', () => {
+    storage.saveSprites([validSprite({ id: 'a' }), validSprite({ id: 'b' })]);
+    storage.saveSprites([validSprite({ id: 'a' })]);
+
+    // The user no longer sees it...
+    expect(storage.loadSprites()!.map((s) => s.id)).toEqual(['a']);
+    // ...but the record survives, marked deleted and stripped of its pixels, so a future sync can tell
+    // "deleted" apart from "not uploaded yet".
+    const raw = JSON.parse(localStorage.getItem('fishtank.sprites.v1')!) as Sprite[];
+    const tombstone = raw.find((s) => s.id === 'b');
+    expect(tombstone).toBeDefined();
+    expect(tombstone!.deletedAt).toBeGreaterThan(0);
+    expect(tombstone!.frames).toEqual([]);
+  });
+
+  it('keeps tombstones across later saves without resurrecting them', () => {
+    storage.saveSprites([validSprite({ id: 'a' }), validSprite({ id: 'b' })]);
+    storage.saveSprites([validSprite({ id: 'a' })]);
+    storage.saveSprites([validSprite({ id: 'a' }), validSprite({ id: 'c' })]);
+
+    const raw = JSON.parse(localStorage.getItem('fishtank.sprites.v1')!) as Sprite[];
+    expect(raw.find((s) => s.id === 'b')!.deletedAt).toBeGreaterThan(0);
+    expect(storage.loadSprites()!.map((s) => s.id).sort()).toEqual(['a', 'c']);
+  });
+
+  it('a sprite saved again after deletion is alive once more', () => {
+    storage.saveSprites([validSprite({ id: 'a' })]);
+    storage.saveSprites([]);
+    storage.saveSprites([validSprite({ id: 'a' })]);
+    expect(storage.loadSprites()!.map((s) => s.id)).toEqual(['a']);
+  });
+
+  it('touchMeta moves updatedAt forward and leaves the rest of the record alone', () => {
+    const sprite = validSprite({ updatedAt: 1 });
+    const touched = storage.touchMeta(sprite);
+    expect(touched.updatedAt).toBeGreaterThan(1);
+    expect(touched.id).toBe(sprite.id);
+    expect(touched.deletedAt).toBe(0);
+    expect(touched.rev).toBe(0);
   });
 });
