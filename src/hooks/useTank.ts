@@ -14,6 +14,7 @@ import {
   ROUNDED_RADIUS_MIN,
   roundedCornerRadius,
 } from '@/tank/sim/geometry';
+import { type AlgaePatch, generateAlgaePatches } from '@/tank/sim/algae';
 import type { BackgroundTransform, FoodItem, Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape, WasteItem } from '@/lib/types';
 
 /** Re-exported from geometry.ts (their canonical home as of P3 - see docs/PIXI_MIGRATION_PLAN.md) so
@@ -93,11 +94,6 @@ const ALGAE_WASTE_SPEEDUP_PER_ITEM = 0.4;
  *  algae-covered back to spotless - calibrated to a few full-width swipes of the tank, not one wipe
  *  (scrubbing should read as an actual chore, if a quick one). */
 const ALGAE_SCRUB_PX_TO_CLEAN = 1500;
-/** At algae=1, each edge's translucent band reaches this fraction of the tank's shorter side - see
- *  drawAlgae()/tankScene.ts's algaeLayer. Bands from adjacent edges are allowed to overlap in the
- *  corners rather than being clipped apart - corners piling up thicker is exactly how real tank algae
- *  actually accumulates, so this is a feature of the approximation, not a bug in it. */
-const ALGAE_MAX_BAND_FRAC = 0.35;
 
 /** Matches tankScene.ts's Pixi version exactly - see the hunger-bar comment in drawInstance(). */
 const HUNGER_BAR_HEIGHT = 4;
@@ -173,6 +169,13 @@ export class TankEngine {
    *  is sitting in the tank right now (see tickAlgae()), shrinks when the user scrubs it in Life mode
    *  (see scrubAlgae()). P5 §6 item 5. */
   algae = 0;
+  /** Where each algae patch sits and what it looks like (see generateAlgaePatches's own doc comment
+   *  for why this lives on the engine rather than being generated independently by each renderer) -
+   *  regenerated only when the tank's size actually changes (see ensureAlgaePatches()), not every
+   *  frame. How many of these are actually drawn at any moment scales with `algae` (see drawAlgae()) -
+   *  this array itself doesn't change as algae grows/shrinks, only how much of it renderers reveal. */
+  algaePatches: AlgaePatch[] = [];
+  private algaePatchesSizeKey = '';
 
   /** Logical tank size (the actual simulation space fish swim in) set via the size controls or by
    *  dragging the resize handle - null only very briefly before init() runs. A view/layout
@@ -1908,6 +1911,17 @@ export class TankEngine {
     this.persist();
   }
 
+  /** Regenerates algaePatches only when the tank's own size has actually changed - the layout itself
+   *  doesn't need to change as `algae` grows/shrinks, only how much of it drawAlgae()/tankScene.ts
+   *  reveal (see algaePatches's own doc comment). */
+  private ensureAlgaePatches(): void {
+    if (!this.canvas) return;
+    const key = `${this.canvas.width}:${this.canvas.height}`;
+    if (key === this.algaePatchesSizeKey) return;
+    this.algaePatchesSizeKey = key;
+    this.algaePatches = generateAlgaePatches(this.canvas.width, this.canvas.height);
+  }
+
   /** Resolves `elapsedMs` of real time's worth of hunger decay (and any resulting starvation death) in
    *  one shot - called every frame with a tiny `elapsedMs` (dt in ms) during normal play, and once from
    *  init() with however much real time passed while the tab was closed (see the catch-up comment
@@ -1979,7 +1993,10 @@ export class TankEngine {
     return Math.max(0, 1 - this.wasteItems.length / WASTE_MAX_FOR_ZERO_QUALITY);
   }
 
-  private collectWasteAt(x: number, y: number): boolean {
+  /** Tries to collect whatever waste is nearest (x, y) (Life-mode tap - see roomScene.ts's tap/drag
+   *  state machine) - returns whether one was actually close enough to collect, so the caller can fall
+   *  through to a different action (dropping food) when the tap didn't land on any waste. */
+  collectWasteAt(x: number, y: number): boolean {
     let nearest: WasteItem | null = null;
     let bestDist = Infinity;
     for (const w of this.wasteItems) {
@@ -1996,21 +2013,13 @@ export class TankEngine {
     return true;
   }
 
-  /** The single Life-mode tank-tap handler (see LifePanel.tsx / roomScene.ts's feedHitArea) - collects
-   *  a piece of waste under the tap if there is one, otherwise drops food there. One combined handler
-   *  rather than two separate click targets so the interaction stays "tap the thing you want to act
-   *  on" instead of the user needing to know which mode they're in. */
-  handleTankTap(x: number, y: number): void {
-    if (this.collectWasteAt(x, y)) return;
-    this.feedAt(x, y);
-  }
-
   private update(dt: number): void {
     if (!this.canvas || !this.hasSized) return;
 
     this.tickHunger(dt * 1000);
     this.tickWaterLevel(dt * 1000);
     this.tickAlgae(dt * 1000, this.wasteItems.length);
+    this.ensureAlgaePatches();
 
     if (this.foodItems.length) {
       // Rests just above the sand strip fish can't swim into (see swimBoundsFor's own sandH) rather
@@ -2284,18 +2293,24 @@ export class TankEngine {
    *  how real tank algae actually accumulates anyway. Drawn right after the background/water, before
    *  anything else, so it reads as being on the glass rather than floating in the water. */
   private drawAlgae(): void {
-    if (!this.ctx || !this.canvas || this.algae <= 0) return;
+    if (!this.ctx || this.algae <= 0 || !this.algaePatches.length) return;
     const ctx = this.ctx;
-    const w = this.canvas.width;
-    const h = this.canvas.height;
-    const band = this.algae * Math.min(w, h) * ALGAE_MAX_BAND_FRAC;
-    if (band <= 0) return;
+    const visibleCount = Math.round(this.algae * this.algaePatches.length);
+    if (visibleCount <= 0) return;
     ctx.save();
-    ctx.fillStyle = 'rgba(63, 107, 31, 0.5)';
-    ctx.fillRect(0, 0, w, band);
-    ctx.fillRect(0, h - band, w, band);
-    ctx.fillRect(0, 0, band, h);
-    ctx.fillRect(w - band, 0, band, h);
+    ctx.strokeStyle = '#4ade80';
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (let i = 0; i < visibleCount; i++) {
+      const patch = this.algaePatches[i];
+      ctx.beginPath();
+      ctx.moveTo(patch.x + patch.points[0].x, patch.y + patch.points[0].y);
+      for (let p = 1; p < patch.points.length; p++) {
+        ctx.lineTo(patch.x + patch.points[p].x, patch.y + patch.points[p].y);
+      }
+      ctx.stroke();
+    }
     ctx.restore();
   }
 

@@ -34,10 +34,8 @@ const FOOD_RADIUS = 4;
 const WASTE_COLOR = 0x6b4a2f;
 const WASTE_RADIUS_X = 3;
 const WASTE_RADIUS_Y = 5;
-const ALGAE_COLOR = 0x3f6b1f;
-const ALGAE_ALPHA = 0.5;
-/** Matches useTank.ts's Canvas2D ALGAE_MAX_BAND_FRAC exactly. */
-const ALGAE_MAX_BAND_FRAC = 0.35;
+/** Matches useTank.ts's Canvas2D drawAlgae() stroke color exactly. */
+const ALGAE_COLOR = 0x4ade80;
 
 function spriteDims(sprite: SpriteData): { width: number; height: number } {
   return { width: sprite.width || 16, height: sprite.height || 16 };
@@ -364,21 +362,19 @@ export function createTankScene(stage: Container): TankSceneHandle {
       waterline.clear().rect(0, waterTop, w, waterlineH).fill({ color: 0xffffff, alpha: 0.35 });
     }
 
-    // Algae (P5 §6 item 5) - see the doc comment on useTank.ts's drawAlgae() for why this is 4
-    // overlapping edge bands rather than true per-region growth.
+    // Algae (P5 §6 item 5) - scattered squiggle patches (see generateAlgaePatches's doc comment),
+    // reading `engine.algaePatches` rather than generating its own so this always matches whatever
+    // Canvas2D's drawAlgae() would show for the same tank (both read the one engine-owned layout).
     algaeLayer.clear();
-    const algaeBand = engine.algae * Math.min(w, h) * ALGAE_MAX_BAND_FRAC;
-    if (algaeBand > 0) {
-      algaeLayer
-        .rect(0, 0, w, algaeBand)
-        .fill({ color: ALGAE_COLOR, alpha: ALGAE_ALPHA })
-        .rect(0, h - algaeBand, w, algaeBand)
-        .fill({ color: ALGAE_COLOR, alpha: ALGAE_ALPHA })
-        .rect(0, 0, algaeBand, h)
-        .fill({ color: ALGAE_COLOR, alpha: ALGAE_ALPHA })
-        .rect(w - algaeBand, 0, algaeBand, h)
-        .fill({ color: ALGAE_COLOR, alpha: ALGAE_ALPHA });
+    const visibleAlgaeCount = Math.round(engine.algae * engine.algaePatches.length);
+    for (let i = 0; i < visibleAlgaeCount; i++) {
+      const patch = engine.algaePatches[i];
+      algaeLayer.moveTo(patch.x + patch.points[0].x, patch.y + patch.points[0].y);
+      for (let p = 1; p < patch.points.length; p++) {
+        algaeLayer.lineTo(patch.x + patch.points[p].x, patch.y + patch.points[p].y);
+      }
     }
+    if (visibleAlgaeCount > 0) algaeLayer.stroke({ width: 4, color: ALGAE_COLOR, cap: 'round', join: 'round' });
 
     const bgSprite = engine.backgroundSpriteId
       ? engine.sprites.find((s) => s.id === engine.backgroundSpriteId && s.type === 'background')
