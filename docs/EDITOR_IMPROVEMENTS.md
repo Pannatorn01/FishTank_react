@@ -1,8 +1,8 @@
 # Draw Fish/Decor — รายการสิ่งที่ควรปรับปรุง (Backlog)
 
 > รายการนี้มาจากการ audit โค้ดจริง (ไม่ใช่การเดา) — แต่ละข้อระบุไฟล์/บรรทัดไว้ให้กระโดดไปแก้ได้เลย
-> Created: 2026-09-07 · Updated: 2026-09-08 · Status: **แก้ไปหลายข้อแล้ว (ดู "สถานะ" ในแต่ละข้อ) —
-> ที่เหลือยังเป็น backlog**
+> Created: 2026-09-07 · Updated: 2026-09-08 · Status: **ทั้ง 14 ข้อ ปิดครบแล้ว** (แก้ / ตรวจแล้วว่า
+> ไม่ต้องแก้ / ทำเป็นงานย่อยแยก) — ดู "สถานะ" ในแต่ละข้อ · เก็บไว้เป็นบันทึกว่าเคยเจออะไรและแก้ยังไง
 >
 > เกี่ยวข้องกับ: [`src/lib/tools/ARCHITECTURE.md`](../src/lib/tools/ARCHITECTURE.md) (แผน migrate เครื่องมือวาด)
 > และ [`PIXI_MIGRATION_PLAN.md`](./PIXI_MIGRATION_PLAN.md) (ดู §0 — ข้อขัดแย้งที่ต้องเคลียร์)
@@ -47,7 +47,7 @@ step" ไม่ใช่ "step ละน้อย"
 
 ## P1 — หนี้ทางสถาปัตยกรรม
 
-### 4. `usePixelEditor.ts` ยังใหญ่ (migrate เครื่องมือครบทุกตัวแล้ว)
+### 4. ✅ `usePixelEditor.ts` ยังใหญ่ — migrate เครื่องมือครบทุกตัวแล้ว
 **สถานะ:** เสร็จแล้ว — migrate เครื่องมือไปสถาปัตยกรรมใหม่ครบทั้ง 14 ตัว (pen, eraser, rect, ellipse,
 line, magicWand, move, select, lasso, eyedropper, fill, gradient, spray, curve) ไม่มี tool ไหนเหลือ
 if-chain เดิมแล้ว curve (ตัวสุดท้าย ใหญ่ที่สุด) ต้องเพิ่ม interface จริง 4 อย่าง
@@ -64,7 +64,7 @@ ARCHITECTURE.md §Deviations — (1) `commitGestureResult`'s "ไม่มีอ
 เลย ทำให้ rect/line/curve ที่ลากออกนอก selection ทั้งหมดค้าง overlay ไว้บนจอ (2) Escape ระหว่าง curve
 bend-idle ไม่เคย rollback undo entry ที่ push ไว้ตอนเริ่มลาก ทำให้ค้าง entry เปล่าไว้ใน undo stack
 
-### 5. โค้ดเดิมที่ตายแล้ว — ล่าสุด: ลบไปแล้วจริง (หลังพลาดไปหนึ่งรอบ)
+### 5. ✅ โค้ดเดิมที่ตายแล้ว — ลบครบแล้ว (ทั้ง 2 ก้อนด้านล่าง)
 รอบก่อน: เข้าใจผิดว่า branch `if (this.moveBuffer)` ใน `onPointerMove` เข้าไม่ถึงแล้ว ลองลบดูจริงแล้วพบว่า
 **ตอนนั้นยังใช้งานอยู่** เพราะ `select`/`lasso` คลิกด้านในกรอบ selection ยังเรียก `startMoveGesture()`
 แบบเดิมโดยตรง ไม่ผ่าน `activeGesture` — ได้คืนโค้ดกลับตอนนั้น
@@ -126,7 +126,8 @@ field `engine.gradientType` + `setGradientType()` (sticky ข้าม sprite �
 - commit path + live preview overlay (`ctx.createRadialGradient` / dither loop) ใช้ helper เดียวกัน
 - 15 gradient tests (เพิ่ม 3 radial: distance-based blend, 2D symmetry, zero-length) + build + lint +
   Playwright (วาด radial → เห็น blob กลมจริงบน canvas + preview)
-**ยังไม่ทำ:** ปุ่ม swap สี ในแถบ tool (มีอยู่แล้วใน COLORS panel + คีย์ X — ไม่เร่ง)
+**เพิ่มด้วย:** ปุ่ม swap สี start/end ในแถบ tool (เดิมมีแค่ใน COLORS panel + คีย์ X) — เรียก
+`engine.swapColors()` ตัวเดิม มี `aria-label`
 
 ### 9. ~~คีย์ลัดไม่มีที่ไหนบอกผู้ใช้~~ — ตรวจซ้ำแล้ว: มีอยู่แล้ว ไม่ต้องแก้
 `ToolRail.tsx:53`'s `title={t('tool.${entry.tool}.desc')}` มีคีย์ลัดต่อท้ายอยู่แล้วทุกตัว

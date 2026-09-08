@@ -198,15 +198,27 @@ export function ToolOptionsBar({ engine }: { engine: PixelEditorEngine }) {
       )}
 
       {showGradientType && (
-        <Select value={engine.gradientType} onValueChange={(v) => engine.setGradientType(v as GradientType)}>
-          <SelectTrigger className="w-28 text-xs" title={t('status.gradientTypeTitle')}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="linear">{t('status.gradientLinear')}</SelectItem>
-            <SelectItem value="radial">{t('status.gradientRadial')}</SelectItem>
-          </SelectContent>
-        </Select>
+        <>
+          <Select value={engine.gradientType} onValueChange={(v) => engine.setGradientType(v as GradientType)}>
+            <SelectTrigger className="w-28 text-xs" title={t('status.gradientTypeTitle')}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="linear">{t('status.gradientLinear')}</SelectItem>
+              <SelectItem value="radial">{t('status.gradientRadial')}</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button
+            type="button"
+            size="icon"
+            variant="secondary"
+            title={t('palette.gradientSwap')}
+            aria-label={t('palette.gradientSwap')}
+            onClick={() => engine.swapColors()}
+          >
+            <i className="fa-solid fa-arrow-right-arrow-left" />
+          </Button>
+        </>
       )}
 
       {showDither && (
