@@ -247,3 +247,58 @@ describe('record metadata and tombstones (P1)', () => {
     expect(touched.rev).toBe(0);
   });
 });
+
+describe('run-length encoded frames (P2)', () => {
+  it('writes frames encoded, not as one entry per cell', () => {
+    storage.saveSprites([validSprite()]);
+    const raw = localStorage.getItem('fishtank.sprites.v1')!;
+    expect(raw).toContain('"enc":"rle1"');
+  });
+
+  it('round-trips a sprite through the encoded format unchanged', () => {
+    const sprite = validSprite();
+    sprite.frames[0][0].cells = ['#ff0000', null, '#ff0000', null, ...new Array(12).fill(null)];
+    storage.saveSprites([sprite]);
+    expect(storage.loadSprites()![0].frames[0][0].cells).toEqual(sprite.frames[0][0].cells);
+  });
+
+  it('still reads a library saved in the old uncompressed format', () => {
+    const legacy = {
+      id: 'legacy_1',
+      name: 'Legacy',
+      type: 'fish',
+      width: 2,
+      height: 2,
+      frameMs: 120,
+      frames: [[{ id: 'l1', name: 'Layer 1', visible: true, opacity: 1, cells: ['#fff', null, null, '#000'] }]],
+    };
+    localStorage.setItem('fishtank.sprites.v1', JSON.stringify([legacy]));
+    const loaded = storage.loadSprites();
+    expect(loaded).toHaveLength(1);
+    expect(loaded![0].frames[0][0].cells).toEqual(['#fff', null, null, '#000']);
+  });
+
+  it('an encoded frame of the wrong length is still caught as malformed', () => {
+    // The decode step must not hide a corrupt sprite from isValidSprite: a 4-cell frame in a sprite
+    // that claims to be 4x4 has to be dropped, exactly as it was before frames were encoded.
+    const sprite = validSprite();
+    storage.saveSprites([sprite]);
+    const raw = JSON.parse(localStorage.getItem('fishtank.sprites.v1')!) as unknown[];
+    (raw[0] as { frames: { cells: { runs: number[] } }[][] }).frames[0][0].cells.runs = [4, 0];
+    localStorage.setItem('fishtank.sprites.v1', JSON.stringify(raw));
+    expect(storage.loadSprites()).toBeNull();
+  });
+
+  it('shrinks a realistic sprite well below its raw size', () => {
+    const width = 32;
+    const height = 32;
+    const cells = storage.emptyFrame(width, height);
+    for (let i = 300; i < 700; i += 1) cells[i] = '#ff7043';
+    storage.saveSprites([
+      validSprite({ width, height, frames: [[storage.makeLayer(cells)]] }),
+    ]);
+    const stored = localStorage.getItem('fishtank.sprites.v1')!.length;
+    const rawEquivalent = JSON.stringify(cells).length;
+    expect(stored).toBeLessThan(rawEquivalent / 3);
+  });
+});

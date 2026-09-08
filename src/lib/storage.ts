@@ -14,6 +14,7 @@ import type {
   TankShape,
   UiTheme,
 } from './types';
+import { decodeFrame, encodeFrame, isRleFrame, type RleFrame } from './pixelCodec';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
@@ -187,15 +188,37 @@ function isLegacyFrame(frame: unknown): frame is Frame {
   return Array.isArray(frame) && frame.every((c) => c === null || typeof c === 'string');
 }
 
+/** A layer as written to storage: same thing as a Layer except its cells are run-length encoded (see
+ *  pixelCodec.ts). Frames saved by an older build are still plain arrays, so both are read. */
+type StoredLayer = Omit<Layer, 'cells'> & { cells: Frame | RleFrame };
+type StoredSprite = Omit<Sprite, 'frames'> & { frames: StoredLayer[][] };
+
+/** Storage shape -> memory shape. Nothing above this file ever sees an encoded frame. */
+function decodeLayer(layer: StoredLayer): Layer {
+  return { ...layer, cells: isRleFrame(layer.cells) ? decodeFrame(layer.cells) : layer.cells };
+}
+
+/** Memory shape -> storage shape. */
+function encodeSprite(sprite: Sprite): StoredSprite {
+  return {
+    ...sprite,
+    frames: sprite.frames.map((layers) => layers.map((layer) => ({ ...layer, cells: encodeFrame(layer.cells) }))),
+  };
+}
+
 /**
  * Migrates sprites saved before non-square grids and before layers: backfills width/height from
  * the old single `size` field, and wraps a pre-layers frame (a flat color array) in a single layer.
+ * Also decodes run-length-encoded frames (the current storage format) back into the flat arrays the
+ * editor and the renderers work on.
  */
 export function normalizeSprite(sprite: Sprite): Sprite {
   const legacy = sprite as unknown as { size?: number; frames: unknown[] };
   const width = sprite.width || legacy.size || DEFAULT_GRID_SIZE;
   const height = sprite.height || legacy.size || DEFAULT_GRID_SIZE;
-  const frames = legacy.frames.map((frame) => (isLegacyFrame(frame) ? [makeLayer(frame)] : (frame as Layer[])));
+  const frames = legacy.frames.map((frame) =>
+    isLegacyFrame(frame) ? [makeLayer(frame)] : (frame as StoredLayer[]).map(decodeLayer)
+  );
   return {
     ...normalizeMeta(sprite),
     // A sprite saved before ids were mandatory (or one hand-edited to drop it) still has to be
@@ -297,7 +320,8 @@ export function saveSprites(sprites: Sprite[]): void {
   const removed = previous
     .filter((s) => s.deletedAt === 0 && !alive.has(s.id))
     .map((s) => tombstoneFor(s, now));
-  writeKey(KEY_SPRITES, JSON.stringify([...sprites, ...carriedTombstones, ...removed]));
+  const records = [...sprites, ...carriedTombstones, ...removed];
+  writeKey(KEY_SPRITES, JSON.stringify(records.map(encodeSprite)));
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
