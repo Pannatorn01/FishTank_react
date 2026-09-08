@@ -117,10 +117,14 @@ export function ToolOptionsBar({ engine }: { engine: PixelEditorEngine }) {
 
       {showContiguous && (
         <>
-          <label className="mini-toggle" title={t('status.wandContiguousTitle')}>
-            <Checkbox checked={engine.wandContiguous} onCheckedChange={(v) => engine.setWandContiguous(!!v)} />
-            <Label>{t('status.wandContiguous')}</Label>
-          </label>
+          <span className="mini-toggle" title={t('status.wandContiguousTitle')}>
+            <Checkbox
+              id="tool-opt-contiguous"
+              checked={engine.wandContiguous}
+              onCheckedChange={(v) => engine.setWandContiguous(!!v)}
+            />
+            <Label htmlFor="tool-opt-contiguous">{t('status.wandContiguous')}</Label>
+          </span>
           <span className="toolbar-divider" aria-hidden="true" />
         </>
       )}
@@ -171,24 +175,36 @@ export function ToolOptionsBar({ engine }: { engine: PixelEditorEngine }) {
       )}
 
       {showShapeFilled && (
-        <label className="mini-toggle">
-          <Checkbox checked={engine.shapeFilled} onCheckedChange={(v) => engine.setShapeFilled(!!v)} />
-          <Label>{t('status.fillShape')}</Label>
-        </label>
+        <span className="mini-toggle">
+          <Checkbox
+            id="tool-opt-shape-filled"
+            checked={engine.shapeFilled}
+            onCheckedChange={(v) => engine.setShapeFilled(!!v)}
+          />
+          <Label htmlFor="tool-opt-shape-filled">{t('status.fillShape')}</Label>
+        </span>
       )}
 
       {showPixelPerfect && (
-        <label className="mini-toggle" title={t('status.pixelPerfectTitle')}>
-          <Checkbox checked={engine.pixelPerfect} onCheckedChange={(v) => engine.setPixelPerfect(!!v)} />
-          <Label>{t('status.pixelPerfect')}</Label>
-        </label>
+        <span className="mini-toggle" title={t('status.pixelPerfectTitle')}>
+          <Checkbox
+            id="tool-opt-pixel-perfect"
+            checked={engine.pixelPerfect}
+            onCheckedChange={(v) => engine.setPixelPerfect(!!v)}
+          />
+          <Label htmlFor="tool-opt-pixel-perfect">{t('status.pixelPerfect')}</Label>
+        </span>
       )}
 
       {showDither && (
-        <label className="mini-toggle" title={t('status.ditherTitle')}>
-          <Checkbox checked={engine.ditherEnabled} onCheckedChange={(v) => engine.setDitherEnabled(!!v)} />
-          <Label>{t('status.dither')}</Label>
-        </label>
+        <span className="mini-toggle" title={t('status.ditherTitle')}>
+          <Checkbox
+            id="tool-opt-dither"
+            checked={engine.ditherEnabled}
+            onCheckedChange={(v) => engine.setDitherEnabled(!!v)}
+          />
+          <Label htmlFor="tool-opt-dither">{t('status.dither')}</Label>
+        </span>
       )}
 
       {showSymmetry && (
