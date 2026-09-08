@@ -105,6 +105,11 @@ create table if not exists public.user_prefs (
 );
 
 -- ---------------------------------------------------------------- row-level security
+--
+-- Every reference to the policy's own row is written table-qualified (public.sprites.id, not id).
+-- Inside a subquery that joins another table with a column of the same name, a bare column name is
+-- ambiguous and Postgres rejects the whole policy - which is exactly how this file failed the first
+-- time it was run. Qualifying is the habit that prevents it.
 alter table public.sprites        enable row level security;
 alter table public.tanks          enable row level security;
 alter table public.tank_instances enable row level security;
@@ -142,8 +147,8 @@ create policy user_prefs_owner_rw on public.user_prefs
 -- Only the tank's owner manages who it is shared with; a viewer can see the row naming them.
 drop policy if exists tank_shares_owner_rw on public.tank_shares;
 create policy tank_shares_owner_rw on public.tank_shares
-  for all using (exists (select 1 from public.tanks t where t.id = tank_id and t.user_id = auth.uid()))
-  with check (exists (select 1 from public.tanks t where t.id = tank_id and t.user_id = auth.uid()));
+  for all using (exists (select 1 from public.tanks t where t.id = public.tank_shares.tank_id and t.user_id = auth.uid()))
+  with check (exists (select 1 from public.tanks t where t.id = public.tank_shares.tank_id and t.user_id = auth.uid()));
 
 drop policy if exists tank_shares_viewer_read on public.tank_shares;
 create policy tank_shares_viewer_read on public.tank_shares
@@ -157,7 +162,7 @@ create policy tanks_shared_read on public.tanks
     and not hidden_by_admin
     and (
       visibility in ('public', 'unlisted')
-      or exists (select 1 from public.tank_shares s where s.tank_id = id and s.viewer_id = auth.uid())
+      or exists (select 1 from public.tank_shares s where s.tank_id = public.tanks.id and s.viewer_id = auth.uid())
     )
   );
 
@@ -167,7 +172,7 @@ create policy tank_instances_shared_read on public.tank_instances
   for select using (
     exists (
       select 1 from public.tanks t
-      where t.id = tank_id and t.deleted_at = 0 and not t.hidden_by_admin
+      where t.id = public.tank_instances.tank_id and t.deleted_at = 0 and not t.hidden_by_admin
         and (t.visibility in ('public', 'unlisted')
              or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid()))
     )
@@ -178,7 +183,7 @@ create policy tank_groups_shared_read on public.tank_groups
   for select using (
     exists (
       select 1 from public.tanks t
-      where t.id = tank_id and t.deleted_at = 0 and not t.hidden_by_admin
+      where t.id = public.tank_groups.tank_id and t.deleted_at = 0 and not t.hidden_by_admin
         and (t.visibility in ('public', 'unlisted')
              or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid()))
     )
@@ -189,7 +194,7 @@ create policy room_instances_shared_read on public.room_instances
   for select using (
     exists (
       select 1 from public.tanks t
-      where t.id = tank_id and t.deleted_at = 0 and not t.hidden_by_admin
+      where t.id = public.room_instances.tank_id and t.deleted_at = 0 and not t.hidden_by_admin
         and (t.visibility in ('public', 'unlisted')
              or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid()))
     )
@@ -205,7 +210,7 @@ create policy sprites_shared_read on public.sprites
       select 1
       from public.tank_instances i
       join public.tanks t on t.id = i.tank_id
-      where i.sprite_id = id and t.deleted_at = 0 and not t.hidden_by_admin
+      where i.sprite_id = public.sprites.id and t.deleted_at = 0 and not t.hidden_by_admin
         and (t.visibility in ('public', 'unlisted')
              or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid()))
     )
