@@ -302,3 +302,32 @@ describe('run-length encoded frames (P2)', () => {
     expect(stored).toBeLessThan(rawEquivalent / 3);
   });
 });
+
+describe('malformed preference values (shape checks)', () => {
+  it('ignores a palette that is not a list of colours', () => {
+    // Found by driving the real app: a corrupt palette key was rendered one swatch per character and
+    // hung the page on load. A wrong-shaped value has to read as "no saved palette", not as data.
+    localStorage.setItem('fishtank.paletteColors.v1', JSON.stringify('x'.repeat(1000)));
+    expect(storage.loadPaletteColors()).toBeNull();
+    localStorage.setItem('fishtank.paletteColors.v1', JSON.stringify([1, 2, 3]));
+    expect(storage.loadPaletteColors()).toBeNull();
+    localStorage.setItem('fishtank.paletteColors.v1', JSON.stringify(['#fff', '#000']));
+    expect(storage.loadPaletteColors()).toEqual(['#fff', '#000']);
+  });
+
+  it('ignores malformed saved and pinned colour lists', () => {
+    localStorage.setItem('fishtank.savedColors.v1', JSON.stringify({ nope: true }));
+    localStorage.setItem('fishtank.pinnedColors.v1', JSON.stringify('#fff'));
+    expect(storage.loadSavedColors()).toEqual([]);
+    expect(storage.loadPinnedColors()).toEqual([]);
+  });
+
+  it('ignores brush sizes that are not numbers', () => {
+    localStorage.setItem('fishtank.brushSizes.v1', JSON.stringify({ pen: 'big' }));
+    expect(storage.loadBrushSizes()).toEqual({});
+    localStorage.setItem('fishtank.brushSizes.v1', JSON.stringify({ pen: NaN }));
+    expect(storage.loadBrushSizes()).toEqual({});
+    localStorage.setItem('fishtank.brushSizes.v1', JSON.stringify({ pen: 4 }));
+    expect(storage.loadBrushSizes()).toEqual({ pen: 4 });
+  });
+});

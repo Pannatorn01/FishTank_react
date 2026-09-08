@@ -589,10 +589,29 @@ export function saveTankBackgroundTransform(transform: BackgroundTransform): voi
   writeKey(KEY_TANK_BACKGROUND_TRANSFORM, JSON.stringify(transform));
 }
 
+/**
+ * The colour lists and brush-size map get the same treatment sprites already had (isValidSprite, see
+ * docs/EDITOR_IMPROVEMENTS.md #2): JSON that parses is not JSON that is shaped right. A value of the
+ * wrong shape used to flow straight into the engine, and something as ordinary as a corrupted palette
+ * key would then be rendered as one swatch per character - enough to hang the app on load, with no way
+ * out but clearing storage by hand.
+ */
+function asStringArray(value: unknown): string[] | null {
+  return Array.isArray(value) && value.every((v) => typeof v === 'string') ? value : null;
+}
+
+function asNumberRecord(value: unknown): Record<string, number> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const entries = Object.entries(value as Record<string, unknown>);
+  return entries.every(([, v]) => typeof v === 'number' && Number.isFinite(v))
+    ? (value as Record<string, number>)
+    : null;
+}
+
 export function loadSavedColors(): string[] {
   try {
     const raw = localStorage.getItem(KEY_SAVED_COLORS);
-    return raw ? JSON.parse(raw) : [];
+    return raw ? (asStringArray(JSON.parse(raw)) ?? []) : [];
   } catch (e) {
     console.warn('loadSavedColors failed', e);
     return [];
@@ -606,7 +625,7 @@ export function saveSavedColors(colors: string[]): void {
 export function loadPinnedColors(): string[] {
   try {
     const raw = localStorage.getItem(KEY_PINNED_COLORS);
-    return raw ? JSON.parse(raw) : [];
+    return raw ? (asStringArray(JSON.parse(raw)) ?? []) : [];
   } catch (e) {
     console.warn('loadPinnedColors failed', e);
     return [];
@@ -623,7 +642,7 @@ export function savePinnedColors(colors: string[]): void {
 export function loadBrushSizes(): Record<string, number> {
   try {
     const raw = localStorage.getItem(KEY_BRUSH_SIZES);
-    return raw ? JSON.parse(raw) : {};
+    return raw ? (asNumberRecord(JSON.parse(raw)) ?? {}) : {};
   } catch (e) {
     console.warn('loadBrushSizes failed', e);
     return {};
@@ -637,7 +656,7 @@ export function saveBrushSizes(sizes: Record<string, number>): void {
 export function loadPaletteColors(): string[] | null {
   try {
     const raw = localStorage.getItem(KEY_PALETTE_COLORS);
-    return raw ? JSON.parse(raw) : null;
+    return raw ? asStringArray(JSON.parse(raw)) : null;
   } catch (e) {
     console.warn('loadPaletteColors failed', e);
     return null;
