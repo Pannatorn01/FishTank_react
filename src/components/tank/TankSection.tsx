@@ -57,7 +57,7 @@ export function TankSection({ mode, active }: { mode: TankMode; active: boolean 
         <TankPanel engine={engine} />
       </div>
       <div className="tank-mode-panel" hidden={mode !== 'life'}>
-        <LifePanel engine={engine} />
+        <LifePanel engine={engine} active={mode === 'life'} />
       </div>
     </>
   );
