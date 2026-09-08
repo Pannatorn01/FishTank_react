@@ -11,7 +11,7 @@ import {
   type TankEngine,
 } from '@/hooks/useTank';
 import { useLanguage } from '@/lib/i18n';
-import { roomSceneMargin, TANK_SHAPES } from '@/lib/storage';
+import { roomSceneMargin, StorageQuotaError, TANK_SHAPES } from '@/lib/storage';
 import type { TankShape } from '@/lib/types';
 import { getTankRendererMode } from '@/tank/render/rendererMode';
 
@@ -57,7 +57,14 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
   const lastWheelZoom = useRef(0);
 
   const handleSave = () => {
-    engine.save();
+    // Only show the "saved" tick when it actually saved - the failure case has to say so out loud
+    // (alert, matching how the editor reports its own save failures in PixelEditorPanel), because the
+    // tank keeps its unsaved edits in memory and the user would otherwise close the tab on them.
+    const result = engine.save();
+    if (!result.ok) {
+      alert(result.error instanceof StorageQuotaError ? t('error.storageFull') : t('error.tankSaveFailed'));
+      return;
+    }
     setJustSaved(true);
     window.setTimeout(() => setJustSaved(false), 1500);
   };

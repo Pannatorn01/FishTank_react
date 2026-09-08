@@ -828,8 +828,14 @@ export class TankEngine {
     this.reactNotify();
   }
 
-  /** Writes the current in-memory instances/groups/tank size to localStorage. */
-  save(): void {
+  /**
+   * Writes the current in-memory instances/groups/tank size to localStorage. Returns whether it worked
+   * so the caller can tell the user - a save that fails silently is worse than no save button at all,
+   * since the user walks away believing the tank is stored (docs/STORAGE_DB_MIGRATION_PLAN.md P0-3).
+   * `dirty` deliberately stays true on failure: the unsaved work is still in memory and still at risk.
+   */
+  save(): { ok: boolean; error?: unknown } {
+    let result: { ok: boolean; error?: unknown } = { ok: true };
     try {
       storage.saveInstances(this.instances);
       storage.saveGroups(this.groups);
@@ -846,10 +852,12 @@ export class TankEngine {
       this.dirty = false;
     } catch (err) {
       console.warn('tank save failed', err);
+      result = { ok: false, error: err };
     }
     // Committing the placement, Photoshop-free-transform-style - see backgroundHandlesVisible.
     this.backgroundHandlesVisible = false;
     this.reactNotify();
+    return result;
   }
 
   /** Reloads instances/groups/tank size from localStorage, discarding any unsaved in-memory edits

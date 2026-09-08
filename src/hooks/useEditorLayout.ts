@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { KEY_EDITOR_LAYOUT } from '@/lib/storage';
 
 /**
  * Which of the three docks around the canvas a panel currently lives in. The canvas itself is always
@@ -129,7 +130,10 @@ function minColumnWidth(column: DockPanelId[]): number {
   return Math.round((narrow ? NARROW_COLUMN_REM : COLUMN_MIN_REM) * rootRemPx());
 }
 
-const STORAGE_KEY = 'fishtank.editorLayout.v1';
+/** Declared in storage.ts (KEY_EDITOR_LAYOUT) rather than here, so downloadDataBackup()/resetAllData()
+ *  cover this key too - the layout is written straight to localStorage from this hook, not through a
+ *  save*() helper. */
+const STORAGE_KEY = KEY_EDITOR_LAYOUT;
 
 /** Left/right docks are additionally capped at a share of the window: without it a dock keeps growing
  *  as columns are added until its far edge - and the panels near it - sit off the side of the screen,

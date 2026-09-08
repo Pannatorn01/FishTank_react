@@ -1,5 +1,6 @@
 import { Fragment, useRef, useState, type ReactNode } from 'react';
 import type { DockDropLocation } from '@/hooks/useDockDrag';
+import { KEY_SIDE_PANEL_COLLAPSED_PREFIX } from '@/lib/storage';
 import { columnKey, rootRemPx, type DockColumns, type DockPanelId, type DockZone } from '@/hooks/useEditorLayout';
 
 /** How far the pointer has to move from where it went down before that counts as "dragging" rather than
@@ -10,7 +11,7 @@ import { columnKey, rootRemPx, type DockColumns, type DockPanelId, type DockZone
 const DRAG_THRESHOLD_PX = 4;
 
 /** Shared with the old SidePanelSection so a collapse state set before this existed still applies. */
-const COLLAPSE_PREFIX = 'fishtank.sidePanel.collapsed.';
+const COLLAPSE_PREFIX = KEY_SIDE_PANEL_COLLAPSED_PREFIX;
 
 function loadCollapsed(id: string): boolean {
   try {

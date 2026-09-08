@@ -414,6 +414,10 @@ class PixelEditorEngine {
   private historyPending: Snapshot | null = null;
   previewFrame = 0;
   dirty = false;
+  /** Set when the very first write to localStorage failed, i.e. nothing this session can be persisted.
+   *  The editor stays fully usable (drawing is all in memory) - the UI just warns that work will not
+   *  survive a reload. See the constructor's bootstrap comment. */
+  readOnly = false;
   active = true;
   /** Bumped only when a *different* sprite becomes current (new/load), never on save-in-place. */
   loadToken = 0;
@@ -452,7 +456,16 @@ class PixelEditorEngine {
     const loaded = storage.loadSprites();
     if (loaded === null) {
       this.sprites = storage.buildDefaultSprites();
-      storage.saveSprites(this.sprites);
+      // A first run that cannot write (storage already full, or Safari private mode where setItem always
+      // throws) must not take the whole app down from a constructor: keep the defaults in memory, mark
+      // the session read-only, and let the UI say so. Losing the starter sprites on reload is a far
+      // smaller failure than a white screen with no way back (see docs/STORAGE_DB_MIGRATION_PLAN.md P0-2).
+      try {
+        storage.saveSprites(this.sprites);
+      } catch (err) {
+        console.error('saveSprites failed during first-run bootstrap', err);
+        this.readOnly = true;
+      }
     } else {
       this.sprites = loaded;
     }
@@ -3808,7 +3821,7 @@ class PixelEditorEngine {
     } catch (err) {
       console.error('saveSprites failed', err);
       this.sprites = previousSprites;
-      onError(t('error.saveFailed'));
+      onError(err instanceof storage.StorageQuotaError ? t('error.storageFull') : t('error.saveFailed'));
       return;
     }
     this.dirty = false;

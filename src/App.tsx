@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { PixelEditorPanel } from '@/components/editor/PixelEditorPanel';
+import { StorageBanner } from '@/components/StorageBanner';
 
 // Lazy: TankSection pulls in the tank simulation engine, canvas render loop, and GIF/video export
 // (gifenc) - a meaningful slice of the ~550kB bundle (see docs/EDITOR_IMPROVEMENTS.md #12) that
@@ -141,6 +142,7 @@ export default function App() {
           )}
         </div>
       </header>
+      <StorageBanner readOnly={engine.readOnly} />
 
       <main>
         <section className="tab-panel" hidden={tab !== 'editor'}>
