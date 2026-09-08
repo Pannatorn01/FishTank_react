@@ -317,6 +317,10 @@ export class TankEngine {
   dirty = false;
   /** False until hydrate() has finished - see its doc comment. */
   ready = false;
+  /** Which tank this engine is showing. Null only before hydrate() has resolved it. There is exactly
+   *  one tank today, but every read and write names it, so opening a second one later (plan P4-4) is a
+   *  UI change rather than a storage one. */
+  tankId: string | null = null;
   private reactNotify: () => void = () => {};
 
   init(notify: () => void): void {
@@ -333,11 +337,25 @@ export class TankEngine {
    * which of the two states it is in so the UI does not present an empty tank as the user's own.
    */
   async hydrate(): Promise<void> {
+    try {
+      await this.loadEverything();
+    } catch (err) {
+      // See PixelEditorEngine.hydrate: unreadable storage means an empty tank the user can still play
+      // with, never a permanent loading screen.
+      console.error('loading the tank failed', err);
+    }
+    this.ready = true;
+    this.resizeCanvas();
+    this.reactNotify();
+  }
+
+  private async loadEverything(): Promise<void> {
     const { sprites: spriteRepo, tank: tankRepo } = getRepos();
     await spriteRepo.hydrate();
     this.sprites = spriteRepo.list();
 
-    const state = await tankRepo.load();
+    this.tankId = await tankRepo.currentId();
+    const state = await tankRepo.load(this.tankId);
     this.instances = state.instances.map((inst) => ({
       ...inst,
       groupId: inst.groupId ?? null,
@@ -370,11 +388,6 @@ export class TankEngine {
     this.tickWaterLevel(elapsedSinceLastTick);
     this.tickAlgae(elapsedSinceLastTick, 0);
     this.lastTickAt = now;
-
-    this.ready = true;
-    // The tank's size is only known now, so the canvas has to be re-measured against it.
-    this.resizeCanvas();
-    this.reactNotify();
   }
 
   destroy(): void {
@@ -883,7 +896,7 @@ export class TankEngine {
     this.groups = this.groups.map(storage.touchMeta);
     this.roomInstances = this.roomInstances.map(storage.touchMeta);
     try {
-      await getRepos().tank.save(this.snapshotForStorage());
+      await getRepos().tank.save(this.snapshotForStorage(), this.tankId ?? undefined);
       this.dirty = false;
     } catch (err) {
       console.warn('tank save failed', err);
@@ -900,7 +913,7 @@ export class TankEngine {
    *  the sprite editor's newSprite()). */
   async refresh(confirmDiscard: () => boolean): Promise<void> {
     if (this.dirty && !confirmDiscard()) return;
-    const state = await getRepos().tank.load();
+    const state = await getRepos().tank.load(this.tankId ?? undefined);
     this.instances = state.instances.map((inst) => ({
       ...inst,
       groupId: inst.groupId ?? null,

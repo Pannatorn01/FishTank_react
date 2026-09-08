@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { EditorPrefs, StorageAdapter, TankState } from '../adapter';
+import type { EditorPrefs, StorageAdapter, TankState, TankSummary } from '../adapter';
 import { EditorPrefsRepo, SpriteRepo } from '../repository';
 import * as storage from '../../storage';
 import type { Sprite } from '../../types';
@@ -40,6 +40,13 @@ class FakeAdapter implements StorageAdapter {
     this.sprites = [...sprites];
   }
 
+  async getCurrentTankId(): Promise<string> {
+    return 'tank_test';
+  }
+  async setCurrentTankId(): Promise<void> {}
+  async listTanks(): Promise<TankSummary[]> {
+    return [{ id: 'tank_test', name: 'Test', updatedAt: 0 }];
+  }
   async loadTankState(): Promise<TankState> {
     throw new Error('not used in these tests');
   }

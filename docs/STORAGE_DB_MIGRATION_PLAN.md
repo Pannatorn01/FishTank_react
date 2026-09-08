@@ -1,6 +1,6 @@
 # แผนย้ายชั้นเก็บข้อมูล: localStorage → Storage Adapter → Database
 
-> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0–P3 เสร็จแล้ว · P4 (IndexedDB) เป็นงานถัดไป** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
+> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0–P4 เสร็จแล้ว (เหลือ P4-4 = UI สลับตู้) · P5 (Supabase + sync) เป็นงานถัดไป** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
 > ที่มา: audit โค้ดจริง ไม่ใช่การเดา
 > ทุกข้ออ้างอิง `ไฟล์:บรรทัด` ณ commit `86efa06` — ถ้าบรรทัดเลื่อน ให้ grep ชื่อฟังก์ชันที่ระบุไว้แทน
 >
@@ -49,8 +49,8 @@
 > ผลลัพธ์ที่ตามมาโดยตรง: **ห้ามใช้ Supabase client อ่าน/เขียนตรงจาก component เด็ดขาด**
 > ทุกอย่างต้องผ่าน repository (§3) ไม่งั้น offline-first จะพังทันทีที่เน็ตหลุด
 
-**ความคืบหน้า: P0–P3 เสร็จแล้ว** (ดู checklist §7) · ทดสอบในเบราว์เซอร์จริงด้วย
-[`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — 19/19 ผ่าน ทั้งก่อนและหลัง P3 (รันคู่กับ `npm run dev`) · งานถัดไปคือ **P3 — เฟสที่ใหญ่และเสี่ยงที่สุด**
+**ความคืบหน้า: P0–P4 เสร็จแล้ว** (ดู checklist §7 · เหลือ P4-4 คือ UI สลับตู้) · ทดสอบในเบราว์เซอร์จริงด้วย
+[`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — **25/25 ผ่าน** (รันคู่กับ `npm run dev`) · งานถัดไปคือ **P3 — เฟสที่ใหญ่และเสี่ยงที่สุด**
 
 ---
 
@@ -364,7 +364,15 @@ Playwright: เปิดแอป → วาด → เซฟ → reload → ข
 **เตรียม id ล่วงหน้า:** ตอน migrate ให้สร้าง `tankId = uid('tank')` และ
 `localUserId = uid('local')` เก็บไว้เลย — จะได้ไม่ต้องมาเติม id ทีหลังตอนที่ผู้ใช้มีข้อมูลจริงแล้ว (§5, §4 P6.1)
 
-**เสร็จเมื่อ:** เปิดแอปที่มีข้อมูลเก่า → ข้อมูลครบ · เปิดซ้ำ → ไม่ migrate ซ้ำ · ล้าง IndexedDB → bootstrap จาก localStorage ได้อีกครั้ง
+**สิ่งที่ต้องแก้ตามมา (เจอตอนลงมือ — อย่าลืมถ้าเปลี่ยน backend อีก):**
+- `downloadDataBackup()` / `resetAllData()` เดิมรู้จักแค่ localStorage → **ถ้าไม่แก้ ปุ่มกู้ภัยใน ErrorBoundary
+  จะได้ไฟล์ backup ที่ไม่มี sprite เลย และ reset จะล้างไม่หมด** · ย้ายไป [`src/lib/data/backup.ts`](../src/lib/data/backup.ts) ที่อ่าน/ล้างทั้งสองที่
+- `StorageBanner` เดิมวัดจาก localStorage → เปลี่ยนไปใช้ `navigator.storage.estimate()` ซึ่งครอบคลุม IndexedDB
+  (โควตาจริงเป็น GB → banner แทบไม่ขึ้นอีกเลย ซึ่งถูกต้อง)
+- `hydrate()` ของทั้งสอง engine ต้อง try/catch → storage ที่อ่านไม่ได้ต้องได้แอปว่าง ๆ ที่ยังใช้ได้ **ไม่ใช่หน้า Loading ค้างตลอดกาล**
+
+**เสร็จแล้ว:** เปิดแอปที่มีข้อมูลเก่า → migrate ครบและ localStorage ยังอยู่ · เปิดซ้ำ → ไม่ migrate ซ้ำ ·
+เปิด IndexedDB ไม่ได้ → fallback ไป localStorage เงียบ ๆ · backup มีข้อมูลจาก IndexedDB จริง (มีเทสต์คุมทุกข้อ)
 
 ---
 
@@ -610,10 +618,10 @@ create policy read_used_in_shared on sprites for select using (
 - [x] **P3-2** `hydrate()` แยกออกจาก constructor/`init()` ทั้งสอง engine + ธง `ready` + หน้าจอ loading ใน `App.tsx` และ `TankSection.tsx`
 - [x] **P3-3** `SpriteRepo` ถือ cache ในหน่วยความจำ · `refreshPalette()` อ่านจาก cache แบบ sync (render loop ไม่ต้อง await) · ผู้ฟัง event ทั้ง 3 จุดไม่ต้องแก้เลย
 - [x] **P3-4** ไม่มีการเรียก `localStorage` เหลือนอก `src/lib/storage.ts` (ตัว backend) และ `src/lib/data/` — ค่า per-device (layout / uiScale / panel collapsed) ใช้ `loadRawPref`/`saveRawPref` แบบ sync โดยตั้งใจ ดูเหตุผลใน §4 P3
-- [ ] **P4** `IndexedDbAdapter` + migration ครั้งเดียว + ธง
-- [ ] **P4-2** สร้าง `tankId` ฝั่ง client ตั้งแต่ตอนนี้ (เตรียมตาราง `tanks` ใน P5)
-- [ ] **P4-3** `TankEngine` รับ `tankId` เป็นพารามิเตอร์ + IndexedDB store `tank` ใช้ `tankId` เป็น key
-- [ ] **P4-4** (ทำทีหลังได้) UI สลับ/สร้าง/ลบตู้
+- [x] **P4-1** [`IndexedDbAdapter`](../src/lib/data/indexedDbAdapter.ts) + migration ครั้งเดียว + ธง `migratedFrom.localStorage` (ไม่ลบข้อมูลเดิม) + fallback กลับไป localStorage เมื่อเปิด IndexedDB ไม่ได้
+- [x] **P4-2** `currentTankId` + `localUserId` ถูกสร้างตั้งแต่รันครั้งแรก (แม้ไม่มีอะไรให้ migrate)
+- [x] **P4-3** `TankEngine.tankId` + ทุก load/save ระบุตู้ · store `tanks` ใช้ `id` เป็น keyPath · `listTanks()` พร้อมใช้
+- [ ] **P4-4** (ยังไม่ทำ — ตั้งใจ) UI สลับ/สร้าง/ลบตู้ · โครงข้อมูลรองรับแล้ว เหลือแค่งาน UI
 - [ ] **P5-1** ตั้งโปรเจกต์ Supabase + `.env` (anon key เท่านั้น) + `src/lib/supabase.ts`
 - [ ] **P5-2** รัน schema §5 + เปิด RLS ครบทุกตาราง + เทสต์ policy ด้วยบัญชีทดสอบ 2 คน
 - [ ] **P5-3** `outbox.ts` (คิวใน IndexedDB + backoff + บีบให้เหลือรายการเดียวต่อ id)

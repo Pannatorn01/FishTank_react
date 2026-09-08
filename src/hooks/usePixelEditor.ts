@@ -517,6 +517,22 @@ class PixelEditorEngine {
    * draws waits for `ready` rather than rendering an empty library as if it were the real one.
    */
   async hydrate(): Promise<void> {
+    try {
+      await this.loadEverything();
+    } catch (err) {
+      // Storage that cannot even be read (a database that refuses to open, a backend that throws) must
+      // not leave the app on its loading screen forever. Come up with an empty library in read-only
+      // mode instead: the user can still draw, and the banner tells them nothing will be kept.
+      console.error('loading saved work failed', err);
+      this.readOnly = true;
+      if (this.sprites.length === 0) this.sprites = storage.buildDefaultSprites();
+    }
+    this.ready = true;
+    this.refresh();
+    this.reactNotify();
+  }
+
+  private async loadEverything(): Promise<void> {
     const { sprites: spriteRepo, prefs: prefsRepo } = getRepos();
     await spriteRepo.hydrate();
     this.sprites = spriteRepo.list();
@@ -548,10 +564,6 @@ class PixelEditorEngine {
       this.onionColorMode = prefs.onion.colorMode;
     }
     this.brushSizes = prefs.brushSizes;
-
-    this.ready = true;
-    this.refresh();
-    this.reactNotify();
   }
 
   destroy(): void {

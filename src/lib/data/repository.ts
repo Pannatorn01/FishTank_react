@@ -1,5 +1,5 @@
 import type { Sprite } from '../types';
-import type { EditorPrefs, StorageAdapter, TankState } from './adapter';
+import type { EditorPrefs, StorageAdapter, TankState, TankSummary } from './adapter';
 
 /**
  * The sprite library, cached in memory.
@@ -99,12 +99,26 @@ export class TankRepo {
     this.adapter = adapter;
   }
 
-  load(): Promise<TankState> {
-    return this.adapter.loadTankState();
+  /** Which tank is open. Every load/save names a tank explicitly from here on, so adding a tank
+   *  switcher later (plan P4-4) is a UI change rather than a storage one. */
+  currentId(): Promise<string> {
+    return this.adapter.getCurrentTankId();
   }
 
-  save(state: TankState): Promise<void> {
-    return this.adapter.saveTankState(state);
+  setCurrentId(id: string): Promise<void> {
+    return this.adapter.setCurrentTankId(id);
+  }
+
+  list(): Promise<TankSummary[]> {
+    return this.adapter.listTanks();
+  }
+
+  load(tankId?: string): Promise<TankState> {
+    return this.adapter.loadTankState(tankId);
+  }
+
+  save(state: TankState, tankId?: string): Promise<void> {
+    return this.adapter.saveTankState(state, tankId);
   }
 }
 

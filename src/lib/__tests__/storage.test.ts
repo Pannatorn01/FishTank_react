@@ -100,16 +100,19 @@ describe('loadSprites malformed-data handling (docs/EDITOR_IMPROVEMENTS.md #2)',
 });
 
 describe('backup / reset (docs/EDITOR_IMPROVEMENTS.md #1)', () => {
-  it('downloadDataBackup returns false when there is nothing saved', () => {
-    // No DOM (Blob/URL/document) in this environment - only exercise the "nothing to back up" path,
-    // which returns before touching any of that.
-    expect(storage.downloadDataBackup()).toBe(false);
+  it('collectLocalStorageDump returns nothing when nothing has been saved', () => {
+    expect(storage.collectLocalStorageDump()).toEqual({});
   });
 
-  it('resetAllData clears every key this module owns, sparing everything else', () => {
+  it('collectLocalStorageDump reads raw values, so a corrupt one still gets backed up', () => {
+    localStorage.setItem('fishtank.sprites.v1', 'not json at all');
+    expect(storage.collectLocalStorageDump()['fishtank.sprites.v1']).toBe('not json at all');
+  });
+
+  it('clearLocalStorageData clears every key this module owns, sparing everything else', () => {
     storage.saveSprites([validSprite()]);
     localStorage.setItem('someOtherApp.unrelatedKey', 'keep me');
-    storage.resetAllData();
+    storage.clearLocalStorageData();
     expect(storage.loadSprites()).toBeNull();
     expect(localStorage.getItem('someOtherApp.unrelatedKey')).toBe('keep me');
   });
@@ -174,13 +177,13 @@ describe('quota handling (P0)', () => {
 });
 
 describe('keys written outside storage.ts (P0-4)', () => {
-  it('resetAllData also clears the editor layout, ui scale, and per-panel collapse flags', () => {
+  it('clearLocalStorageData also clears the editor layout, ui scale, and per-panel collapse flags', () => {
     localStorage.setItem(storage.KEY_EDITOR_LAYOUT, '{"left":[]}');
     localStorage.setItem(storage.KEY_UI_SCALE, 'large');
     localStorage.setItem(`${storage.KEY_SIDE_PANEL_COLLAPSED_PREFIX}palette`, '1');
     localStorage.setItem('someOtherApp.unrelatedKey', 'keep me');
 
-    storage.resetAllData();
+    storage.clearLocalStorageData();
 
     expect(localStorage.getItem(storage.KEY_EDITOR_LAYOUT)).toBeNull();
     expect(localStorage.getItem(storage.KEY_UI_SCALE)).toBeNull();

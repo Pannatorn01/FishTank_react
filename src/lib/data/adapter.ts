@@ -29,6 +29,14 @@ export interface TankState {
   lastTickAt: number | null;
 }
 
+/** One tank in the list, without its contents - enough to show a picker (plan P4-4) without loading
+ *  every fish in every tank. */
+export interface TankSummary {
+  id: string;
+  name: string;
+  updatedAt: number;
+}
+
 /** Editor preferences that belong to the user rather than to this browser - they will follow an
  *  account once there is one (see the plan's §5: user_prefs). Device-only preferences (theme, UI
  *  scale, dock layout) deliberately stay in storage.ts and never come through here. */
@@ -55,8 +63,16 @@ export interface StorageAdapter {
    *  localStorage backend); callers only ever pass what still exists. */
   saveSprites(sprites: Sprite[]): Promise<void>;
 
-  loadTankState(): Promise<TankState>;
-  saveTankState(state: TankState): Promise<void>;
+  /** Which tank load/saveTankState address when no id is given. A user has several tanks (that is the
+   *  agreed shape - see the plan's §0), and one of them is the one currently open; the id exists even
+   *  while there is only one, because adding it later, to data that already exists, is the expensive
+   *  version of this change. */
+  getCurrentTankId(): Promise<string>;
+  setCurrentTankId(id: string): Promise<void>;
+  listTanks(): Promise<TankSummary[]>;
+
+  loadTankState(tankId?: string): Promise<TankState>;
+  saveTankState(state: TankState, tankId?: string): Promise<void>;
 
   loadEditorPrefs(): Promise<EditorPrefs>;
   /** Partial by design: preferences are written one at a time as the user changes them, and a patch

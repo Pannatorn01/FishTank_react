@@ -192,16 +192,17 @@ function isLegacyFrame(frame: unknown): frame is Frame {
 
 /** A layer as written to storage: same thing as a Layer except its cells are run-length encoded (see
  *  pixelCodec.ts). Frames saved by an older build are still plain arrays, so both are read. */
-type StoredLayer = Omit<Layer, 'cells'> & { cells: Frame | RleFrame };
-type StoredSprite = Omit<Sprite, 'frames'> & { frames: StoredLayer[][] };
+export type StoredLayer = Omit<Layer, 'cells'> & { cells: Frame | RleFrame };
+export type StoredSprite = Omit<Sprite, 'frames'> & { frames: StoredLayer[][] };
 
 /** Storage shape -> memory shape. Nothing above this file ever sees an encoded frame. */
 function decodeLayer(layer: StoredLayer): Layer {
   return { ...layer, cells: isRleFrame(layer.cells) ? decodeFrame(layer.cells) : layer.cells };
 }
 
-/** Memory shape -> storage shape. */
-function encodeSprite(sprite: Sprite): StoredSprite {
+/** Memory shape -> storage shape. Exported because every backend stores the same encoded record - the
+ *  IndexedDB adapter writes exactly what the localStorage one does, just per row (see src/lib/data). */
+export function encodeSprite(sprite: Sprite): StoredSprite {
   return {
     ...sprite,
     frames: sprite.frames.map((layers) => layers.map((layer) => ({ ...layer, cells: encodeFrame(layer.cells) }))),
@@ -996,35 +997,25 @@ function allOwnedKeys(): string[] {
 }
 
 /**
- * Bundles every raw localStorage value this app owns into one downloadable JSON file - the "get my
- * work out" escape hatch an ErrorBoundary offers when the app itself can no longer render (see
- * docs/EDITOR_IMPROVEMENTS.md #1). Deliberately reads the *raw* strings, not through loadSprites() et
- * al: if the app is crashing because a loader chokes on the data, this needs to work anyway. Returns
- * false (and does nothing) if there was nothing to back up at all.
+ * Every raw localStorage value this app owns, as one object - the localStorage half of a backup (the
+ * other half is IndexedDB; see src/lib/data/backup.ts, which is what the UI calls). Deliberately reads
+ * the *raw* strings rather than going through loadSprites() et al: if the app is crashing because a
+ * loader chokes on the data, this still has to work.
  */
-export function downloadDataBackup(): boolean {
+export function collectLocalStorageDump(): Record<string, string> {
   const dump: Record<string, string> = {};
   for (const key of allOwnedKeys()) {
     const value = localStorage.getItem(key);
     if (value !== null) dump[key] = value;
   }
-  if (Object.keys(dump).length === 0) return false;
-  const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `pixel-fish-tank-backup-${new Date().toISOString().slice(0, 10)}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  return true;
+  return dump;
 }
 
-/** Wipes every key this app owns - the "start over" escape hatch next to downloadDataBackup(), for
- *  when saved data itself is what's broken (see docs/EDITOR_IMPROVEMENTS.md #2). Leaves every other
- *  origin's localStorage untouched (unlike a blanket `localStorage.clear()`), and does not reload the
- *  page itself - the caller decides when. */
-export function resetAllData(): void {
+/** Wipes every localStorage key this app owns - the localStorage half of "start over" (see
+ *  src/lib/data/backup.ts). Leaves every other origin's storage, and every key this app does not own,
+ *  untouched (unlike a blanket localStorage.clear()), and does not reload the page - the caller
+ *  decides when. */
+export function clearLocalStorageData(): void {
   for (const key of allOwnedKeys()) localStorage.removeItem(key);
 }
+

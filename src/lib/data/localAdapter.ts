@@ -1,6 +1,6 @@
 import * as storage from '../storage';
 import type { Sprite } from '../types';
-import type { EditorPrefs, StorageAdapter, TankState } from './adapter';
+import type { EditorPrefs, StorageAdapter, TankState, TankSummary } from './adapter';
 
 /**
  * The StorageAdapter backed by localStorage - i.e. exactly what the app did before this layer existed,
@@ -19,6 +19,21 @@ export class LocalStorageAdapter implements StorageAdapter {
 
   async saveSprites(sprites: Sprite[]): Promise<void> {
     storage.saveSprites(sprites);
+  }
+
+  /** localStorage only ever held one tank, and it stays that way: this backend is what the IndexedDB
+   *  one migrates *from* (see IndexedDbAdapter), not something new tanks are created in. The id is
+   *  fixed so the migrated tank keeps a stable identity. */
+  async getCurrentTankId(): Promise<string> {
+    return SINGLE_TANK_ID;
+  }
+
+  async setCurrentTankId(_id?: string): Promise<void> {
+    // Nothing to switch to.
+  }
+
+  async listTanks(): Promise<TankSummary[]> {
+    return [{ id: SINGLE_TANK_ID, name: 'My Tank', updatedAt: storage.loadTankLastTick() ?? 0 }];
   }
 
   async loadTankState(): Promise<TankState> {
@@ -80,6 +95,8 @@ export class LocalStorageAdapter implements StorageAdapter {
     if (patch.onion) storage.saveOnionSettings(patch.onion);
   }
 }
+
+export const SINGLE_TANK_ID = 'tank_local';
 
 /** Only used when a tank has never been sized - kept here rather than imported from useTank.ts so the
  *  data layer does not depend on a hook. Mirrors TANK_SIZE_DEFAULT there. */
