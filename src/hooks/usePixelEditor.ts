@@ -15,6 +15,14 @@ import {
   wrapShiftFrame,
 } from '@/lib/pixelMath';
 import { t } from '@/lib/i18n';
+import {
+  type HistoryEntry,
+  type HistorySnapshot,
+  NO_CHANGE,
+  applyRegion,
+  buildHistoryEntry,
+  trimHistory,
+} from '@/lib/undoHistory';
 import * as storage from '@/lib/storage';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { createPenTool } from '@/lib/tools/tools/penTool';
@@ -94,21 +102,6 @@ const PREVIEW_CELL_PX_BASE = 96;
  *  background-sized canvas (see restartPreviewTimer's doc comment for that profile). Small sprites, the
  *  overwhelmingly common case here, still update live mid-stroke. */
 const PREVIEW_LIVE_CELL_LIMIT = 128 * 128;
-/** Ceiling on undo history depth for a small (16x16-ish) sprite - the overwhelmingly common case,
- *  where 50 full-frame snapshots cost nothing worth measuring. Scaled down for larger canvases by
- *  undoLimitFor below: a background sprite up to 1400x900 with several layers made 50 kept
- *  `structuredClone`d snapshots a real, unbounded-with-canvas-size memory cost (see
- *  docs/EDITOR_IMPROVEMENTS.md #3) - this is a scoped mitigation (cap the *count*), not the full fix
- *  (diff-based undo instead of whole-frame snapshots), which that doc still lists as future work. */
-const UNDO_LIMIT = 50;
-/** Same total "cell-snapshots" budget regardless of canvas size: a 16x16 canvas keeps the full
- *  UNDO_LIMIT steps, a 1400x900 background sprite keeps only a handful - still enough to undo a
- *  mistake, but no longer scaling memory linearly with both canvas area and history depth at once. */
-const UNDO_CELL_BUDGET = UNDO_LIMIT * storage.DEFAULT_GRID_SIZE * storage.DEFAULT_GRID_SIZE;
-function undoLimitFor(width: number, height: number): number {
-  const cells = Math.max(1, width * height);
-  return Math.max(8, Math.min(UNDO_LIMIT, Math.round(UNDO_CELL_BUDGET / cells)));
-}
 export const MAX_BRUSH_SIZE = 20;
 /** Tools that share the brush-size stepper (see CanvasStatusBar's `showBrushOptions` / PixelCanvas's
  *  brush-footprint preview) and one shared size (see brushSizes/brushSizeToolKey), so switching between
@@ -201,14 +194,7 @@ interface MoveBufferCell extends Cell {
   color: string;
 }
 
-interface Snapshot {
-  frames: Layer[][];
-  width: number;
-  height: number;
-  frameIndex: number;
-  activeLayerIndex: number;
-  frameMs: number;
-}
+type Snapshot = HistorySnapshot;
 
 class PixelEditorEngine {
   canvas: HTMLCanvasElement | null = null;
@@ -424,8 +410,14 @@ class PixelEditorEngine {
   canvasBackground: CanvasBackground = 'checker-dark';
   onionSkin = false;
   transformAllFrames = false;
-  undoStack: Snapshot[] = [];
-  redoStack: Snapshot[] = [];
+  /** Undo/redo as diff-based `HistoryEntry`s (see src/lib/undoHistory.ts) - a `'cells'` entry holds
+   *  just the changed rectangle of the changed frame, `'full'` a whole-snapshot pair for structural
+   *  changes. `historyPending` is the single full snapshot taken at the last `pushUndo()` ("state
+   *  before the in-progress edit"), compacted into an entry lazily on the next `pushUndo`/`undo`/
+   *  `redo` (see `finalizeHistoryPending`). */
+  undoStack: HistoryEntry[] = [];
+  redoStack: HistoryEntry[] = [];
+  private historyPending: Snapshot | null = null;
   previewFrame = 0;
   dirty = false;
   active = true;
@@ -443,7 +435,7 @@ class PixelEditorEngine {
   /** Captured right before a gesture's own pushUndo (see pushGestureUndo) so that entry can be rolled
    *  straight back off the stack - with the dirty flag and the redo stack it clobbered - if the gesture
    *  turns out to change nothing or gets cancelled. null whenever no such entry is outstanding. */
-  private gestureUndoState: { dirty: boolean; redo: Snapshot[] } | null = null;
+  private gestureUndoState: { dirty: boolean; redo: HistoryEntry[] } | null = null;
 
   init(notify: () => void): void {
     // rAF-coalesced, not a direct call to `notify` - a fast pointer (pen/spray tools especially,
@@ -641,7 +633,10 @@ class PixelEditorEngine {
   }
 
   canUndo(): boolean {
-    return this.undoStack.length > 0;
+    // A pending baseline is an edit not yet compacted into an entry - undo() finalizes it first, so
+    // it counts. (When the edit turned out to be a no-op, undo() finds nothing and the button was
+    // momentarily live for nothing - the same harmless edge the old always-push behavior had.)
+    return this.undoStack.length > 0 || this.historyPending !== null;
   }
 
   canRedo(): boolean {
@@ -1841,7 +1836,7 @@ class PixelEditorEngine {
     this.stopGestureTimer();
   }
 
-  /** pushUndo, plus enough bookkeeping to take the entry back off the stack again - see
+  /** pushUndo, plus enough bookkeeping to drop the pending baseline again - see
    *  gestureUndoState/rollbackGestureUndo. Every gesture that can be cancelled or turn out to be a
    *  no-op goes through this instead of pushUndo directly. */
   private pushGestureUndo(): void {
@@ -1849,16 +1844,19 @@ class PixelEditorEngine {
     this.pushUndo();
   }
 
-  /** Undoes the *bookkeeping* of the current gesture's pushUndo and hands back the snapshot it took, so
-   *  the caller can either restore it (a cancel) or drop it (a gesture that changed nothing). Restores
-   *  the dirty flag and the redo stack pushUndo overwrote, so a cancelled gesture doesn't leave the
-   *  sprite marked unsaved or a perfectly good redo history thrown away. Returns null when the gesture
-   *  never pushed one (a selection drag, say, which touches no pixels). */
+  /** Undoes the *bookkeeping* of the current gesture's pushUndo and hands back the baseline snapshot
+   *  it took, so the caller can either restore it (a cancel) or drop it (a gesture that changed
+   *  nothing). The baseline is still `historyPending` - a gesture in flight is never interrupted by
+   *  another `pushUndo` before its rollback/commit (curve bend-idle's only interposer routes through
+   *  here too), so it was never compacted onto `undoStack`. Restores the dirty flag and the redo
+   *  stack pushUndo overwrote. Returns null when the gesture never pushed one (a selection drag, say,
+   *  which touches no pixels). */
   private rollbackGestureUndo(): Snapshot | null {
     const before = this.gestureUndoState;
     this.gestureUndoState = null;
     if (!before) return null;
-    const snap = this.undoStack.pop() ?? null;
+    const snap = this.historyPending;
+    this.historyPending = null;
     this.dirty = before.dirty;
     this.redoStack = before.redo;
     return snap;
@@ -3850,6 +3848,17 @@ class PixelEditorEngine {
     };
   }
 
+  /** Selection/curve/move state that a history step invalidates - an undo can change the canvas out
+   *  from under a selection, and a pending curve/move draft is meaningless against restored pixels.
+   *  Shared by restoreSnapshot (full) and the 'cells' history path. */
+  private resetTransientAfterHistory(): void {
+    this.selection = null;
+    this.lassoPoints = null;
+    this.selectionMask = null;
+    this.moveBuffer = null;
+    if (this.curvePhase) this.clearCurveState();
+  }
+
   /** Mutates engine state to match snapshot `s` - the repaint is the caller's job (see
    *  applyHistoryEntry), since unlike every other refresh()-triggering change, undo/redo can often get
    *  away with repainting far less than the whole canvas. */
@@ -3860,35 +3869,38 @@ class PixelEditorEngine {
     this.current.frameMs = s.frameMs;
     this.frameIndex = Math.min(s.frameIndex, s.frames.length - 1);
     this.activeLayerIndex = Math.min(s.activeLayerIndex, this.current.frames[this.frameIndex].length - 1);
-    this.selection = null;
-    this.lassoPoints = null;
-    this.selectionMask = null;
-    this.moveBuffer = null;
-    if (this.curvePhase) this.clearCurveState();
+    this.resetTransientAfterHistory();
     this.recomputeCanvasSize();
     this.restartPreviewTimer();
   }
 
   pushUndo(): void {
     if (this.curvePhase) this.clearCurveState();
-    this.undoStack.push(this.snapshot());
-    const limit = undoLimitFor(this.current.width, this.current.height);
-    while (this.undoStack.length > limit) this.undoStack.shift();
+    this.finalizeHistoryPending();
+    this.historyPending = this.snapshot();
     this.redoStack = [];
     this.dirty = true;
   }
 
+  /** Compacts the pending baseline (state before the just-finished edit) into a `HistoryEntry` and
+   *  pushes it - a cheap `'cells'` rectangle diff where possible, a `'full'` snapshot pair otherwise
+   *  (see buildHistoryEntry). A no-op edit (pushUndo bracketed nothing) pushes nothing. */
+  private finalizeHistoryPending(): void {
+    const before = this.historyPending;
+    if (!before) return;
+    this.historyPending = null;
+    const entry = buildHistoryEntry(before, this.snapshot());
+    if (entry === NO_CHANGE) return;
+    this.undoStack.push(entry);
+    trimHistory(this.undoStack);
+  }
+
   /**
-   * Undo/redo swap in a whole snapshotted frame stack, so - unlike a brush stroke or shape preview -
-   * there's no dirty region known in advance the way strokeDirtyRects gives one.
-   * But most undo steps (undoing one small brush stroke on a large canvas) only actually change a tiny
-   * fraction of it, so layersDiffRegion compares the outgoing and incoming layers cell-by-cell (plain
-   * !== on color strings - far cheaper than the fillRect calls a repaint needs) to find the changed
-   * region's bounding box, and redrawRegions repaints just that instead of a full drawGrid(). Falls back
-   * to the ordinary full refresh() whenever the two states aren't safely comparable this way (different
-   * canvas size, a different active frame index after restoring, or whatever else layersDiffRegion
-   * itself declines to diff - e.g. a different layer count or a visibility/opacity change) or onion skin
-   * is on (its own source frame would need the same treatment, not worth it for a rarely-used mode).
+   * Applies one history entry in `dir` ('inverse' for undo, 'forward' for redo), repainting only what
+   * changed. A `'full'` entry restores a whole snapshot (via applyHistoryEntry, which keeps the
+   * onion-skin / canvas-size-change fallbacks and its own minimal-repaint diff). A `'cells'` entry -
+   * the common case - writes just its stored rectangle back into the active frame's layers and
+   * repaints that box: no snapshot restore, no full redraw, cost ~O(edited pixels).
    */
   private applyHistoryEntry(s: Snapshot): void {
     const beforeLayers = this.current.frames[this.frameIndex];
@@ -3910,16 +3922,44 @@ class PixelEditorEngine {
     else this.redrawRegions([region]);
   }
 
+  private applyHistoryDiff(entry: HistoryEntry, dir: 'inverse' | 'forward'): void {
+    if (entry.kind === 'full') {
+      // structuredClone, not the stored snapshot directly: restoreSnapshot aliases `s.frames` as the
+      // live frame array, and unlike the old always-fresh-snapshot model this entry stays on the
+      // stack for the opposite-direction step - a later edit would otherwise mutate it in place.
+      this.applyHistoryEntry(structuredClone(dir === 'inverse' ? entry.before : entry.after));
+      return;
+    }
+    // 'cells' entries are only created when frame index / layer structure / canvas size didn't change
+    // across the edit, and the history chain is unbroken, so the active frame here already matches.
+    // Set it anyway as a cheap guard, then write the stored slice and repaint just its box. The slice
+    // is copied into the live cells array (applyRegion writes element by element), so the entry is not
+    // aliased and stays reusable for the opposite-direction step.
+    this.frameIndex = Math.min(entry.frameIndex, this.current.frames.length - 1);
+    const layers = this.current.frames[this.frameIndex];
+    this.activeLayerIndex = Math.min(entry.activeLayerIndex, layers.length - 1);
+    applyRegion(layers, entry.box, this.current.width, dir === 'inverse' ? entry.before : entry.after);
+    this.resetTransientAfterHistory();
+    this.restartPreviewTimer();
+    this.redrawRegions([entry.box]);
+  }
+
   undo(): void {
-    if (!this.undoStack.length) return;
-    this.redoStack.push(this.snapshot());
-    this.applyHistoryEntry(this.undoStack.pop()!);
+    this.finalizeHistoryPending();
+    const entry = this.undoStack.pop();
+    if (!entry) return;
+    this.applyHistoryDiff(entry, 'inverse');
+    this.redoStack.push(entry);
+    trimHistory(this.redoStack);
   }
 
   redo(): void {
-    if (!this.redoStack.length) return;
-    this.undoStack.push(this.snapshot());
-    this.applyHistoryEntry(this.redoStack.pop()!);
+    this.finalizeHistoryPending();
+    const entry = this.redoStack.pop();
+    if (!entry) return;
+    this.applyHistoryDiff(entry, 'forward');
+    this.undoStack.push(entry);
+    trimHistory(this.undoStack);
   }
 
   // --- export ---
@@ -4004,6 +4044,7 @@ class PixelEditorEngine {
         this.clearCurveState();
         this.undoStack = [];
         this.redoStack = [];
+        this.historyPending = null;
         this.dirty = true;
         this.loadToken += 1;
         this.centerSymmetryAxis();
@@ -4035,6 +4076,7 @@ class PixelEditorEngine {
     this.clearCurveState();
     this.undoStack = [];
     this.redoStack = [];
+    this.historyPending = null;
     this.dirty = false;
     this.loadToken += 1;
     this.centerSymmetryAxis();
@@ -4093,6 +4135,7 @@ class PixelEditorEngine {
     this.clearCurveState();
     this.undoStack = [];
     this.redoStack = [];
+    this.historyPending = null;
     this.dirty = false;
     this.loadToken += 1;
     this.centerSymmetryAxis();

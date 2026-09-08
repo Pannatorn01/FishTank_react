@@ -349,6 +349,21 @@ cancelled overlay preview is erased via `lastGesturePreviewRects` instead.
      observable downside and emerges naturally from *correctly generalizing* the architecture, which is
      the whole point of unifying per-tool bespoke state handling in the first place.
 
+## Undo/redo is diff-based (2026-09-08)
+
+`pushUndo()` no longer stores a full `structuredClone` of the frame stack per step. `undoStack`/
+`redoStack` hold `HistoryEntry`s (see `src/lib/undoHistory.ts`) - a `'cells'` entry is just the
+changed rectangle of the changed frame (both directions), `'full'` a snapshot pair for structural
+changes. The single full snapshot taken at `pushUndo()` lives in `historyPending` and is compacted
+into an entry lazily (`finalizeHistoryPending`, called from `pushUndo`/`undo`/`redo`).
+
+For the gesture machinery this changes one thing: **`rollbackGestureUndo()` drops `historyPending`
+instead of popping `undoStack`** - a gesture's baseline is never compacted onto the stack while the
+gesture is in flight (nothing calls `pushUndo` between a gesture's `pushGestureUndo` and its
+rollback/commit; curve bend-idle's only interposer, `clearCurveState`, routes through
+`rollbackGestureUndo` itself). `cancelGesture()` still restores the returned snapshot via
+`applyHistoryEntry` exactly as before.
+
 ## Migration plan - complete
 
 All fourteen tools are migrated: **pen, eraser, rect, ellipse, line, magicWand, move, select, lasso,

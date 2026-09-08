@@ -24,18 +24,24 @@ engine ตรง ๆ แล้วไปพังตอน render — ทาง�
 **สถานะ:** แก้แล้ว — เพิ่ม `isValidSprite()` (`storage.ts:113`) เข้าไปกรองใน `loadSprites()` +
 `downloadDataBackup()` + `resetAllData()` แล้ว
 
-### 3. Undo stack กินหน่วยความจำแบบ O(ขนาด canvas × 50) (แก้บางส่วนแล้ว)
-**ไฟล์เดิม:** `src/hooks/usePixelEditor.ts:91` (`UNDO_LIMIT = 50` คงที่), `snapshot()` ใช้
-`structuredClone(this.current.frames)` — clone ทุก layer ของทุก frame ต่อ 1 undo step
-**ตัวเลขจริงตอนนั้น:** background sprite 1400×900 × 3 layers = ~3.8 ล้าน cell ต่อ 1 snapshot
-× 50 steps ≈ 190 ล้าน entry ค้างใน memory
-**สถานะ:** แก้บางส่วนแล้ว — เพิ่ม `undoLimitFor(width, height)` (`usePixelEditor.ts:105-108`, ใช้จริง
-ที่บรรทัด 4030) คำนวณ limit แบบ dynamic จาก `UNDO_CELL_BUDGET` คงที่ (`UNDO_LIMIT × 16×16`) หารด้วย
-จำนวน cell จริงของ canvas — sprite เล็กยังได้ 50 steps เต็ม, background sprite ใหญ่ได้แค่ไม่กี่ step
-(ขั้นต่ำ 8) แทนที่จะเก็บ 50 steps เท่ากันหมดไม่ว่าขนาดจะใหญ่แค่ไหน
-**ยังไม่ได้แก้:** ยังเป็น full-snapshot ต่อ step อยู่ (ไม่ใช่ diff-based) — แค่ "เก็บน้อย step ลงเมื่อ
-canvas ใหญ่" ไม่ใช่ "แต่ละ step กินน้อยลง" ถ้าจะแก้ให้สุดต้องเปลี่ยนเป็น diff-based undo จริง ๆ
-> หมายเหตุ: ไม่ใช่สาเหตุของ OOM ที่เจอไปแล้ว (อันนั้นคือ NaN loop ซึ่งแก้แล้ว) แต่เป็นความเสี่ยงจริงคนละตัว
+### 3. ✅ Undo stack กินหน่วยความจำแบบ O(ขนาด canvas × 50) — แก้แล้ว (diff-based undo)
+**ไฟล์เดิม:** `snapshot()` ใช้ `structuredClone(this.current.frames)` — clone ทุก layer ของทุก frame
+ต่อ 1 undo step (background 1400×900 × 3 layers ≈ 3.8M cell/snapshot × ~50 steps × 2 stacks)
+**รอบแรก (mitigation):** เพิ่ม `undoLimitFor(w,h)` cap จำนวน step ตามขนาด canvas (ลงถึง 8) — "เก็บน้อย
+step" ไม่ใช่ "step ละน้อย"
+**สถานะ: แก้ครบแล้ว (2026-09-08) — diff-based undo:**
+- โมดูลใหม่ `src/lib/undoHistory.ts` (pure, มีเทสต์ `undoHistory.test.ts` 14 ตัว): `HistoryEntry` เป็น
+  discriminated union — `'cells'` เก็บแค่สี่เหลี่ยมที่เปลี่ยน (bbox จาก `layersDiffRegion`) ของ frame
+  ที่แก้ ทั้งสองทิศ (before/after) · `'full'` = snapshot pair สำหรับการเปลี่ยนเชิงโครงสร้าง (resize,
+  เพิ่ม/ลบ layer, opacity/visibility, frameMs, สลับ frame)
+- `usePixelEditor.ts`: `undoStack`/`redoStack` เป็น `HistoryEntry[]` · `historyPending` = full snapshot
+  ตัวเดียวที่ถือไว้ ณ `pushUndo()` ล่าสุด แล้ว compact เป็น entry แบบ lazy ที่ `pushUndo`/`undo`/`redo`
+  รอบถัดไป (`finalizeHistoryPending`) · undo/redo ไม่ clone snapshot ใหม่แล้ว (entry สองทิศในตัว)
+- no-op edit (วาดทับสีเดิมทั้งหมด) → ไม่ push entry เลย (ตรงกับหลัก "ไม่มี dead Ctrl+Z" ที่ fill ใช้อยู่)
+- memory budget: `trimHistory` — count cap 80 + byte budget 32MB (ไม่ต่ำกว่า 8 step)
+- ยืนยัน: 154 unit tests, build, lint + Playwright (round-trip 12 stroke exact, fill, resize 'full'
+  สองทิศ, gesture cancel, aliasing scenario) + editor test เดิมทั้งหมดผ่าน
+> หมายเหตุ: ไม่ใช่สาเหตุของ OOM ที่เจอไปแล้ว (อันนั้นคือ NaN loop) แต่เป็นความเสี่ยงจริงคนละตัว
 
 ---
 
