@@ -747,16 +747,32 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 .dock-panel {
   display: flex;
   flex-direction: column;
-  flex: 1 0 auto;
-  /* min-height: 0; */
+  /* Content height by default: a small card (preview, onion, transform) takes only what it needs, so
+   * it no longer stretches to an equal share of the column and leaves a slab of empty space under its
+   * contents. */
+  flex: 0 0 auto;
+  min-height: 0;
   min-width: 7.75rem;
   background: var(--pixel-panel);
   border: 2px solid var(--bevel-dark);
   box-shadow: 4px 4px 0 var(--bevel-dark);
 }
-/* Every panel is as tall as its contents need. Stretching a few of them to share the leftover space is
- * what forced their contents into an inner scroll box once the space ran out; the column scrolls
- * instead now, and each card shows all of itself. */
+/* The panels whose contents are an open-ended list absorb the column's leftover space instead (and
+ * scroll inside themselves once it runs out - see the body rule below), rather than every panel
+ * sharing the slack equally and squeezing these three into an inner scrollbar while a preview card
+ * sits half-empty. A user-dragged height still wins (inline flex + [data-fixed-height], set in
+ * EditorDock.tsx). */
+.dock-panel[data-panel-id="palette"],
+.dock-panel[data-panel-id="layers"],
+.dock-panel[data-panel-id="library"] {
+  flex: 1 1 auto;
+}
+.dock-panel[data-panel-id="palette"]:not([data-collapsed]) > .dock-panel-body,
+.dock-panel[data-panel-id="layers"]:not([data-collapsed]) > .dock-panel-body,
+.dock-panel[data-panel-id="library"]:not([data-collapsed]) > .dock-panel-body {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
 .dock-panel[data-panel-id="tools"], .dock-panel[data-panel-id="transform"] { min-width: 2.4rem; }
 .dock-panel[data-collapsed] { flex: 0 0 auto; }
 .dock-panel[data-dragging] { opacity: 0.45; }
@@ -825,7 +841,7 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
  * fit (see the reflow rules for each panel below). One scroller per column - the column itself - rather
  * than a scrollbar inside a scrollbar inside a card, where neither one is obviously the thing that
  * moves what you were looking for. */
-.dock-panel-body { display: flex; flex-direction: column; gap: 5px; padding: 6px; min-height: 0; overflow: visible; }
+.dock-panel-body { display: flex; flex-direction: column; gap: 5px; padding: 6px; min-height: 0; overflow: visible; flex: 1 1 auto; }
 /* The one exception: a panel whose height was set by dragging its divider keeps that height, so its own
  * contents are what scroll inside it - that is what asking for a fixed-size box means. */
 .dock-panel[data-fixed-height] > .dock-panel-body { overflow-y: auto; overflow-x: hidden; }

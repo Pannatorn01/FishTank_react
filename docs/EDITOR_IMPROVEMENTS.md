@@ -124,9 +124,18 @@ bend-idle ไม่เคย rollback undo entry ที่ push ไว้ตอ�
 มีแค่ปุ่ม Undo/Redo (`ToolRail.tsx:65,68`) ที่มี `title=` อย่างเดียว ไม่มี `aria-label`
 **สถานะ:** แก้แล้ว — เพิ่ม `aria-label` ให้สองปุ่มนี้
 
-### 11. พื้นที่ว่างในแผงฝั่งขวาเยอะผิดสัดส่วน
-PREVIEW / ONION SKIN / TRANSFORM มีช่องว่างด้านล่างเยอะมากขณะที่ MY LIBRARY ด้านล่างถูกบีบจนต้องเลื่อน
-**แนวทาง:** ให้แผงย่อขนาดตามเนื้อหา (`height: fit-content`) แล้วปล่อยพื้นที่ที่เหลือให้ LIBRARY
+### 11. ✅ พื้นที่ว่างในแผงฝั่งขวาเยอะผิดสัดส่วน — แก้แล้ว (2026-09-08)
+เดิม `.dock-panel { flex: 1 0 auto }` (index.css) → ทุก panel โตแบ่งพื้นที่เท่ากัน: PREVIEW/ONION/
+TRANSFORM ได้ส่วนแบ่งเกินเนื้อหา (ช่องว่าง ~67px ในทุกการ์ด) ส่วน LAYERS/LIBRARY ได้ส่วนแบ่งเท่ากัน
+ซึ่งไม่พอ → บีบจน scroll ในตัวเอง (วัดจริงบน main: ทุก panel มี dead zone 67px รวม layers ด้วย)
+**แก้:**
+- `.dock-panel` → `flex: 0 0 auto` (สูงตามเนื้อหา) — panel เล็กไม่ยืดแล้ว
+- เฉพาะ `palette` / `layers` / `library` (list ที่ยาวได้ไม่จำกัด) → `flex: 1 1 auto` + `body`
+  `overflow-y: auto` ดูดพื้นที่ที่เหลือของ column แล้ว scroll ในตัวเองเมื่อเต็ม
+- `.dock-panel-body` → `flex: 1 1 auto` ให้ body เต็ม panel ที่โต (เดิม body ไม่เต็ม เหลือ dead zone)
+- panel ที่ผู้ใช้ลากตั้งความสูงเอง (`[data-fixed-height]` + inline flex) ยังชนะเหมือนเดิม
+ยืนยัน: build/lint ผ่าน + Playwright วัด (1400×900 / 1200×560): PREVIEW/ONION/TRANSFORM สูงพอดีเนื้อหา,
+LAYERS/LIBRARY เต็ม+scroll ในตัว, ไม่มี horizontal page scroll
 
 ### 12. ✅ แก้แล้ว — คลิกที่ข้อความ checkbox 4 ตัวใน ToolOptionsBar ไม่ทำงาน (พบระหว่าง migrate gradient)
 **แก้แล้ว (2026-09-08):** เปลี่ยน wrapper จาก `<label>` เป็น `<span>` และให้แต่ละ `Checkbox` มี `id`
