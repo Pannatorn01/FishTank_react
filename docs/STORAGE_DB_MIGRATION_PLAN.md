@@ -1,6 +1,6 @@
 # แผนย้ายชั้นเก็บข้อมูล: localStorage → Storage Adapter → Database
 
-> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0–P4 เสร็จแล้ว (เหลือ P4-4 = UI สลับตู้) · P5 (Supabase + sync) เป็นงานถัดไป** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
+> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0–P4 เสร็จ · P5 เขียนโค้ดครบแล้วแต่ยังไม่ได้ทดสอบกับ Supabase จริง (P5-5) · P6 (auth) เป็นงานถัดไป** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
 > ที่มา: audit โค้ดจริง ไม่ใช่การเดา
 > ทุกข้ออ้างอิง `ไฟล์:บรรทัด` ณ commit `86efa06` — ถ้าบรรทัดเลื่อน ให้ grep ชื่อฟังก์ชันที่ระบุไว้แทน
 >
@@ -49,8 +49,12 @@
 > ผลลัพธ์ที่ตามมาโดยตรง: **ห้ามใช้ Supabase client อ่าน/เขียนตรงจาก component เด็ดขาด**
 > ทุกอย่างต้องผ่าน repository (§3) ไม่งั้น offline-first จะพังทันทีที่เน็ตหลุด
 
-**ความคืบหน้า: P0–P4 เสร็จแล้ว** (ดู checklist §7 · เหลือ P4-4 คือ UI สลับตู้) · ทดสอบในเบราว์เซอร์จริงด้วย
-[`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — **25/25 ผ่าน** (รันคู่กับ `npm run dev`) · งานถัดไปคือ **P3 — เฟสที่ใหญ่และเสี่ยงที่สุด**
+**ความคืบหน้า: P0–P4 เสร็จ · P5 เขียนครบแล้ว** (ดู checklist §7) · ทดสอบในเบราว์เซอร์จริงด้วย
+[`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — **25/25 ผ่าน** (รันคู่กับ `npm run dev`)
+
+> ⚠️ **สิ่งที่ยังไม่ได้พิสูจน์:** โค้ด sync ทั้งหมดยังไม่เคยคุยกับ Supabase จริงสักครั้ง (ยังไม่มีโปรเจกต์/credential)
+> · logic ที่ทดสอบได้แบบ pure — merge, outbox, การ map record↔row — มี unit test 13 เคสครบ
+> · **ขั้นตอนถัดไปฝั่งคุณ:** สร้างโปรเจกต์ Supabase → รัน `supabase/schema.sql` → ใส่ค่าใน `.env` → แล้วค่อยไล่ P5-5 · งานถัดไปคือ **P3 — เฟสที่ใหญ่และเสี่ยงที่สุด**
 
 ---
 
@@ -622,11 +626,11 @@ create policy read_used_in_shared on sprites for select using (
 - [x] **P4-2** `currentTankId` + `localUserId` ถูกสร้างตั้งแต่รันครั้งแรก (แม้ไม่มีอะไรให้ migrate)
 - [x] **P4-3** `TankEngine.tankId` + ทุก load/save ระบุตู้ · store `tanks` ใช้ `id` เป็น keyPath · `listTanks()` พร้อมใช้
 - [ ] **P4-4** (ยังไม่ทำ — ตั้งใจ) UI สลับ/สร้าง/ลบตู้ · โครงข้อมูลรองรับแล้ว เหลือแค่งาน UI
-- [ ] **P5-1** ตั้งโปรเจกต์ Supabase + `.env` (anon key เท่านั้น) + `src/lib/supabase.ts`
-- [ ] **P5-2** รัน schema §5 + เปิด RLS ครบทุกตาราง + เทสต์ policy ด้วยบัญชีทดสอบ 2 คน
-- [ ] **P5-3** `outbox.ts` (คิวใน IndexedDB + backoff + บีบให้เหลือรายการเดียวต่อ id)
-- [ ] **P5-4** `supabaseAdapter.ts` (upsert แบบ idempotent) + `syncEngine.ts` (delta pull + merge)
-- [ ] **P5-5** ทดสอบตัดเน็ต → ทำงาน → ต่อเน็ต → ข้อมูลครบไม่ซ้ำ · 2 เครื่องบัญชีเดียวกัน
+- [x] **P5-1** `src/lib/supabase.ts` + [`.env.example`](../.env.example) (anon key เท่านั้น · `.env` เข้า .gitignore แล้ว) — **เหลือฝั่งคุณ: สร้างโปรเจกต์จริงแล้วเติมค่า**
+- [x] **P5-2** [`supabase/schema.sql`](../supabase/schema.sql) พร้อมรัน (ตาราง + RLS + trigger `bump_rev` · re-runnable) — **เหลือฝั่งคุณ: รันจริง + เทสต์ policy ด้วยบัญชีทดสอบ 2 คน**
+- [x] **P5-3** [`outbox.ts`](../src/lib/data/outbox.ts) — คิวใน IndexedDB store `outbox` + exponential backoff (cap 5 นาที) + coalesce เหลือรายการเดียวต่อ record
+- [x] **P5-4** [`syncEngine.ts`](../src/lib/data/syncEngine.ts) (flush + delta pull + merge) · [`rows.ts`](../src/lib/data/rows.ts) (map record ↔ row) · [`merge.ts`](../src/lib/data/merge.ts) (last-write-wins + tiebreak ด้วย `rev`)
+- [ ] **P5-5** ⚠️ **ยังทดสอบกับ Supabase จริงไม่ได้** (ไม่มี credential) — logic ทั้งหมดมี unit test 13 เคส แต่ยังไม่เคยยิงขึ้น server จริงสักครั้ง · ต้องทำเมื่อมีโปรเจกต์: ตัดเน็ต → ทำงาน → ต่อเน็ต → ข้อมูลครบไม่ซ้ำ · 2 เครื่องบัญชีเดียวกัน
 - [ ] **P5-6** ตัดสินใจว่า sprite ต้องย้ายไป Supabase Storage ไหม (ใช้ตัวเลขจริงจาก P2)
 - [ ] **P6-1** guest mode: `localUserId` + ปุ่มล็อกอินแบบไม่บังคับ
 - [ ] **P6-2** magic link + Google + flow อัปโหลดงานเดิมตอนล็อกอินครั้งแรก (พร้อม progress)

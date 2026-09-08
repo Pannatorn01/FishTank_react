@@ -11,6 +11,10 @@ import type { EditorPrefs, StorageAdapter, TankState, TankSummary } from './adap
  * backend needs too, where the cache doubles as the offline copy (plan P4/P5).
  */
 export class SpriteRepo {
+  /** Told about every successful write, so the sync engine can queue it (see getRepos). A callback
+   *  rather than a dependency: the repository works exactly the same with nobody listening, which is
+   *  the local-only case and the default. */
+  onWrite: ((sprites: Sprite[]) => void) | null = null;
   private sprites: Sprite[] = [];
   private hydrated = false;
   private readonly adapter: StorageAdapter;
@@ -65,10 +69,12 @@ export class SpriteRepo {
       this.sprites = previous;
       throw e;
     }
+    this.onWrite?.([sprite]);
   }
 
   async remove(id: string): Promise<void> {
     const previous = this.sprites;
+    const removed = previous.find((s) => s.id === id);
     this.sprites = this.sprites.filter((s) => s.id !== id);
     try {
       await this.adapter.saveSprites(this.sprites);
@@ -76,6 +82,8 @@ export class SpriteRepo {
       this.sprites = previous;
       throw e;
     }
+    // The tombstone is what travels, not the absence: see the adapters' saveSprites.
+    if (removed) this.onWrite?.([{ ...removed, deletedAt: Date.now(), updatedAt: Date.now() }]);
   }
 
   /** Replaces the whole library at once - used when seeding the default sprites on a first run. */
@@ -93,6 +101,8 @@ export class SpriteRepo {
 }
 
 export class TankRepo {
+  /** See SpriteRepo.onWrite. */
+  onWrite: ((state: TankState, tankId: string) => void) | null = null;
   private readonly adapter: StorageAdapter;
 
   constructor(adapter: StorageAdapter) {
@@ -117,8 +127,9 @@ export class TankRepo {
     return this.adapter.loadTankState(tankId);
   }
 
-  save(state: TankState, tankId?: string): Promise<void> {
-    return this.adapter.saveTankState(state, tankId);
+  async save(state: TankState, tankId?: string): Promise<void> {
+    await this.adapter.saveTankState(state, tankId);
+    this.onWrite?.(state, tankId ?? (await this.adapter.getCurrentTankId()));
   }
 }
 

@@ -1,7 +1,9 @@
+import { getSupabase } from '../supabase';
 import type { StorageAdapter } from './adapter';
 import { IndexedDbAdapter } from './indexedDbAdapter';
 import { LocalStorageAdapter } from './localAdapter';
 import { EditorPrefsRepo, SpriteRepo, TankRepo } from './repository';
+import { SyncEngine } from './syncEngine';
 
 export type { EditorPrefs, StorageAdapter, TankState, TankSummary } from './adapter';
 export { IndexedDbAdapter } from './indexedDbAdapter';
@@ -14,6 +16,9 @@ export interface Repos {
   prefs: EditorPrefsRepo;
 }
 
+export type { SyncStatus, SyncState } from './syncEngine';
+export { SyncEngine } from './syncEngine';
+
 /**
  * The single place that decides where data lives. Swapping localStorage for IndexedDB, or adding a
  * remote backend behind it (plan P4/P5), is a change to this one function - nothing else in the app
@@ -25,8 +30,35 @@ export interface Repos {
 let repos: Repos | null = null;
 
 export function getRepos(): Repos {
-  if (!repos) repos = makeRepos(pickAdapter());
+  if (!repos) {
+    const adapter = pickAdapter();
+    repos = makeRepos(adapter);
+    attachSync(adapter, repos);
+  }
   return repos;
+}
+
+let sync: SyncEngine | null = null;
+
+/**
+ * Starts syncing to Supabase, when there is a Supabase to sync to and a local database to sync from.
+ * Both are optional: with no project configured, or in a browser where IndexedDB will not open, the
+ * app is exactly what it was before - fully working, local only. Nothing here is awaited by callers,
+ * and a sync failure never reaches the code that saved.
+ */
+function attachSync(adapter: StorageAdapter, repos: Repos): void {
+  const supabase = getSupabase();
+  if (!supabase || !(adapter instanceof IndexedDbAdapter)) return;
+  sync = new SyncEngine(adapter, supabase);
+  repos.sprites.onWrite = (sprites) => void sync?.queueSprites(sprites);
+  repos.tank.onWrite = (state, tankId) => void sync?.queueTank(tankId, state);
+  sync.start();
+}
+
+/** The running sync engine, or null when the app is local-only (see attachSync). */
+export function getSync(): SyncEngine | null {
+  getRepos();
+  return sync;
 }
 
 /**
@@ -55,4 +87,6 @@ export function makeRepos(adapter: StorageAdapter): Repos {
 /** Tests only: point the app at a different adapter (and drop any cached data from a previous one). */
 export function setRepos(next: Repos | null): void {
   repos = next;
+  sync?.stop();
+  sync = null;
 }

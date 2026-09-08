@@ -13,8 +13,13 @@ This is a React port of the original vanilla JS/CSS version (see the sibling
   (8/16/24/32) with resampling; zoom; onion skin; PNG and sprite-sheet export.
 - Animated tank: drag sprites in from a palette, fish swim autonomously and
   bounce off walls, drag to reposition or delete, decorations sway in place.
-- Everything persists to `localStorage` (per-browser, not shared with the
-  vanilla version - different origin).
+- Everything persists in this browser (IndexedDB, with a one-time migration
+  from the old `localStorage` data). Works fully offline and without an
+  account.
+- Optional Supabase sync: set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`
+  (see `.env.example`) and run `supabase/schema.sql` in the project. With no
+  credentials the app is local-only, which is a supported mode, not a degraded
+  one. See `docs/STORAGE_DB_MIGRATION_PLAN.md`.
 
 ## Development
 

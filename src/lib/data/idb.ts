@@ -21,13 +21,16 @@ function done(tx: IDBTransaction): Promise<void> {
   });
 }
 
-export function openDb(name: string, version: number, upgrade: (db: IDBDatabase) => void): Promise<IDBDatabase> {
+/** `version` omitted opens whatever version exists, without triggering an upgrade - what a reader that
+ *  only wants to look at the data (the backup path) needs, and the only way for such a reader not to
+ *  break every time the schema moves on. */
+export function openDb(name: string, version: number | undefined, upgrade: (db: IDBDatabase) => void): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
       reject(new Error('IndexedDB is not available'));
       return;
     }
-    const req = indexedDB.open(name, version);
+    const req = version === undefined ? indexedDB.open(name) : indexedDB.open(name, version);
     req.onupgradeneeded = () => upgrade(req.result);
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('opening IndexedDB failed'));
@@ -48,6 +51,12 @@ export function get<T>(db: IDBDatabase, store: string, key: IDBValidKey): Promis
 export async function put(db: IDBDatabase, store: string, value: unknown): Promise<void> {
   const tx = db.transaction(store, 'readwrite');
   tx.objectStore(store).put(value);
+  await done(tx);
+}
+
+export async function del(db: IDBDatabase, store: string, key: IDBValidKey): Promise<void> {
+  const tx = db.transaction(store, 'readwrite');
+  tx.objectStore(store).delete(key);
   await done(tx);
 }
 

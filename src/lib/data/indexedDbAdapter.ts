@@ -1,16 +1,18 @@
 import { normalizeSprite, encodeSprite, uid, type StoredSprite } from '../storage';
 import type { Sprite } from '../types';
 import type { EditorPrefs, StorageAdapter, TankState, TankSummary } from './adapter';
-import { getAll, get, openDb, put, replaceAll } from './idb';
+import { del, getAll, get, openDb, put, replaceAll } from './idb';
+import type { OutboxEntry } from './outbox';
 import { LocalStorageAdapter, SINGLE_TANK_ID } from './localAdapter';
 
 const DB_NAME = 'fishtank';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 const STORE_SPRITES = 'sprites';
 const STORE_TANKS = 'tanks';
 const STORE_PREFS = 'prefs';
 const STORE_META = 'meta';
+const STORE_OUTBOX = 'outbox';
 
 const META_MIGRATED = 'migratedFrom.localStorage';
 const META_CURRENT_TANK = 'currentTankId';
@@ -56,10 +58,13 @@ export class IndexedDbAdapter implements StorageAdapter {
   private db(): Promise<IDBDatabase | null> {
     if (!this.dbPromise) {
       this.dbPromise = openDb(DB_NAME, DB_VERSION, (db) => {
-        db.createObjectStore(STORE_SPRITES, { keyPath: 'id' });
-        db.createObjectStore(STORE_TANKS, { keyPath: 'id' });
-        db.createObjectStore(STORE_PREFS, { keyPath: 'key' });
-        db.createObjectStore(STORE_META, { keyPath: 'key' });
+        // Guarded individually: an upgrade runs against a database that already has the earlier
+        // version's stores, and creating one twice throws.
+        if (!db.objectStoreNames.contains(STORE_SPRITES)) db.createObjectStore(STORE_SPRITES, { keyPath: 'id' });
+        if (!db.objectStoreNames.contains(STORE_TANKS)) db.createObjectStore(STORE_TANKS, { keyPath: 'id' });
+        if (!db.objectStoreNames.contains(STORE_PREFS)) db.createObjectStore(STORE_PREFS, { keyPath: 'key' });
+        if (!db.objectStoreNames.contains(STORE_META)) db.createObjectStore(STORE_META, { keyPath: 'key' });
+        if (!db.objectStoreNames.contains(STORE_OUTBOX)) db.createObjectStore(STORE_OUTBOX, { keyPath: 'key' });
       })
         .then(async (db) => {
           await this.migrateOnce(db);
@@ -195,6 +200,58 @@ export class IndexedDbAdapter implements StorageAdapter {
     if (!db) return this.fallback.saveEditorPrefs(patch);
     const current = await this.loadEditorPrefs();
     await put(db, STORE_PREFS, { key: PREFS_KEY, value: { ...current, ...patch } });
+  }
+
+  // ------------------------------------------------------------------ used by the sync engine
+  // These reach past the StorageAdapter interface on purpose: syncing needs the *stored* view of the
+  // data (tombstones included, sync marks, the outbox) which the app itself must never see.
+
+  async getMeta(key: string): Promise<string | null> {
+    const db = await this.db();
+    return db ? this.meta(db, key) : null;
+  }
+
+  async setMetaValue(key: string, value: string): Promise<void> {
+    const db = await this.db();
+    if (db) await this.setMeta(db, key, value);
+  }
+
+  /** Every sprite record, tombstones included - what the server needs to be told about. */
+  async allSpriteRecords(): Promise<Sprite[]> {
+    const db = await this.db();
+    if (!db) return this.fallback.listSprites();
+    const records = await getAll<StoredSprite>(db, STORE_SPRITES);
+    return records.map((r) => normalizeSprite(r as unknown as Sprite));
+  }
+
+  /** Writes records exactly as given, with no tombstoning pass - the sync engine has already decided
+   *  which version of each record wins (see merge.ts). */
+  async writeSpriteRecords(records: Sprite[]): Promise<void> {
+    const db = await this.db();
+    if (!db) return;
+    await replaceAll(db, STORE_SPRITES, records.map(encodeSprite));
+  }
+
+  async tankRecord(id: string): Promise<TankRecord | undefined> {
+    const db = await this.db();
+    if (!db) return undefined;
+    return get<TankRecord>(db, STORE_TANKS, id);
+  }
+
+  async outboxAll(): Promise<OutboxEntry[]> {
+    const db = await this.db();
+    if (!db) return [];
+    return getAll<OutboxEntry>(db, STORE_OUTBOX);
+  }
+
+  async outboxPut(entry: OutboxEntry): Promise<void> {
+    const db = await this.db();
+    if (db) await put(db, STORE_OUTBOX, entry);
+  }
+
+  async outboxDelete(key: string): Promise<void> {
+    const db = await this.db();
+    if (db) await del(db, STORE_OUTBOX, key);
   }
 
   /** The id this browser's work belongs to before there is an account (see migrateOnce). */

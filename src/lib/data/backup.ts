@@ -2,7 +2,9 @@ import { collectLocalStorageDump, clearLocalStorageData } from '../storage';
 import { getAll, openDb } from './idb';
 
 const DB_NAME = 'fishtank';
-const STORES = ['sprites', 'tanks', 'prefs', 'meta'];
+// 'outbox' included deliberately: it holds changes the server has not accepted yet, which are exactly
+// the ones a backup must not miss.
+const STORES = ['sprites', 'tanks', 'prefs', 'meta', 'outbox'];
 
 /**
  * "Get my work out" and "start over", now that the work can live in two places.
@@ -17,7 +19,9 @@ const STORES = ['sprites', 'tanks', 'prefs', 'meta'];
 export async function collectBackup(): Promise<Record<string, unknown>> {
   const dump: Record<string, unknown> = { localStorage: collectLocalStorageDump() };
   try {
-    const db = await openDb(DB_NAME, 1, () => {});
+    // No version: a backup must read whatever schema this browser happens to be on, and must never
+    // trigger an upgrade of its own.
+    const db = await openDb(DB_NAME, undefined, () => {});
     for (const store of STORES) {
       if (db.objectStoreNames.contains(store)) dump[store] = await getAll(db, store);
     }
