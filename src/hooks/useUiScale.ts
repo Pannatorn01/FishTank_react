@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { KEY_UI_SCALE } from '@/lib/storage';
 
 /**
  * How large the whole editor draws. Everything in the UI is sized in rem, so one root font size scales
@@ -19,7 +20,8 @@ export const UI_SCALE_PERCENT: Record<UiScale, number> = {
   huge: 130,
 };
 
-const STORAGE_KEY = 'fishtank.uiScale.v1';
+/** See KEY_EDITOR_LAYOUT's note in useEditorLayout.ts - declared in storage.ts so backup/reset see it. */
+const STORAGE_KEY = KEY_UI_SCALE;
 
 function load(): UiScale {
   try {

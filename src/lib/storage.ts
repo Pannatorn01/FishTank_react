@@ -76,6 +76,79 @@ export const DEFAULT_FRAME_MS = 350;
 export const MIN_FRAME_FPS = 1;
 export const MAX_FRAME_FPS = 20;
 
+/** Prefix of the per-panel collapse flags written straight to localStorage by EditorDock.tsx - one key
+ *  per panel id, so they can only be enumerated by prefix, not listed like the fixed keys above. Kept
+ *  here (not in EditorDock) so downloadDataBackup()/resetAllData() can see them: a backup that silently
+ *  skips them, or a reset that leaves a broken layout behind, is exactly the failure those two exist to
+ *  prevent. */
+export const KEY_SIDE_PANEL_COLLAPSED_PREFIX = 'fishtank.sidePanel.collapsed.';
+/** Written by useEditorLayout.ts / useUiScale.ts directly (they own the shape, storage.ts only needs to
+ *  know the keys exist so backup/reset cover them). */
+export const KEY_EDITOR_LAYOUT = 'fishtank.editorLayout.v1';
+export const KEY_UI_SCALE = 'fishtank.uiScale.v1';
+
+/**
+ * Thrown by every write in this module when the browser refuses to store more - separated from a
+ * generic failure so callers can say "your storage is full" (actionable: delete a sprite, export a
+ * backup) rather than a bare "save failed". See docs/STORAGE_DB_MIGRATION_PLAN.md P0-1.
+ */
+export class StorageQuotaError extends Error {
+  readonly key: string;
+  readonly size: number;
+  constructor(key: string, size: number) {
+    super(`localStorage quota exceeded writing ${key} (${size} chars)`);
+    this.name = 'StorageQuotaError';
+    this.key = key;
+    this.size = size;
+  }
+}
+
+/** Browsers disagree on how a full store is reported: name, legacy code, and Firefox's own name are all
+ *  in the wild, so all three are treated as "full". */
+function isQuotaError(e: unknown): boolean {
+  if (!(e instanceof DOMException)) return false;
+  return (
+    e.name === 'QuotaExceededError' ||
+    e.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+    e.code === 22 ||
+    e.code === 1014
+  );
+}
+
+/** The single write path for this module - every save*() goes through it so a full store surfaces as a
+ *  StorageQuotaError instead of a raw DOMException. Still throws (callers decide how to recover, and
+ *  several of them roll back in-memory state on failure); it only classifies. */
+function writeKey(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e) {
+    if (isQuotaError(e)) throw new StorageQuotaError(key, value.length);
+    throw e;
+  }
+}
+
+/**
+ * Rough "how full is the store" reading for the warning banner - counts only this app's own keys (other
+ * origins share nothing, but other scripts on this origin could) and assumes the common ~5MB budget,
+ * counting UTF-16 code units as 2 bytes. Deliberately an estimate: browsers expose no real quota API
+ * for localStorage, so this is for warning the user early, never for gating a write.
+ */
+export const STORAGE_BUDGET_BYTES = 5 * 1024 * 1024;
+
+export function estimateUsage(): { bytes: number; percent: number } {
+  let chars = 0;
+  try {
+    for (const key of allOwnedKeys()) {
+      const value = localStorage.getItem(key);
+      if (value !== null) chars += key.length + value.length;
+    }
+  } catch (e) {
+    console.warn('estimateUsage failed', e);
+  }
+  const bytes = chars * 2;
+  return { bytes, percent: Math.min(100, (bytes / STORAGE_BUDGET_BYTES) * 100) };
+}
+
 export function uid(prefix?: string): string {
   return (prefix || 'id') + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
 }
@@ -147,7 +220,7 @@ export function loadSprites(): Sprite[] | null {
 }
 
 export function saveSprites(sprites: Sprite[]): void {
-  localStorage.setItem(KEY_SPRITES, JSON.stringify(sprites));
+  writeKey(KEY_SPRITES, JSON.stringify(sprites));
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -194,7 +267,7 @@ export function loadInstances(): Instance[] {
 }
 
 export function saveInstances(instances: Instance[]): void {
-  localStorage.setItem(KEY_INSTANCES, JSON.stringify(instances));
+  writeKey(KEY_INSTANCES, JSON.stringify(instances));
 }
 
 export function loadGroups(): TankGroup[] {
@@ -208,7 +281,7 @@ export function loadGroups(): TankGroup[] {
 }
 
 export function saveGroups(groups: TankGroup[]): void {
-  localStorage.setItem(KEY_GROUPS, JSON.stringify(groups));
+  writeKey(KEY_GROUPS, JSON.stringify(groups));
 }
 
 /** Fraction of the tank's own width/height added as "room" space on every side, for room decor to
@@ -301,7 +374,7 @@ export function loadRoomInstances(tankWidth: number, tankHeight: number): RoomIn
 }
 
 export function saveRoomInstances(roomInstances: RoomInstance[]): void {
-  localStorage.setItem(KEY_ROOM_INSTANCES, JSON.stringify(roomInstances));
+  writeKey(KEY_ROOM_INSTANCES, JSON.stringify(roomInstances));
 }
 
 export function loadTankSize(): { width: number; height: number } | null {
@@ -319,7 +392,7 @@ export function loadTankSize(): { width: number; height: number } | null {
 
 export function saveTankSize(size: { width: number; height: number } | null): void {
   if (!size) localStorage.removeItem(KEY_TANK_SIZE);
-  else localStorage.setItem(KEY_TANK_SIZE, JSON.stringify(size));
+  else writeKey(KEY_TANK_SIZE, JSON.stringify(size));
 }
 
 /** Wall-clock checkpoint for hunger/starvation catch-up (see tickHunger() in useTank.ts) - epoch ms
@@ -338,7 +411,7 @@ export function loadTankLastTick(): number | null {
 }
 
 export function saveTankLastTick(ms: number): void {
-  localStorage.setItem(KEY_TANK_LAST_TICK, String(ms));
+  writeKey(KEY_TANK_LAST_TICK, String(ms));
 }
 
 export function loadTankShape(): TankShape | null {
@@ -352,7 +425,7 @@ export function loadTankShape(): TankShape | null {
 }
 
 export function saveTankShape(shape: TankShape): void {
-  localStorage.setItem(KEY_TANK_SHAPE, shape);
+  writeKey(KEY_TANK_SHAPE, shape);
 }
 
 export function loadTankShapeParam(key: string): number | null {
@@ -368,7 +441,7 @@ export function loadTankShapeParam(key: string): number | null {
 }
 
 export function saveTankShapeParam(key: string, value: number): void {
-  localStorage.setItem(key, String(value));
+  writeKey(key, String(value));
 }
 
 export const KEY_TANK_CORNER_RADIUS_FRAC = 'fishtank.tankCornerRadiusFrac.v1';
@@ -385,7 +458,7 @@ export function loadTankBackgroundSpriteId(): string | null {
 }
 
 export function saveTankBackgroundSpriteId(id: string | null): void {
-  if (id) localStorage.setItem(KEY_TANK_BACKGROUND_SPRITE_ID, id);
+  if (id) writeKey(KEY_TANK_BACKGROUND_SPRITE_ID, id);
   else localStorage.removeItem(KEY_TANK_BACKGROUND_SPRITE_ID);
 }
 
@@ -409,7 +482,7 @@ export function loadTankBackgroundTransform(): BackgroundTransform | null {
 }
 
 export function saveTankBackgroundTransform(transform: BackgroundTransform): void {
-  localStorage.setItem(KEY_TANK_BACKGROUND_TRANSFORM, JSON.stringify(transform));
+  writeKey(KEY_TANK_BACKGROUND_TRANSFORM, JSON.stringify(transform));
 }
 
 export function loadSavedColors(): string[] {
@@ -423,7 +496,7 @@ export function loadSavedColors(): string[] {
 }
 
 export function saveSavedColors(colors: string[]): void {
-  localStorage.setItem(KEY_SAVED_COLORS, JSON.stringify(colors));
+  writeKey(KEY_SAVED_COLORS, JSON.stringify(colors));
 }
 
 export function loadPinnedColors(): string[] {
@@ -437,7 +510,7 @@ export function loadPinnedColors(): string[] {
 }
 
 export function savePinnedColors(colors: string[]): void {
-  localStorage.setItem(KEY_PINNED_COLORS, JSON.stringify(colors));
+  writeKey(KEY_PINNED_COLORS, JSON.stringify(colors));
 }
 
 /** Brush size remembered per brush-like tool (pen/eraser/spray each paint a different kind of stroke,
@@ -454,7 +527,7 @@ export function loadBrushSizes(): Record<string, number> {
 }
 
 export function saveBrushSizes(sizes: Record<string, number>): void {
-  localStorage.setItem(KEY_BRUSH_SIZES, JSON.stringify(sizes));
+  writeKey(KEY_BRUSH_SIZES, JSON.stringify(sizes));
 }
 
 export function loadPaletteColors(): string[] | null {
@@ -468,7 +541,7 @@ export function loadPaletteColors(): string[] | null {
 }
 
 export function savePaletteColors(colors: string[]): void {
-  localStorage.setItem(KEY_PALETTE_COLORS, JSON.stringify(colors));
+  writeKey(KEY_PALETTE_COLORS, JSON.stringify(colors));
 }
 
 export function loadCanvasBackground(): CanvasBackground | null {
@@ -482,7 +555,7 @@ export function loadCanvasBackground(): CanvasBackground | null {
 }
 
 export function saveCanvasBackground(bg: CanvasBackground): void {
-  localStorage.setItem(KEY_CANVAS_BG, bg);
+  writeKey(KEY_CANVAS_BG, bg);
 }
 
 const ONION_COLOR_MODES: OnionColorMode[] = ['tint', 'original'];
@@ -513,7 +586,7 @@ export function loadOnionSettings(): OnionSettings | null {
 }
 
 export function saveOnionSettings(settings: OnionSettings): void {
-  localStorage.setItem(KEY_ONION, JSON.stringify(settings));
+  writeKey(KEY_ONION, JSON.stringify(settings));
 }
 
 export function loadUiTheme(): UiTheme | null {
@@ -527,7 +600,7 @@ export function loadUiTheme(): UiTheme | null {
 }
 
 export function saveUiTheme(theme: UiTheme): void {
-  localStorage.setItem(KEY_UI_THEME, theme);
+  writeKey(KEY_UI_THEME, theme);
 }
 
 export function emptyFrame(width: number, height: number): Frame {
@@ -688,6 +761,8 @@ export function buildDefaultSprites(): Sprite[] {
 /** Every localStorage key this app writes - kept as one list so backup/reset (see below) can't drift
  *  out of sync with a key added elsewhere in this file without updating this too. */
 const ALL_STORAGE_KEYS = [
+  KEY_EDITOR_LAYOUT,
+  KEY_UI_SCALE,
   KEY_SPRITES,
   KEY_INSTANCES,
   KEY_GROUPS,
@@ -708,6 +783,22 @@ const ALL_STORAGE_KEYS = [
   KEY_TANK_OVAL_TOP_CUT_FRAC,
 ];
 
+/** Every key this app currently owns: the fixed list plus the variable-count per-panel collapse flags,
+ *  which only exist once a panel has been collapsed at least once. Both backup and reset need the full
+ *  picture, hence one helper rather than two loops that can drift apart. */
+function allOwnedKeys(): string[] {
+  const keys = [...ALL_STORAGE_KEYS];
+  try {
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(KEY_SIDE_PANEL_COLLAPSED_PREFIX)) keys.push(key);
+    }
+  } catch (e) {
+    console.warn('allOwnedKeys: could not enumerate localStorage', e);
+  }
+  return keys;
+}
+
 /**
  * Bundles every raw localStorage value this app owns into one downloadable JSON file - the "get my
  * work out" escape hatch an ErrorBoundary offers when the app itself can no longer render (see
@@ -717,7 +808,7 @@ const ALL_STORAGE_KEYS = [
  */
 export function downloadDataBackup(): boolean {
   const dump: Record<string, string> = {};
-  for (const key of ALL_STORAGE_KEYS) {
+  for (const key of allOwnedKeys()) {
     const value = localStorage.getItem(key);
     if (value !== null) dump[key] = value;
   }
@@ -739,5 +830,5 @@ export function downloadDataBackup(): boolean {
  *  origin's localStorage untouched (unlike a blanket `localStorage.clear()`), and does not reload the
  *  page itself - the caller decides when. */
 export function resetAllData(): void {
-  for (const key of ALL_STORAGE_KEYS) localStorage.removeItem(key);
+  for (const key of allOwnedKeys()) localStorage.removeItem(key);
 }

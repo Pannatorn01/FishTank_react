@@ -129,3 +129,61 @@ describe('normalizeSprite (legacy shape migration)', () => {
     expect(normalized.frames[0][0].cells).toEqual([null, '#fff']);
   });
 });
+
+describe('quota handling (P0)', () => {
+  /** Mimics a full store the way browsers report it: setItem throws a DOMException named
+   *  QuotaExceededError, everything else keeps working. */
+  function makeFullStorage(): void {
+    const store = localStorage;
+    store.setItem = () => {
+      throw new DOMException('full', 'QuotaExceededError');
+    };
+  }
+
+  it('save* raises StorageQuotaError (not a bare DOMException) when the store is full', () => {
+    makeFullStorage();
+    expect(() => storage.saveSprites([validSprite()])).toThrow(storage.StorageQuotaError);
+  });
+
+  it('the raised error names the key it failed on, so the caller can report it', () => {
+    makeFullStorage();
+    try {
+      storage.saveSprites([validSprite()]);
+      throw new Error('expected saveSprites to throw');
+    } catch (e) {
+      expect(e).toBeInstanceOf(storage.StorageQuotaError);
+      expect((e as InstanceType<typeof storage.StorageQuotaError>).key).toContain('fishtank.sprites');
+    }
+  });
+
+  it('a non-quota failure is passed through unchanged', () => {
+    localStorage.setItem = () => {
+      throw new TypeError('something else entirely');
+    };
+    expect(() => storage.saveSprites([validSprite()])).toThrow(TypeError);
+  });
+
+  it('estimateUsage grows with what is stored and never exceeds 100%', () => {
+    const empty = storage.estimateUsage();
+    storage.saveSprites([validSprite(), validSprite({ id: 'sprite_2' })]);
+    const filled = storage.estimateUsage();
+    expect(filled.bytes).toBeGreaterThan(empty.bytes);
+    expect(filled.percent).toBeLessThanOrEqual(100);
+  });
+});
+
+describe('keys written outside storage.ts (P0-4)', () => {
+  it('resetAllData also clears the editor layout, ui scale, and per-panel collapse flags', () => {
+    localStorage.setItem(storage.KEY_EDITOR_LAYOUT, '{"left":[]}');
+    localStorage.setItem(storage.KEY_UI_SCALE, 'large');
+    localStorage.setItem(`${storage.KEY_SIDE_PANEL_COLLAPSED_PREFIX}palette`, '1');
+    localStorage.setItem('someOtherApp.unrelatedKey', 'keep me');
+
+    storage.resetAllData();
+
+    expect(localStorage.getItem(storage.KEY_EDITOR_LAYOUT)).toBeNull();
+    expect(localStorage.getItem(storage.KEY_UI_SCALE)).toBeNull();
+    expect(localStorage.getItem(`${storage.KEY_SIDE_PANEL_COLLAPSED_PREFIX}palette`)).toBeNull();
+    expect(localStorage.getItem('someOtherApp.unrelatedKey')).toBe('keep me');
+  });
+});

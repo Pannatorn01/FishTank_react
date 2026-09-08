@@ -6,6 +6,7 @@
 >
 > เกี่ยวข้องกับ: [`src/lib/tools/ARCHITECTURE.md`](../src/lib/tools/ARCHITECTURE.md) (แผน migrate เครื่องมือวาด)
 > และ [`PIXI_MIGRATION_PLAN.md`](./PIXI_MIGRATION_PLAN.md) (ดู §0 — ข้อขัดแย้งที่ต้องเคลียร์)
+> และ [`STORAGE_DB_MIGRATION_PLAN.md`](./STORAGE_DB_MIGRATION_PLAN.md) (แผนย้าย localStorage → database — ต่อยอดจากข้อ 2 ของไฟล์นี้)
 
 ---
 
