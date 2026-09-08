@@ -110,10 +110,15 @@ bend-idle ไม่เคย rollback undo entry ที่ push ไว้ตอ�
 
 ## P2 — UX / ความสามารถที่ขาด
 
-### 8. Gradient tool มีแค่แบบเส้นตรง
-แถบ options ของ gradient มีแค่ checkbox "Dither" อย่างเดียว (`ToolOptionsBar.tsx`)
-**ขาด:** เลือกชนิด linear / radial, กลับทิศสี (มีปุ่ม swap อยู่ใน COLORS panel แต่ไม่อยู่ในแถบ tool)
-> เคยคุยกันแล้วว่าจะเอา linear ก่อน — radial ยังเป็นของที่ขาดอยู่
+### 8. ✅ Gradient tool มีแค่แบบเส้นตรง — เพิ่ม radial แล้ว (2026-09-08)
+**แก้:** เพิ่ม `GradientType = 'linear' | 'radial'` — Select ใน `ToolOptionsBar` (เฉพาะตอนเลือก gradient),
+field `engine.gradientType` + `setGradientType()` (sticky ข้าม sprite เหมือน brushSize/symmetry)
+- math ร่วม: `gradientT(x,y,start,end,type)` ใน `gradientTool.ts` — linear = projection บนแกนลาก (คงเดิม),
+  radial = ระยะจาก start (center, วัดจาก cell center) / ความยาวลาก (radius), clamp [0,1]
+- commit path + live preview overlay (`ctx.createRadialGradient` / dither loop) ใช้ helper เดียวกัน
+- 15 gradient tests (เพิ่ม 3 radial: distance-based blend, 2D symmetry, zero-length) + build + lint +
+  Playwright (วาด radial → เห็น blob กลมจริงบน canvas + preview)
+**ยังไม่ทำ:** ปุ่ม swap สี ในแถบ tool (มีอยู่แล้วใน COLORS panel + คีย์ X — ไม่เร่ง)
 
 ### 9. ~~คีย์ลัดไม่มีที่ไหนบอกผู้ใช้~~ — ตรวจซ้ำแล้ว: มีอยู่แล้ว ไม่ต้องแก้
 `ToolRail.tsx:53`'s `title={t('tool.${entry.tool}.desc')}` มีคีย์ลัดต่อท้ายอยู่แล้วทุกตัว

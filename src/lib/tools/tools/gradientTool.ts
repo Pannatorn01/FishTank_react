@@ -1,16 +1,44 @@
 import { ditherColorAt, ditherGradientMix, hexToRgb, rgbToHex } from '../../pixelMath';
-import type { Cell } from '../../types';
+import type { Cell, GradientType } from '../../types';
 import { withSelectionClip, type CellWriter } from '../paintPipeline';
 import { DirtyRectTracker } from '../dirtyRect';
 import { constrainToAngle } from './shapeTool';
 import type { Gesture, GestureResult, PaintOp, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '../types';
+
+/** The blend parameter (0..1, clamped) for cell (x, y): projection onto the drag axis for a linear
+ *  gradient, or distance from `start` as a fraction of the drag length for a radial one. A zero-length
+ *  drag gives 0.5 everywhere (matches the original's `t = 0.5` default), for both types. Shared by the
+ *  commit path here and the live overlay's dither branch (drawGradientPreviewOverlay). */
+export function gradientT(
+  x: number,
+  y: number,
+  start: Cell,
+  end: Cell,
+  type: GradientType,
+): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return 0.5;
+  if (type === 'radial') {
+    // Measured between cell centres: the start cell (px=py=0 -> t=0) is the exact centre, and the drag
+    // length is the radius. The linear branch below keeps its original corner-anchored projection.
+    const rx = x - start.x;
+    const ry = y - start.y;
+    return Math.min(1, Math.sqrt((rx * rx + ry * ry) / lenSq));
+  }
+  const px = x + 0.5 - start.x;
+  const py = y + 0.5 - start.y;
+  return Math.min(1, Math.max(0, (px * dx + py * dy) / lenSq));
+}
 
 /**
  * Ports `gradientCellsPreview` (usePixelEditor.ts:3059-3083) - the exact per-cell color array, computed
  * only once, on commit. The live drag preview never calls this: it mirrors state into the engine's own
  * `gradientStart`/`gradientEnd`/`eraseOverride` fields instead (see ToolPreview.gradientPreview's own
  * doc comment) so the existing `drawGradientPreviewOverlay()` keeps painting with the canvas's native,
- * GPU-composited `ctx.createLinearGradient` - a measured optimization this migration must not bypass.
+ * GPU-composited `ctx.createLinearGradient`/`createRadialGradient` - a measured optimization this
+ * migration must not bypass.
  *
  * Iterates the same bounding box the original did (the selection's box, or the whole canvas) for the
  * same reason (a gradient fills its entire box, so there's no cheaper region to loop over), then filters
@@ -18,9 +46,6 @@ import type { Gesture, GestureResult, PaintOp, Tool, ToolContext, ToolPointerEve
  * own mask check, which the original applied at the write step, not the loop-bounds step.
  */
 function gradientCellsPreviewOps(ctx: ToolContext, start: Cell, end: Cell, eraseOverride: boolean): PaintOp[] {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const lenSq = dx * dx + dy * dy;
   const box = ctx.selection ?? { x0: 0, y0: 0, x1: ctx.width - 1, y1: ctx.height - 1 };
   const startColor = eraseOverride ? ctx.secondaryColor : ctx.color;
   const endColor = eraseOverride ? ctx.color : ctx.secondaryColor;
@@ -31,11 +56,7 @@ function gradientCellsPreviewOps(ctx: ToolContext, start: Cell, end: Cell, erase
   const write = withSelectionClip(ctx.selection, ctx.selectionMask, sink);
   for (let y = box.y0; y <= box.y1; y++) {
     for (let x = box.x0; x <= box.x1; x++) {
-      let t = 0.5;
-      if (lenSq > 0) {
-        t = ((x + 0.5 - start.x) * dx + (y + 0.5 - start.y) * dy) / lenSq;
-        t = Math.min(1, Math.max(0, t));
-      }
+      const t = gradientT(x, y, start, end, ctx.gradientType);
       const color = ctx.ditherEnabled
         ? ditherColorAt(x, y, startColor, endColor, ditherGradientMix(t))
         : rgbToHex(sr + (er - sr) * t, sg + (eg - sg) * t, sb + (eb - sb) * t);

@@ -1,4 +1,4 @@
-import type { Cell, Frame, SelectionBox, SelectionMode, SymmetryMode, ToolName } from '../types';
+import type { Cell, Frame, GradientType, SelectionBox, SelectionMode, SymmetryMode, ToolName } from '../types';
 
 /** A pointer event already resolved to canvas cell coordinates - the engine converts raw DOM pointer
  *  events into this before handing them to a Tool/Gesture, so tool logic never touches the DOM. */
@@ -31,6 +31,8 @@ export interface ToolContext {
   secondaryColor: string;
   brushSize: number;
   ditherEnabled: boolean;
+  /** Gradient only: linear blend along the drag axis, or radial blend out from the drag's start. */
+  gradientType: GradientType;
   pixelPerfect: boolean;
   shapeFilled: boolean;
   symmetry: SymmetryMode;

@@ -20,7 +20,7 @@ const en: Dict = {
   'tool.eyedropper.desc': 'Eyedropper — click to pick a color from a pixel (I)',
   'tool.eraser.desc': 'Eraser — erase pixels (E) • Shift+click to erase a straight line from where you last erased • hold Alt to pick a color',
   'tool.spray.desc': 'Spray — hold and drag to airbrush a scatter of pixels (A) • uses the Brush size below • hold Alt to pick a color • right-click to erase-spray',
-  'tool.gradient.desc': 'Gradient — drag to blend the start/end colors across the selection (or whole canvas) along that line (K) • hold Shift to snap the axis to 0/45/90° • hold Alt to pick a color • right-click to reverse the gradient • Esc while dragging cancels the shape',
+  'tool.gradient.desc': 'Gradient — drag to blend the start/end colors across the selection (or whole canvas): linear along the drag, or radial out from where it started (K) • hold Shift to snap the axis to 0/45/90° • hold Alt to pick a color • right-click to reverse the gradient • Esc while dragging cancels the shape',
   'tool.gradient.short': 'Gradient',
   'tool.rect.desc': 'Rectangle — drag to draw a rectangle (R) • hold Shift for a perfect square • hold Alt to pick a color • right-click to erase • Esc while dragging cancels the shape',
   'tool.rect.short': 'Rectangle',
@@ -102,6 +102,9 @@ const en: Dict = {
   'status.pixelPerfectTitle': 'Drops the redundant corner pixel where a 1px pen stroke turns, so diagonals stay a clean staircase instead of doubling up. Turn it off to paint every single cell the pointer passes over. Never applies to erasing - an eraser has to clear everything it is dragged across',
   'status.dither': 'Dither',
   'status.ditherTitle': 'Ordered (Bayer 4x4) dither pattern between the primary and secondary colors, for the gradient tool or as a stippled brush texture',
+  'status.gradientLinear': 'Linear',
+  'status.gradientRadial': 'Radial',
+  'status.gradientTypeTitle': 'Linear blends the colors along the drag; radial blends outward from where the drag started (the center) to where it ended (the edge)',
 
   'palette.addColor': 'Save current color',
   'palette.removeColor': 'Remove this color',

@@ -32,7 +32,7 @@ import { createSelectTool } from '@/lib/tools/tools/selectTool';
 import { createLassoTool } from '@/lib/tools/tools/lassoTool';
 import { createEyedropperTool } from '@/lib/tools/tools/eyedropperTool';
 import { createFillTool } from '@/lib/tools/tools/fillTool';
-import { createGradientTool } from '@/lib/tools/tools/gradientTool';
+import { createGradientTool, gradientT } from '@/lib/tools/tools/gradientTool';
 import { createSprayTool } from '@/lib/tools/tools/sprayTool';
 import { createCurveTool } from '@/lib/tools/tools/curveTool';
 import { resolveMarqueeMode } from '@/lib/tools/selectionMask';
@@ -41,6 +41,7 @@ import type {
   CanvasBackground,
   Cell,
   Frame,
+  GradientType,
   Layer,
   OnionColorMode,
   ResizeAnchor,
@@ -353,6 +354,9 @@ class PixelEditorEngine {
   curvePhase: 'drag-end' | 'bend' | null = null;
   curveControl: Cell | null = null;
   gradientColor = '#ffffff';
+  /** Gradient blend shape - see GradientType / ToolOptionsBar's picker. Sticky across sprites, like
+   *  brushSize/symmetry. */
+  gradientType: GradientType = 'linear';
   gradientStart: Cell | null = null;
   gradientEnd: Cell | null = null;
   gradientPreview: MoveBufferCell[] | null = null;
@@ -838,6 +842,11 @@ class PixelEditorEngine {
 
   setDitherEnabled(v: boolean): void {
     this.ditherEnabled = v;
+    this.reactNotify();
+  }
+
+  setGradientType(type: GradientType): void {
+    this.gradientType = type;
     this.reactNotify();
   }
 
@@ -2491,6 +2500,7 @@ class PixelEditorEngine {
       secondaryColor: this.gradientColor,
       brushSize: this.brushSize,
       ditherEnabled: this.ditherEnabled,
+      gradientType: this.gradientType,
       pixelPerfect: this.pixelPerfect,
       shapeFilled: this.shapeFilled,
       symmetry: this.symmetry,
@@ -2930,15 +2940,11 @@ class PixelEditorEngine {
     ctx.clip();
     const dx = this.gradientEnd.x - this.gradientStart.x;
     const dy = this.gradientEnd.y - this.gradientStart.y;
+    const radial = this.gradientType === 'radial';
     if (this.ditherEnabled) {
-      const lenSq = dx * dx + dy * dy;
       for (let y = box.y0; y <= box.y1; y++) {
         for (let x = box.x0; x <= box.x1; x++) {
-          let t = 0.5;
-          if (lenSq > 0) {
-            t = ((x + 0.5 - this.gradientStart.x) * dx + (y + 0.5 - this.gradientStart.y) * dy) / lenSq;
-            t = Math.min(1, Math.max(0, t));
-          }
+          const t = gradientT(x, y, this.gradientStart, this.gradientEnd, this.gradientType);
           ctx.fillStyle = ditherColorAt(x, y, startColor, endColor, ditherGradientMix(t));
           ctx.fillRect(x, y, 1, 1);
         }
@@ -2949,12 +2955,11 @@ class PixelEditorEngine {
       ctx.fillStyle = rgbToHex((sr + er) / 2, (sg + eg) / 2, (sb + eb) / 2);
       ctx.fillRect(box.x0, box.y0, w, h);
     } else {
-      const gradient = ctx.createLinearGradient(
-        this.gradientStart.x + 0.5,
-        this.gradientStart.y + 0.5,
-        this.gradientEnd.x + 0.5,
-        this.gradientEnd.y + 0.5
-      );
+      const cx = this.gradientStart.x + 0.5;
+      const cy = this.gradientStart.y + 0.5;
+      const gradient = radial
+        ? ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.hypot(dx, dy))
+        : ctx.createLinearGradient(cx, cy, this.gradientEnd.x + 0.5, this.gradientEnd.y + 0.5);
       gradient.addColorStop(0, startColor);
       gradient.addColorStop(1, endColor);
       ctx.fillStyle = gradient;

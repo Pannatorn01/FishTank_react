@@ -23,6 +23,7 @@ export function makeContext(
     secondaryColor: '#0000ff',
     brushSize: 1,
     ditherEnabled: false,
+    gradientType: 'linear',
     pixelPerfect: true,
     shapeFilled: false,
     symmetry: 'none',

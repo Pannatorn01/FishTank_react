@@ -11,7 +11,7 @@ import {
   type PixelEditorEngine,
 } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
-import type { SelectionMode, SymmetryMode } from '@/lib/types';
+import type { GradientType, SelectionMode, SymmetryMode } from '@/lib/types';
 
 /** The three selection modes as icon buttons: one glyph per mode, in the order they read as an
  *  escalation (replace, add, take away). Shown for all three selection tools, since the mode belongs to
@@ -47,6 +47,7 @@ export function ToolOptionsBar({ engine }: { engine: PixelEditorEngine }) {
   const showShapeFilled = engine.tool === 'rect' || engine.tool === 'ellipse';
   const showTolerance = engine.tool === 'fill' || engine.tool === 'magicWand';
   const showDither = engine.tool === 'gradient' || showBrushSize;
+  const showGradientType = engine.tool === 'gradient';
   const showSelectionMode = engine.tool === 'select' || engine.tool === 'lasso' || engine.tool === 'magicWand';
   const showSprayDensity = engine.tool === 'spray';
   // Pen only: on an erase stroke Pixel Perfect is off by construction (see pixelPerfectActive), and a
@@ -194,6 +195,18 @@ export function ToolOptionsBar({ engine }: { engine: PixelEditorEngine }) {
           />
           <Label htmlFor="tool-opt-pixel-perfect">{t('status.pixelPerfect')}</Label>
         </span>
+      )}
+
+      {showGradientType && (
+        <Select value={engine.gradientType} onValueChange={(v) => engine.setGradientType(v as GradientType)}>
+          <SelectTrigger className="w-28 text-xs" title={t('status.gradientTypeTitle')}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="linear">{t('status.gradientLinear')}</SelectItem>
+            <SelectItem value="radial">{t('status.gradientRadial')}</SelectItem>
+          </SelectContent>
+        </Select>
       )}
 
       {showDither && (

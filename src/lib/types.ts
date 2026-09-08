@@ -1,5 +1,8 @@
 export type CellColor = string | null;
 export type Frame = CellColor[];
+/** Gradient tool blend shape: 'linear' interpolates along the drag axis, 'radial' by distance from the
+ *  drag's start point (the center) out to its end point (the edge). */
+export type GradientType = 'linear' | 'radial';
 export type SpriteType = 'fish' | 'object' | 'room' | 'background';
 export type SwimSpeed = 'slow' | 'medium' | 'fast' | 'veryFast';
 /** The tank's swim-area silhouette: 'rectangle' is the classic box, 'rounded' cuts its four corners
