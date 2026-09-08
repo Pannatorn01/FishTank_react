@@ -92,11 +92,19 @@ bend-idle ไม่เคย rollback undo entry ที่ push ไว้ตอ�
    ตั้งแต่ migrate แล้ว) · tsc / build / 154 tests / lint ผ่าน + Playwright (pixel-perfect corner trim,
    eraser, off-canvas stroke, symmetry mirror, undo/redo) ผ่านหมด
 
-### 6. ยังไม่มีเทสต์ในส่วนที่เสี่ยงที่สุด
-มีเทสต์แล้ว: `src/lib/tools/` (127 tests รวมครบทุก tool ที่ migrate แล้ว) + `pixelMath` (4 tests) +
-`storage.ts` (12 tests — เพิ่มมาจากอีก session หนึ่งระหว่างนี้ ไม่ใช่ของ backlog นี้)
-**ยังไม่มีเลย:** `useTank.ts` (2,083 บรรทัด)
-**แนวทาง:** เขียนเทสต์ให้ `useTank.ts` ต่อ — ยังไม่มีการ audit ว่าจุดเสี่ยงที่สุดในนั้นคือจุดไหน
+### 6. ✅ ยังไม่มีเทสต์ในส่วนที่เสี่ยงที่สุด — เขียนแล้ว (2026-09-08)
+เดิม: `src/lib/tools/` + `pixelMath` + `storage.ts` มีเทสต์ แต่ `useTank.ts` (2,200 บรรทัด) ไม่มีเลย
+**แก้:**
+- audit จุดเสี่ยงก่อน → `docs/USETANK_TEST_AUDIT.md`
+- `export class TankEngine` (เดิม export แค่ type) เพื่อ new ใน test ได้ตรง ๆ ไม่ต้องผ่าน hook/DOM
+- export balance constants (`HUNGER_FULL_TO_EMPTY_MS` / `STARVATION_DEATH_MS` / `FOOD_HUNGER_GAIN`)
+- `src/hooks/__tests__/useTank.test.ts` — **40 tests**: tickHunger + starvation catch-up (P0),
+  undo/redo + deep-copy snapshot + UNDO_LIMIT + "grouping ไม่ undoable" (P0), grouping/pruning/coMovers
+  (P1), z-order + drag-to-front (P1), swimBoundsFor + zone หลุดขอบ (P1), update() physics (bounce /
+  dead-float / old-age / hasSized guard) (P1), food (feedAt clamp / nearestFood / eat / cap 1) (P2),
+  hitTest + marquee toggle + setInstanceSpeed
+- setup: fake canvas 800×600, `hasSized=true`, MemoryStorage, `vi.useFakeTimers()`, private ผ่าน `(engine as any)`
+รวมทั้งโปรเจกต์: 197 tests ผ่าน · build · lint
 
 ### 7. ✅ `docs/PIXI_MIGRATION_PLAN.md` ขัดกับงานที่ทำไปแล้ว — แก้แล้ว (2026-09-08)
 ไฟล์นั้นเขียนว่า *"ห้ามแตะ src/hooks/usePixelEditor.ts และเครื่องมือวาดใน editor"* แต่งานแยกได้รื้อ editor

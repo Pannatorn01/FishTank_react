@@ -55,11 +55,11 @@ export const TANK_ZOOM_STEPS = [0.5, 0.75, 1];
  *  hunger decay of 1 real day means a fish left completely unfed needs feeding roughly daily to stay
  *  above 0; §9 Q2's "4 days unfed = dead" then gives a comfortable grace window on top of that, not a
  *  hair-trigger one. */
-const HUNGER_FULL_TO_EMPTY_MS = 24 * 60 * 60 * 1000;
-const STARVATION_DEATH_MS = 4 * 24 * 60 * 60 * 1000;
+export const HUNGER_FULL_TO_EMPTY_MS = 24 * 60 * 60 * 1000;
+export const STARVATION_DEATH_MS = 4 * 24 * 60 * 60 * 1000;
 /** ~3 pellets to refill an empty fish - keeps feeding a repeated small interaction rather than one
  *  click maxing hunger out for a day. */
-const FOOD_HUNGER_GAIN = 0.34;
+export const FOOD_HUNGER_GAIN = 0.34;
 const FOOD_FALL_SPEED = 22;
 /** Close enough that a pellet visibly touching the fish's sprite counts as eaten, not just "nearby". */
 const FOOD_EAT_RADIUS = 28;
@@ -88,7 +88,9 @@ function randomSwimVelocity(speed: SwimSpeed): { vx: number; vy: number } {
 
 type Snapshot = { instances: Instance[]; groups: TankGroup[]; roomInstances: RoomInstance[] };
 
-class TankEngine {
+/** Exported for unit tests (src/hooks/__tests__/useTank.test.ts) - app code gets its instance from
+ *  the `useTank()` hook, never constructs one directly. */
+export class TankEngine {
   canvas: HTMLCanvasElement | null = null;
   ctx: CanvasRenderingContext2D | null = null;
   wrap: HTMLDivElement | null = null;
@@ -2217,5 +2219,3 @@ export function useTank() {
 
   return engine;
 }
-
-export type { TankEngine };

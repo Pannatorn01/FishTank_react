@@ -1,5 +1,9 @@
 # useTank.ts — audit จุดเสี่ยงก่อนเขียนเทสต์
 
+> **สถานะ (2026-09-08):** เขียนเทสต์แล้ว — `src/hooks/__tests__/useTank.test.ts` (40 tests) ครอบคลุม
+> P0 + P1 + P2 หลักตามแผนด้านล่าง `TankEngine` ถูก `export` แล้ว + export balance constants
+
+
 `src/hooks/useTank.ts` (2,201 บรรทัด) — ทั้งไฟล์คือ `class TankEngine` ก้อนเดียว + hook wrapper
 `useTank()` บาง ๆ ท้ายไฟล์ ยังไม่มีเทสต์เลยแม้แต่ตัวเดียว
 
