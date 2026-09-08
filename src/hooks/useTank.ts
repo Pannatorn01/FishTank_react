@@ -63,6 +63,10 @@ const FOOD_HUNGER_GAIN = 0.34;
 const FOOD_FALL_SPEED = 22;
 /** Close enough that a pellet visibly touching the fish's sprite counts as eaten, not just "nearby". */
 const FOOD_EAT_RADIUS = 28;
+/** How far past the food a fish has to drift, horizontally, before it corrects course back toward it -
+ *  see the food-seeking hysteresis comment in update(). Deliberately larger than FOOD_EAT_RADIUS so a
+ *  fish that's already within eating distance never re-triggers a direction flip on its way in. */
+const FOOD_SEEK_DEADZONE = 36;
 /** Matches tankScene.ts's Pixi version exactly - see the hunger-bar comment in drawInstance(). */
 const HUNGER_BAR_HEIGHT = 4;
 const HUNGER_BAR_GAP = 4;
@@ -1870,6 +1874,7 @@ class TankEngine {
         // just steering `dir`/`targetY` toward it and letting the ordinary movement code below (same
         // x/y-approach logic driving every other fish) carry it there - no separate movement path
         // needed for "seeking".
+        let seekingFood = false;
         if (this.foodItems.length) {
           const { pw: fpw, ph: fph } = this.spritePx(sprite);
           const cx = inst.x + fpw / 2;
@@ -1882,7 +1887,17 @@ class TankEngine {
             } else {
               steer = undefined;
               schooling = false;
-              inst.dir = food.x >= cx ? 1 : -1;
+              seekingFood = true;
+              // Hysteresis, not a straight "always face the food" - recomputing `dir` from scratch
+              // every frame flips it back and forth rapidly the moment the fish is hovering near the
+              // food's x (any tiny frame-to-frame jitter crosses back and forth over cx===food.x),
+              // which reads as a fast side-to-side shudder rather than swimming. Only correcting
+              // course once actually FOOD_SEEK_DEADZONE past the food lets the fish's current heading
+              // carry it through in one smooth diagonal pass - overshoot a little, then the normal
+              // wall-bounce/course-correct below turns it back - exactly the "dive in at an angle,
+              // swim back, repeat" pattern a real fish approaching food would show, not a vertical drop.
+              const dxToFood = food.x - cx;
+              if (Math.abs(dxToFood) > FOOD_SEEK_DEADZONE) inst.dir = dxToFood > 0 ? 1 : -1;
               inst.targetY = Math.max(bounds.yMin, Math.min(bounds.yMax, food.y - fph / 2));
             }
           }
@@ -1899,17 +1914,22 @@ class TankEngine {
         if (inst.x <= bounds.xMin) {
           inst.x = bounds.xMin;
           inst.dir = 1;
-          if (!schooling) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
+          if (!schooling && !seekingFood) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
         }
         if (inst.x >= bounds.xMax) {
           inst.x = bounds.xMax;
           inst.dir = -1;
-          if (!schooling) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
+          if (!schooling && !seekingFood) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
         }
 
         const dy = inst.targetY - inst.y;
         if (Math.abs(dy) < 2) {
-          if (!schooling) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
+          // Reaching the food's depth is not "arrived, pick something new" the way it is for an
+          // ordinary wandering fish - staying level with it (not re-randomizing away) is what lets
+          // the eat-radius check above actually connect the next time this fish's x sweeps back
+          // across the food's x, instead of the fish darting off to some unrelated new depth right
+          // as it gets close.
+          if (!schooling && !seekingFood) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
         } else {
           inst.y += Math.sign(dy) * Math.min(Math.abs(dy), inst.vy * dt);
         }
