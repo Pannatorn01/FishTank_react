@@ -45,8 +45,13 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
       // open water drops a food pellet there. `engine.handleTankTap` clamps whatever coordinates it's
       // given into the tank's own bounds when it falls through to feeding, so this doesn't need its
       // own precise hit-testing against the tank's shape (see tapHitArea's doc comment in
-      // roomScene.ts).
-      scene = createRoomScene(app.stage, (x, y) => engine.handleTankTap(x, y));
+      // roomScene.ts). Dragging instead of tapping scrubs algae (P5 §6 item 5) - roomScene.ts tells
+      // the two apart by total drag distance, so onTap only ever fires for an actual short tap.
+      scene = createRoomScene(
+        app.stage,
+        (x, y) => engine.handleTankTap(x, y),
+        (dist) => engine.scrubAlgae(dist),
+      );
 
       const tick = () => {
         if (cancelled || !app || !scene) return;

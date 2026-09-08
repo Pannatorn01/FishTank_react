@@ -21,6 +21,10 @@ const TANK_FIT_FRAC = 0.62;
 const CLEANLINESS_BAR_WIDTH = 90;
 const CLEANLINESS_BAR_HEIGHT = 8;
 const CLEANLINESS_BAR_MARGIN = 14;
+/** Below this total drag distance (px), a pointerdown->pointerup is treated as a tap (feed/collect)
+ *  rather than a scrub - matches the TAP_MOVE_THRESHOLD useTank.ts's own marquee/drag code uses for
+ *  the same tap-vs-drag distinction. */
+const TAP_VS_DRAG_THRESHOLD = 6;
 
 export interface RoomSceneHandle {
   /** Repaints the room + the embedded tank from the engine's current state - call once per animation
@@ -29,7 +33,11 @@ export interface RoomSceneHandle {
   destroy(): void;
 }
 
-export function createRoomScene(stage: Container, onTap?: (tankX: number, tankY: number) => void): RoomSceneHandle {
+export function createRoomScene(
+  stage: Container,
+  onTap?: (tankX: number, tankY: number) => void,
+  onScrub?: (dragDistancePx: number) => void,
+): RoomSceneHandle {
   const background = new Graphics();
   const floor = new Graphics();
   const cleanlinessBar = new Graphics();
@@ -47,7 +55,7 @@ export function createRoomScene(stage: Container, onTap?: (tankX: number, tankY:
   // where tapped (collecting waste, the other half of handleTankTap, already needs to be reasonably
   // close to the waste item itself regardless).
   const tapHitArea = new Graphics();
-  tapHitArea.eventMode = onTap ? 'static' : 'none';
+  tapHitArea.eventMode = onTap || onScrub ? 'static' : 'none';
   tapHitArea.cursor = 'pointer';
   tankSlot.addChild(tapHitArea);
   stage.addChild(background, floor, tankSlot, cleanlinessBar);
@@ -55,16 +63,48 @@ export function createRoomScene(stage: Container, onTap?: (tankX: number, tankY:
   const tankScene: TankSceneHandle = createTankScene(tankSlot);
 
   let lastRoomSizeKey = '';
-  // Kept in sync every render() call (see fitTankSlot) so the pointertap handler below - registered
-  // once, not per-frame - always converts against the tank's *current* margin offset rather than a
-  // stale one captured at mount time.
+  // Kept in sync every render() call (see fitTankSlot) so the pointer handlers below - registered
+  // once, not per-frame - always convert a tap against the tank's *current* margin offset rather than
+  // a stale one captured at mount time.
   let tankMargin = { x: 0, y: 0 };
 
-  if (onTap) {
-    tapHitArea.on('pointertap', (e: FederatedPointerEvent) => {
-      const local = e.getLocalPosition(tankSlot);
-      onTap(local.x - tankMargin.x, local.y - tankMargin.y);
+  // One pointerdown/move/up state machine covers both gestures (tap to feed/collect, drag to scrub
+  // algae - P5 §6 items 2/3/5) rather than a plain 'pointertap' listener, since telling them apart
+  // needs the total distance traveled: short movement is a tap (fires onTap once, at the down
+  // position), anything past TAP_VS_DRAG_THRESHOLD is a scrub instead (fires onScrub continuously as
+  // it moves, never also fires onTap for the same gesture).
+  if (onTap || onScrub) {
+    let dragStart: { x: number; y: number } | null = null;
+    let lastDragPoint: { x: number; y: number } | null = null;
+    let dragTotalDist = 0;
+
+    const localPoint = (e: FederatedPointerEvent) => e.getLocalPosition(tankSlot);
+
+    tapHitArea.on('pointerdown', (e: FederatedPointerEvent) => {
+      const p = localPoint(e);
+      dragStart = p;
+      lastDragPoint = p;
+      dragTotalDist = 0;
     });
+    tapHitArea.on('globalpointermove', (e: FederatedPointerEvent) => {
+      if (!lastDragPoint) return;
+      const p = localPoint(e);
+      const dist = Math.hypot(p.x - lastDragPoint.x, p.y - lastDragPoint.y);
+      if (dist <= 0) return;
+      dragTotalDist += dist;
+      lastDragPoint = p;
+      if (dragTotalDist > TAP_VS_DRAG_THRESHOLD) onScrub?.(dist);
+    });
+    const endDrag = () => {
+      if (dragStart && dragTotalDist <= TAP_VS_DRAG_THRESHOLD) {
+        onTap?.(dragStart.x - tankMargin.x, dragStart.y - tankMargin.y);
+      }
+      dragStart = null;
+      lastDragPoint = null;
+      dragTotalDist = 0;
+    };
+    tapHitArea.on('pointerup', endDrag);
+    tapHitArea.on('pointerupoutside', endDrag);
   }
 
   function paintRoom(roomWidth: number, roomHeight: number): void {

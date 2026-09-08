@@ -82,6 +82,22 @@ const WASTE_MAX_FOR_ZERO_QUALITY = 8;
  *  visits still has most of its water rather than needing a refill on every single visit. */
 const WATER_FULL_TO_EMPTY_MS = 5 * 24 * 60 * 60 * 1000;
 
+/** P5 §6 item 5 (algae + scrub). Baseline growth (zero waste sitting around) reaches full coverage in
+ *  this many real ms; each piece of uncollected waste speeds that up by ALGAE_WASTE_SPEEDUP_PER_ITEM
+ *  (e.g. 0.4 = 40% faster per item), per the user's own framing: "จะเกิดไวขึ้นถ้าไม่เก็บขี้ปลา" - algae
+ *  isn't just a timer, dirty water (uncollected waste) actively feeds it. */
+const ALGAE_BASE_FULL_MS = 6 * 24 * 60 * 60 * 1000;
+const ALGAE_WASTE_SPEEDUP_PER_ITEM = 0.4;
+/** How much total scrub distance (px, summed across a drag) it takes to clean the glass from fully
+ *  algae-covered back to spotless - calibrated to a few full-width swipes of the tank, not one wipe
+ *  (scrubbing should read as an actual chore, if a quick one). */
+const ALGAE_SCRUB_PX_TO_CLEAN = 1500;
+/** At algae=1, each edge's translucent band reaches this fraction of the tank's shorter side - see
+ *  drawAlgae()/tankScene.ts's algaeLayer. Bands from adjacent edges are allowed to overlap in the
+ *  corners rather than being clipped apart - corners piling up thicker is exactly how real tank algae
+ *  actually accumulates, so this is a feature of the approximation, not a bug in it. */
+const ALGAE_MAX_BAND_FRAC = 0.35;
+
 /** Matches tankScene.ts's Pixi version exactly - see the hunger-bar comment in drawInstance(). */
 const HUNGER_BAR_HEIGHT = 4;
 const HUNGER_BAR_GAP = 4;
@@ -151,6 +167,11 @@ export class TankEngine {
    *  (no water-quality-driven health exists until items 4's water and 5's algae are combined - see
    *  tankCleanliness's own doc comment), so a fully evaporated tank is just cramped, not lethal. */
   waterLevel = 1;
+
+  /** 0 (spotless glass) .. 1 (fully covered) - grows over real time, faster the more uncollected waste
+   *  is sitting in the tank right now (see tickAlgae()), shrinks when the user scrubs it in Life mode
+   *  (see scrubAlgae()). P5 §6 item 5. */
+  algae = 0;
 
   /** Logical tank size (the actual simulation space fish swim in) set via the size controls or by
    *  dragging the resize handle - null only very briefly before init() runs. A view/layout
@@ -318,17 +339,22 @@ export class TankEngine {
     this.backgroundSpriteId = storage.loadTankBackgroundSpriteId();
     this.backgroundTransform = storage.loadTankBackgroundTransform() ?? { x: 0, y: 0, scale: 1, rotation: 0 };
     this.waterLevel = storage.loadTankWaterLevel() ?? 1;
+    this.algae = storage.loadTankAlgae() ?? 0;
 
-    // Hunger/starvation and water-evaporation catch-up (P5 §6 items 2/4, docs/PIXI_MIGRATION_PLAN.md) -
-    // replays however much real time passed since the last save as one lump sum, so a tank left alone
-    // while the tab was closed is exactly as hungry/evaporated on reopen as it would be had the app
-    // somehow kept simulating in the background the whole time. The very first time this ever runs
-    // (no saved checkpoint yet) has nothing to catch up on - elapsed is 0, not "since the epoch".
+    // Hunger/starvation, water-evaporation, and algae-growth catch-up (P5 §6 items 2/4/5,
+    // docs/PIXI_MIGRATION_PLAN.md) - replays however much real time passed since the last save as one
+    // lump sum, so a tank left alone while the tab was closed is exactly as hungry/evaporated/algae-
+    // covered on reopen as it would be had the app somehow kept simulating in the background the whole
+    // time. The very first time this ever runs (no saved checkpoint yet) has nothing to catch up on -
+    // elapsed is 0, not "since the epoch". Algae's catch-up only ever uses its base growth rate, not
+    // the waste-accelerated one (see tickAlgae()'s own doc comment) - waste itself isn't persisted, so
+    // there's no historical waste count to have accelerated it while closed.
     const now = Date.now();
     const savedLastTick = storage.loadTankLastTick();
     const elapsedSinceLastTick = savedLastTick ? Math.max(0, now - savedLastTick) : 0;
     this.tickHunger(elapsedSinceLastTick);
     this.tickWaterLevel(elapsedSinceLastTick);
+    this.tickAlgae(elapsedSinceLastTick, 0);
     this.lastTickAt = now;
 
     this.rafId = requestAnimationFrame((t) => this.loop(t));
@@ -816,6 +842,7 @@ export class TankEngine {
       storage.saveTankBackgroundTransform(this.backgroundTransform);
       storage.saveTankLastTick(this.lastTickAt);
       storage.saveTankWaterLevel(this.waterLevel);
+      storage.saveTankAlgae(this.algae);
       this.dirty = false;
     } catch (err) {
       console.warn('tank save failed', err);
@@ -1779,6 +1806,12 @@ export class TankEngine {
       y: Math.max(0, y),
       vy: FOOD_FALL_SPEED,
     });
+    // A deliberate user action (unlike the food actually falling/being eaten afterward, which is just
+    // simulation), so it should count as "the tank changed" the same way dragging a fish does - see
+    // the persist() doc comment. Load-bearing in practice: Life mode has no Save button of its own, so
+    // without this the only way any Life-mode action ever became saveable was an unrelated edit
+    // happening to also occur in Build Tank first.
+    this.persist();
   }
 
   /** Tops the tank back off (P5 §6 item 4) - called from the Life-mode refill button. Instant, like
@@ -1786,6 +1819,7 @@ export class TankEngine {
    *  worth animating out here. */
   refillWater(): void {
     this.waterLevel = 1;
+    this.persist();
   }
 
   /** Same one-shot-elapsed-time shape as tickHunger() below (called every frame during normal play, and
@@ -1795,6 +1829,29 @@ export class TankEngine {
   private tickWaterLevel(elapsedMs: number): void {
     if (elapsedMs <= 0) return;
     this.waterLevel = Math.max(0, this.waterLevel - elapsedMs / WATER_FULL_TO_EMPTY_MS);
+  }
+
+  /** Same one-shot-elapsed-time shape again, growing instead of shrinking - `wasteCount` speeds it up
+   *  (see ALGAE_WASTE_SPEEDUP_PER_ITEM's doc comment for why: dirty water actively feeds algae, this
+   *  isn't just a second independent timer). Passed in rather than read off `this.wasteItems.length`
+   *  directly so init()'s catch-up call can explicitly pass 0 (no historical waste count to know about
+   *  across a reload - see its own comment) while the per-frame call passes the real current count. */
+  private tickAlgae(elapsedMs: number, wasteCount: number): void {
+    if (elapsedMs <= 0) return;
+    const growthRate = (1 / ALGAE_BASE_FULL_MS) * (1 + wasteCount * ALGAE_WASTE_SPEEDUP_PER_ITEM);
+    this.algae = Math.min(1, this.algae + elapsedMs * growthRate);
+  }
+
+  /** Wipes some algae off the glass (P5 §6 item 5) - called from the Life-mode scrub-drag with however
+   *  far the pointer moved since the last call, so a longer/faster drag cleans more, matching how
+   *  actually scrubbing something works rather than a fixed amount per click. */
+  scrubAlgae(dragDistancePx: number): void {
+    if (dragDistancePx <= 0) return;
+    this.algae = Math.max(0, this.algae - dragDistancePx / ALGAE_SCRUB_PX_TO_CLEAN);
+    // Same reasoning as feedAt()'s persist() call - a user action, and the only way it ever becomes
+    // saveable given Life mode has no Save button of its own. Called once per drag-move event (like
+    // dragging a fish already does), not just once per whole gesture.
+    this.persist();
   }
 
   /** Resolves `elapsedMs` of real time's worth of hunger decay (and any resulting starvation death) in
@@ -1880,6 +1937,8 @@ export class TankEngine {
     }
     if (!nearest || bestDist > WASTE_COLLECT_RADIUS) return false;
     this.wasteItems = this.wasteItems.filter((w) => w.id !== nearest!.id);
+    // Same reasoning as feedAt()'s persist() call - see its doc comment.
+    this.persist();
     return true;
   }
 
@@ -1897,6 +1956,7 @@ export class TankEngine {
 
     this.tickHunger(dt * 1000);
     this.tickWaterLevel(dt * 1000);
+    this.tickAlgae(dt * 1000, this.wasteItems.length);
 
     if (this.foodItems.length) {
       // Rests just above the sand strip fish can't swim into (see swimBoundsFor's own sandH) rather
@@ -2164,6 +2224,27 @@ export class TankEngine {
     ctx.fillRect(0, waterTop, w, waterlineH);
   }
 
+  /** Translucent green bands creeping in from each edge of the glass (P5 §6 item 5) - a simplified
+   *  stand-in for real per-region algae growth (see ALGAE_MAX_BAND_FRAC's doc comment): cheap to draw
+   *  identically in both renderers, and corners piling up thicker where bands overlap happens to match
+   *  how real tank algae actually accumulates anyway. Drawn right after the background/water, before
+   *  anything else, so it reads as being on the glass rather than floating in the water. */
+  private drawAlgae(): void {
+    if (!this.ctx || !this.canvas || this.algae <= 0) return;
+    const ctx = this.ctx;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const band = this.algae * Math.min(w, h) * ALGAE_MAX_BAND_FRAC;
+    if (band <= 0) return;
+    ctx.save();
+    ctx.fillStyle = 'rgba(63, 107, 31, 0.5)';
+    ctx.fillRect(0, 0, w, band);
+    ctx.fillRect(0, h - band, w, band);
+    ctx.fillRect(0, 0, band, h);
+    ctx.fillRect(w - band, 0, band, h);
+    ctx.restore();
+  }
+
   /** Small orange pellets (P5 §6 item 2) - drawn before fish so a fish eating one visually sits on top
    *  of it for the one frame both exist together. */
   private drawFoodItems(): void {
@@ -2315,6 +2396,7 @@ export class TankEngine {
     ctx.clip(this.shapePath(this.canvas.width, this.canvas.height));
 
     this.drawBackground();
+    this.drawAlgae();
 
     if (this.selectedZone) this.strokeZoneRect(this.selectedZone, 'rgba(120, 255, 160, 0.9)');
 
