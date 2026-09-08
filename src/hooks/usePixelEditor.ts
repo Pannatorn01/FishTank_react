@@ -1,7 +1,6 @@
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {
-  bresenhamLine,
   ditherColorAt,
   ditherGradientMix,
   flipFrameH,
@@ -225,12 +224,11 @@ class PixelEditorEngine {
   paletteColors: string[] = [];
   savedColors: string[] = [];
   painting = false;
-  lastPaintCell: Cell | null = null;
   /** Where the last freehand pen/eraser stroke ended, kept *across* strokes so a following Shift+click
    *  can draw a straight line from there - the Photoshop/Aseprite convention for chaining segments
-   *  without switching to the Line tool. Distinct from lastPaintCell, which only lives for the duration
-   *  of one stroke. Bounds-checked at use rather than cleared everywhere, since the canvas can be
-   *  resized or a different sprite loaded under it. */
+   *  without switching to the Line tool. Set by the migrated pen/eraser tool via `GestureResult.
+   *  finalCell` (see commitGestureResult). Bounds-checked at use rather than cleared everywhere, since
+   *  the canvas can be resized or a different sprite loaded under it. */
   lastStrokeEndCell: Cell | null = null;
   /** True while Alt is held with a paint tool active - see ALT_PICK_TOOLS. Alt has always temporarily
    *  sampled a color on click, but nothing said so until the click had already happened; this drives the
@@ -270,7 +268,7 @@ class PixelEditorEngine {
   symmetry: SymmetryMode = 'none';
   /** Draggable symmetry mirror/rotation axis, in cell-space (not persisted - recentered whenever the
    *  canvas is resized or a different sprite loads, see centerSymmetryAxis). Defaults to the canvas
-   *  center, matching the old fixed-center behavior exactly (see mirrorCells's doc comment). */
+   *  center, matching the old fixed-center behavior exactly (see paintPipeline.ts's `withSymmetry`). */
   symmetryAxisX = storage.DEFAULT_GRID_SIZE / 2;
   symmetryAxisY = storage.DEFAULT_GRID_SIZE / 2;
   private axisDragging = false;
@@ -292,7 +290,7 @@ class PixelEditorEngine {
   sprayDensity = 1;
   /** Ordered (Bayer 4x4) dither between `color` and `gradientColor` instead of a flat fill - for the
    *  gradient tool (see gradientCellsPreview) and as a "dither brush" texture for pen/spray/shapes
-   *  (see applyBrushAt). */
+   *  (read into ToolContext; see paintPipeline.ts). */
   ditherEnabled = false;
   /** Colors a user has pinned in the saved-colors row (see ColorPalette.tsx) - survive
    *  clearUnusedColors regardless of use. Persisted separately from savedColors (see storage.ts). */
@@ -324,19 +322,11 @@ class PixelEditorEngine {
   hoverPointerPx: { px: number; py: number } | null = null;
   /** Set for the duration of a right-click gesture: paints/fills/erases with the eraser instead of the active color. */
   eraseOverride = false;
-  /** Snapshot of the active layer taken at freehand-stroke start, so Pixel Perfect can restore a trimmed corner pixel. */
-  strokeSnapshot: Frame | null = null;
-  strokePoints: Cell[] = [];
   /** Aseprite's Pixel Perfect: drop the redundant corner pixel where a 1px freehand stroke turns, so a
-   *  diagonal reads as a clean staircase instead of a doubled-up elbow. It was unconditional and
-   *  invisible, which is a problem for a feature whose whole job is to *not* paint a cell the pointer
-   *  went over - see pixelPerfectActive for where it now applies, and ToolOptionsBar for the switch. */
+   *  diagonal reads as a clean staircase instead of a doubled-up elbow. Read into `ToolContext` for the
+   *  migrated pen tool (which implements the actual corner trim - see penTool.ts); ToolOptionsBar owns
+   *  the switch. */
   pixelPerfect = true;
-  /** How many times the current stroke has painted each cell (1px brush only - see strokeStep). Pixel
-   *  Perfect trims a corner by restoring it from the stroke-start snapshot, which is only correct while
-   *  no *other* part of the same stroke also painted that cell: a scribble crossing its own path would
-   *  otherwise punch a hole straight through the segment it already drew. */
-  private strokeVisits = new Map<string, number>();
   /** The in-progress gesture for a tool migrated to the new architecture (see TOOL_REGISTRY) - null
    *  whenever the active tool is still on the legacy inline handling below. */
   private activeGesture: Gesture | null = null;
@@ -438,8 +428,8 @@ class PixelEditorEngine {
   private gestureUndoState: { dirty: boolean; redo: HistoryEntry[] } | null = null;
 
   init(notify: () => void): void {
-    // rAF-coalesced, not a direct call to `notify` - a fast pointer (pen/spray tools especially,
-    // see paintCell/sprayTick) can call reactNotify() many times between two browser paints, and
+    // rAF-coalesced, not a direct call to `notify` - a fast pointer (pen/spray tools especially)
+    // can call reactNotify() many times between two browser paints, and
     // every one of those was forcing a full React re-render (the whole editor panel: layer/frame
     // thumbnails, sprite library, etc.), most of which the browser would just throw away unseen at
     // the next paint anyway. Collapsing bursts to at most once per frame doesn't change what any
@@ -941,10 +931,10 @@ class PixelEditorEngine {
   }
 
   /** Where PixelSelectionOverlay.tsx should draw the brush-footprint preview outline: a `brushSize`
-   *  cells-wide square, snapped to the same top-left-anchored cell grid brushCellsAt paints (see its
-   *  doc comment) - so the outline shows exactly which cells a click would paint, not just an
-   *  approximate box centered on the raw pointer position. Null when there's nothing to show (pointer
-   *  not over the canvas, or the active tool doesn't use a brush size). */
+   *  cells-wide square, snapped to the top-left-anchored cell grid a brush click paints - so the
+   *  outline shows exactly which cells a click would paint, not just an approximate box centered on the
+   *  raw pointer position. Null when there's nothing to show (pointer not over the canvas, or the
+   *  active tool doesn't use a brush size). */
   /** Which cell the pointer is over, for the status bar's coordinate readout - null when it isn't over
    *  the canvas, and also when it's over the wrap but outside the canvas's own bounds, since a
    *  coordinate outside the sprite isn't a coordinate the user can do anything with. */
@@ -1806,7 +1796,6 @@ class PixelEditorEngine {
     if (this.rotateOrigin) this.commitRotate();
     this.painting = false;
     this.gestureButtons = 0;
-    this.lastPaintCell = null;
     this.selectStart = null;
     this.selectionDraft = null;
     this.lassoDraftPoints = null;
@@ -1822,8 +1811,6 @@ class PixelEditorEngine {
     this.rotateAngle = 0;
     this.gestureBaseBitmap = null;
     this.eraseOverride = false;
-    this.strokeSnapshot = null;
-    this.strokePoints = [];
     if (this.gradientStart) {
       // drawGradientPreviewOverlay() paints straight onto the canvas bitmap without a preceding clear
       // (see its own doc comment), so an interrupted gradient drag needs an explicit repaint of the box
@@ -1954,15 +1941,6 @@ class PixelEditorEngine {
     if (cell.x < box.x0 || cell.x > box.x1 || cell.y < box.y0 || cell.y > box.y1) return false;
     if (this.selectionMask) return this.selectionMask.has(`${cell.x},${cell.y}`);
     return true;
-  }
-
-  /** Whether a painting tool (pen/eraser/line/rect/ellipse/curve/fill/spray/gradient) may touch this
-   *  cell: everywhere when there's no active selection, otherwise only inside it - a settled selection
-   *  protects everything outside it from every drawing tool, not just the ones that made it, mirroring
-   *  every other raster editor's "select then paint" convention. */
-  private paintAllowed(x: number, y: number): boolean {
-    if (!this.selection) return true;
-    return this.isInsideSelection({ x, y });
   }
 
   /** Snapshots everything except the moving layer's cleared-out source region onto gestureBaseBitmap,
@@ -2332,8 +2310,8 @@ class PixelEditorEngine {
     // A lasso selection draws its own polygon outline instead (see selectionLassoOutline) - a
     // rectangular border/handles around its bounding box would misrepresent what's actually selected.
     // Stays visible regardless of the active tool - a selection still constrains painting (see
-    // paintAllowed) while e.g. the Pen is active, so hiding its border there would leave no way to see
-    // what's actually protected while drawing.
+    // paintPipeline.ts's `withSelectionClip`) while e.g. the Pen is active, so hiding its border there
+    // would leave no way to see what's actually protected while drawing.
     // While a rotate is in flight the traced outline is hidden (it still describes the pre-rotation
     // shape - see selectionLassoOutline), so the plain box around what is being rotated stands in for
     // it and the user can still see what is turning.
@@ -2685,9 +2663,6 @@ class PixelEditorEngine {
     this.lastGesturePreviewRects = null;
     this.selectionDraft = null;
     this.lassoDraftPoints = null;
-    this.lastPaintCell = null;
-    this.strokeSnapshot = null;
-    this.strokePoints = [];
     this.eraseOverride = false;
     this.curvePhase = null;
     this.curveControl = null;
@@ -2871,33 +2846,10 @@ class PixelEditorEngine {
       }
       return;
     }
-
-    if (this.tool === 'pen' || this.tool === 'eraser') {
-      // Coalesced events are the positions the OS actually sampled between two browser frames, which a
-      // fast flick can spread over a lot of distance. paintCell already Bresenhams between consecutive
-      // points, so nothing is ever *missing* without them - but a fast curve replayed through its
-      // intermediate samples bends where it was drawn to bend instead of being chorded into one long
-      // straight segment between frames. Falls back to the single event where unsupported.
-      // Unclamped cells, and handled before the `if (!cell) return` below: paintCell interpolates the
-      // segment and paints only the cells that are on the canvas, so a stroke that runs off an edge
-      // still draws everything up to it. Bailing out on an off-canvas pointer instead - what this used
-      // to do - threw away that whole frame's samples, including the ones that were still inside, so a
-      // fast stroke crossing an edge (or a flick that overshot and came back) left a gap along it.
-      const coalesced = typeof e.nativeEvent.getCoalescedEvents === 'function' ? e.nativeEvent.getCoalescedEvents() : [];
-      if (coalesced.length > 1) {
-        // cellFromEventUnclamped only needs clientX/clientY, and its getBoundingClientRect() call is
-        // cheap to repeat here: painting writes to the canvas bitmap, which invalidates no layout, so
-        // the browser answers the rest of the loop from the same cached box.
-        coalesced.forEach((ce) => {
-          const c = this.cellFromEventUnclamped(ce);
-          this.paintCell(c.x, c.y, true);
-        });
-      } else {
-        const c = this.cellFromEventUnclamped(e);
-        this.paintCell(c.x, c.y, true);
-      }
-      return;
-    }
+    // Every drawing tool is migrated (see TOOL_REGISTRY / src/lib/tools): a live pen/eraser stroke
+    // runs entirely through `this.activeGesture` above. Nothing reaches here painting - a `select`
+    // resize/rotate drag is the only way to be `painting` without an `activeGesture`, and it has
+    // nothing to do on pointermove (the DOM handles drive it).
   }
 
   onPointerUp(): void {
@@ -2920,21 +2872,10 @@ class PixelEditorEngine {
       return;
     }
 
-    // Pen/eraser/spray/fill all already left the canvas correctly painted (their own dirty-rect or
-    // full-repaint redraw already ran on the last stroke step / on mousedown) - nothing here changes a
-    // pixel, so this only needs a React re-render (e.g. for canUndo()/dirty-flag-driven UI), not another
-    // full drawGrid().
-    // Read before lastPaintCell is cleared just below, and remembered across strokes so the next
-    // Shift+click can draw a line from here - see strokeChainAnchor. Only the freehand tools set it:
-    // fill and spray have no meaningful "end".
-    if ((this.tool === 'pen' || this.tool === 'eraser') && this.lastPaintCell) this.lastStrokeEndCell = this.lastPaintCell;
-    this.lastPaintCell = null;
-    this.strokeSnapshot = null;
-    this.strokePoints = [];
+    // Only reachable for a `select` resize/rotate drag (painting, but no `activeGesture`) - every
+    // drawing tool commits through `activeGesture` above. Nothing here touches a pixel; the deferred
+    // preview repaint that schedulePreviewRepaint() skips mid-stroke on a large sprite gets to run.
     this.eraseOverride = false;
-    // Nothing here repaints the canvas, but the stroke that just ended did change pixels, and on a
-    // large sprite schedulePreviewRepaint() deliberately skips repainting mid-stroke - this is where
-    // that deferred preview repaint finally gets to run.
     this.flushPreviewRepaint();
     this.reactNotify();
   }
@@ -3061,235 +3002,13 @@ class PixelEditorEngine {
   }
 
   /**
-   * The reflection/rotation(s) to apply around the symmetry axis, expressed as transforms on a point's
-   * position *relative* to the axis (relX, relY) - so every mode shares one final "map relative back to
-   * absolute" step in mirrorCells below, instead of each mode hand-rolling its own absolute-coordinate
-   * formula. 'vertical'/'horizontal'/'both' match the old fixed-center-only behavior exactly when
-   * symmetryAxisX/Y sit at the canvas center (see mirrorCells's own doc comment). 'diagonal' reflects
-   * across both diagonals through the axis point (good for coral/starfish silhouettes); 'radial' rotates
-   * 90°/180°/270° around it instead of mirroring.
-   */
-  private symmetryTransforms(): ((relX: number, relY: number) => { rx: number; ry: number })[] {
-    switch (this.symmetry) {
-      case 'vertical':
-        return [(rx, ry) => ({ rx: -rx, ry })];
-      case 'horizontal':
-        return [(rx, ry) => ({ rx, ry: -ry })];
-      case 'both':
-        return [
-          (rx, ry) => ({ rx: -rx, ry }),
-          (rx, ry) => ({ rx, ry: -ry }),
-          (rx, ry) => ({ rx: -rx, ry: -ry }),
-        ];
-      case 'diagonal':
-        return [
-          (rx, ry) => ({ rx: ry, ry: rx }),
-          (rx, ry) => ({ rx: -ry, ry: -rx }),
-          (rx, ry) => ({ rx: -rx, ry: -ry }),
-        ];
-      case 'radial':
-        return [
-          (rx, ry) => ({ rx: -ry, ry: rx }),
-          (rx, ry) => ({ rx: -rx, ry: -ry }),
-          (rx, ry) => ({ rx: ry, ry: -rx }),
-        ];
-      default:
-        return [];
-    }
-  }
-
-  /** `x`/`y` in, plus one mirrored/rotated cell per symmetryTransforms() entry - draggable-axis-aware
-   *  (see symmetryAxisX/Y), not just a fixed canvas-center reflection. Cell centers are used for the
-   *  relative-position math (x + 0.5 - axis) so the default axis (canvas center) reproduces the old
-   *  `width - 1 - x` formula exactly, cell-for-cell, for 'vertical'/'horizontal'/'both'. */
-  private mirrorCells(x: number, y: number): Cell[] {
-    const pts: Cell[] = [{ x, y }];
-    const transforms = this.symmetryTransforms();
-    if (!transforms.length) return pts;
-    const ax = this.symmetryAxisX;
-    const ay = this.symmetryAxisY;
-    const relX = x + 0.5 - ax;
-    const relY = y + 0.5 - ay;
-    transforms.forEach((fn) => {
-      const { rx, ry } = fn(relX, relY);
-      pts.push({ x: Math.round(ax + rx - 0.5), y: Math.round(ay + ry - 0.5) });
-    });
-    return pts;
-  }
-
-  private currentPaintColor(): string | null {
-    return this.tool === 'eraser' || this.eraseOverride ? null : this.color;
-  }
-
-  /** Top-left-anchored square of side `brushSize` centered as closely as possible on (x, y). */
-  private brushCellsAt(x: number, y: number): Cell[] {
-    if (this.brushSize <= 1) return [{ x, y }];
-    const off = Math.floor((this.brushSize - 1) / 2);
-    const cells: Cell[] = [];
-    for (let dy = 0; dy < this.brushSize; dy++) {
-      for (let dx = 0; dx < this.brushSize; dx++) {
-        cells.push({ x: x - off + dx, y: y - off + dy });
-      }
-    }
-    return cells;
-  }
-
-  private applyBrushAt(x: number, y: number, color: string | null): void {
-    const { width, height } = this.current;
-    const frame = this.activeCells();
-    // "Dither brush": a fixed 50/50 Bayer stipple between the two active colors instead of a flat fill
-    // - only meaningful when actually painting a color (not erasing, where `color` is already null).
-    const dither = this.ditherEnabled && color !== null;
-    this.brushCellsAt(x, y).forEach((cell) => {
-      this.mirrorCells(cell.x, cell.y).forEach((m) => {
-        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height && this.paintAllowed(m.x, m.y)) {
-          frame[m.y * width + m.x] = dither ? ditherColorAt(m.x, m.y, color!, this.gradientColor, 0.5) : color;
-        }
-      });
-    });
-  }
-
-  /**
-   * Whether the stroke in progress should have its turning corners trimmed. Beyond the user's own
-   * switch, two cases never should:
-   *
-   * - An *erasing* stroke - the Eraser, or a right-click erase with any paint tool (currentPaintColor()
-   *   is null for both). Trimming restores the corner cell from the stroke-start snapshot, i.e. puts the
-   *   original pixel back; on an erase that isn't a tidier line, it's the eraser visibly skipping cells
-   *   the pointer was dragged straight over, one leftover dot per corner of every diagonal.
-   * - A brush wider than 1px, where there's no 1px staircase to clean up in the first place (this was
-   *   already the case, and is folded in here so every caller asks the same question).
-   */
-  private pixelPerfectActive(): boolean {
-    return this.pixelPerfect && this.brushSize === 1 && this.currentPaintColor() !== null;
-  }
-
-  private restoreCellFromSnapshot(x: number, y: number): void {
-    const { width, height } = this.current;
-    if (!this.strokeSnapshot || x < 0 || y < 0 || x >= width || y >= height) return;
-    const idx = y * width + x;
-    this.activeCells()[idx] = this.strokeSnapshot[idx];
-  }
-
-  /**
-   * Aseprite-style Pixel Perfect: when a freehand stroke turns a corner (three points where the
-   * first and third are diagonal neighbors and the middle one is the right-angle corner between
-   * them), the corner pixel is redundant for connectivity and just thickens the stroke - so it's
-   * un-painted, keeping a clean 1px staircase instead of a doubled corner.
-   */
-  private applyPixelPerfectCorner(): void {
-    const n = this.strokePoints.length;
-    if (n < 3) return;
-    const a = this.strokePoints[n - 3];
-    const b = this.strokePoints[n - 2];
-    const c = this.strokePoints[n - 1];
-    if (Math.abs(c.x - a.x) !== 1 || Math.abs(c.y - a.y) !== 1) return;
-    const isCorner = (b.x === a.x && b.y === c.y) || (b.x === c.x && b.y === a.y);
-    if (!isCorner) return;
-    // Only un-paint the corner if this stroke isn't relying on that cell somewhere else. restoreCell-
-    // FromSnapshot puts back what was there before the stroke began, so trimming a cell an earlier
-    // segment of the same stroke had painted (a scribble that crosses itself) left a hole in that
-    // earlier segment - a cell the pointer had unmistakably been dragged over, now blank.
-    const key = `${b.x},${b.y}`;
-    const remaining = (this.strokeVisits.get(key) ?? 1) - 1;
-    this.strokeVisits.set(key, remaining);
-    if (remaining <= 0) this.mirrorCells(b.x, b.y).forEach((m) => this.restoreCellFromSnapshot(m.x, m.y));
-    this.strokePoints.splice(n - 2, 1);
-  }
-
-  private strokeStep(x: number, y: number): void {
-    const color = this.currentPaintColor();
-    this.applyBrushAt(x, y, color);
-    if (this.pixelPerfectActive()) {
-      const last = this.strokePoints[this.strokePoints.length - 1];
-      if (!last || last.x !== x || last.y !== y) {
-        this.strokePoints.push({ x, y });
-        const key = `${x},${y}`;
-        this.strokeVisits.set(key, (this.strokeVisits.get(key) ?? 0) + 1);
-        this.applyPixelPerfectCorner();
-      }
-    }
-    this.lastPaintCell = { x, y };
-    if (color) this.addSavedColor(color);
-  }
-
-  /**
-   * Bounding box(es), in canvas cell coords, that a freehand stroke through `points` actually touches
-   * at the current brush size - what paintCell redraws instead of the whole canvas (see redrawRegions).
-   * Padded by 1 cell beyond the brush footprint to also cover strokeStep's Pixel-Perfect corner trim,
-   * which can retroactively un-paint a cell up to 1 cell outside the current point's own footprint.
-   * Symmetry adds one more rect per mirror axis (mirroring a rectangle's bounds still gives a
-   * rectangle), since applyBrushAt paints those mirrored cells too.
-   */
-  private strokeDirtyRects(points: Cell[]): SelectionBox[] {
-    if (!points.length) return [];
-    const { width, height } = this.current;
-    const off = Math.floor((this.brushSize - 1) / 2);
-    const pad = 1;
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    points.forEach((p) => {
-      x0 = Math.min(x0, p.x - off - pad);
-      x1 = Math.max(x1, p.x - off + this.brushSize - 1 + pad);
-      y0 = Math.min(y0, p.y - off - pad);
-      y1 = Math.max(y1, p.y - off + this.brushSize - 1 + pad);
-    });
-    x0 = Math.max(0, x0);
-    y0 = Math.max(0, y0);
-    x1 = Math.min(width - 1, x1);
-    y1 = Math.min(height - 1, y1);
-    if (x1 < x0 || y1 < y0) return [];
-    const rects: SelectionBox[] = [{ x0, y0, x1, y1 }];
-    // 'vertical'/'horizontal'/'both' still mirror a rectangle to a same-shaped rectangle (just at the
-    // draggable axis's own position instead of a fixed one), so they keep the cheap dirty-rect path.
-    // 'diagonal'/'radial' can swap width/height extents unpredictably, so they fall back to marking the
-    // whole canvas dirty instead - correct either way, just not as tightly scoped a repaint (acceptable:
-    // both are new, deliberately not hot-path-optimized the way the original two modes already were).
-    if (this.symmetry === 'vertical' || this.symmetry === 'both') {
-      rects.push(this.reflectRectAxis({ x0, y0, x1, y1 }, 'x'));
-    }
-    if (this.symmetry === 'horizontal' || this.symmetry === 'both') {
-      rects.push(this.reflectRectAxis({ x0, y0, x1, y1 }, 'y'));
-    }
-    if (this.symmetry === 'both') {
-      rects.push(this.reflectRectAxis(this.reflectRectAxis({ x0, y0, x1, y1 }, 'x'), 'y'));
-    }
-    if (this.symmetry === 'diagonal' || this.symmetry === 'radial') {
-      rects.push({ x0: 0, y0: 0, x1: width - 1, y1: height - 1 });
-    }
-    return rects.map((r) => this.clampRect(r)).filter((r) => r.x1 >= r.x0 && r.y1 >= r.y0);
-  }
-
-  /** Reflects a rect around the draggable symmetry axis on one axis (see mirrorCells's doc comment for
-   *  the same relative-position math at the single-cell level) - used by strokeDirtyRects only. */
-  private reflectRectAxis(r: SelectionBox, axis: 'x' | 'y'): SelectionBox {
-    if (axis === 'x') {
-      const mx0 = Math.round(2 * this.symmetryAxisX - r.x1 - 1);
-      const mx1 = Math.round(2 * this.symmetryAxisX - r.x0 - 1);
-      return { x0: mx0, x1: mx1, y0: r.y0, y1: r.y1 };
-    }
-    const my0 = Math.round(2 * this.symmetryAxisY - r.y1 - 1);
-    const my1 = Math.round(2 * this.symmetryAxisY - r.y0 - 1);
-    return { x0: r.x0, x1: r.x1, y0: my0, y1: my1 };
-  }
-
-  private clampRect(r: SelectionBox): SelectionBox {
-    const { width, height } = this.current;
-    return {
-      x0: Math.max(0, Math.min(width - 1, r.x0)),
-      x1: Math.max(0, Math.min(width - 1, r.x1)),
-      y0: Math.max(0, Math.min(height - 1, r.y0)),
-      y1: Math.max(0, Math.min(height - 1, r.y1)),
-    };
-  }
-
-  /**
    * Redraws only `rects` of the canvas instead of the whole thing, for paths where drawGrid()'s usual
    * full clear+repaint was the actual measured bottleneck on a large, detailed canvas: profiling a
    * 1400×900 canvas with content that defeats paintFrameCells' run-length merging (no long same-color
    * runs - a real, not contrived, case for detailed pixel art) measured a full redraw at ~590ms per
-   * layer, so every pointer move during a stroke (see paintCell/strokeDirtyRects) or a tool preview
-   * was gated on hundreds of milliseconds of work regardless of how
-   * small the actual change was. Both only ever touch a small, boundable area, so bounding the repaint
+   * layer, so every pointer move during a stroke or a tool preview was gated on hundreds of
+   * milliseconds of work regardless of how small the actual change was. Both only ever touch a small,
+   * boundable area, so bounding the repaint
    * to just that area makes its cost depend on the edit size, not the canvas size - confirmed back down
    * to sub-millisecond on the same worst-case content (see the before/after profile in the commit/PR
    * notes for this change). Undo/redo (see applyHistoryEntry) reuses this too, for the same reason, with
@@ -3318,34 +3037,6 @@ class PixelEditorEngine {
     }
     this.schedulePreviewRepaint();
     this.reactNotify();
-  }
-
-
-  private paintCell(x: number, y: number, isMove?: boolean): void {
-    const { width, height } = this.current;
-    const inBounds = (px: number, py: number) => px >= 0 && py >= 0 && px < width && py < height;
-
-    let points: Cell[];
-    if (isMove && this.lastPaintCell) {
-      points = bresenhamLine(this.lastPaintCell.x, this.lastPaintCell.y, x, y);
-    } else if (inBounds(x, y)) {
-      points = [{ x, y }];
-    } else {
-      points = [];
-    }
-
-    // Only the cells actually painted feed the dirty rect - a freehand stroke is now tracked past the
-    // canvas edge (see onPointerMove), so `points` can run well outside it, and bounding a repaint by
-    // where the pointer went rather than by what was painted would repaint the whole canvas on every
-    // move for cells that were never touched.
-    const painted: Cell[] = [];
-    points.forEach((p) => {
-      if (!inBounds(p.x, p.y)) return;
-      this.strokeStep(p.x, p.y);
-      painted.push(p);
-    });
-
-    this.redrawRegions(this.strokeDirtyRects(painted));
   }
 
   /** Samples the topmost visible layer that has paint at this cell, matching what's on screen. */

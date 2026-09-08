@@ -80,11 +80,17 @@ bend-idle ไม่เคย rollback undo entry ที่ push ไว้ตอ�
    (ตายตามไปด้วย เพราะ caller เหลือแค่ `redrawShapePreview`) + `redrawShapePreview(null)` no-op ใน
    `resetGestureState()` `refresh()`/`attachCanvas()` ตอนนี้เรียก `drawGrid()` เปล่า ๆ
    tsc / build / 140 tests / lint ผ่าน — ARCHITECTURE.md อัปเดตแล้ว
-2. ส่วน tail ของ pen/eraser ที่เหลือใน `onPointerMove` (บล็อก `if (this.tool === 'pen' || this.tool
-   === 'eraser')` ที่ยังเรียก `paintCell`/`cellFromEventUnclamped` เดิม) **น่าจะตายสนิทแล้วตั้งแต่ตอน
-   migrate pen** (pen เข้า TOOL_REGISTRY แล้ว, `activeGesture` check ด้านบนน่าจะ return ก่อนถึงบล็อกนี้
-   เสมอ) — แต่ยังไม่ได้ grep caller ยืนยันแบบเดียวกับที่ทำกับ tool อื่น ๆ **ห้ามลบจนกว่าจะตรวจซ้ำแบบ
-   เดียวกัน**
+2. ✅ **ลบแล้ว (2026-09-08):** ส่วน tail ของ pen/eraser ใน `onPointerMove` + transitive closure ทั้งหมด
+   ยืนยันแล้วว่าตายจริง — trace caller ทุกจุด: pen/eraser ที่ `painting===true` มี `activeGesture` เสมอ
+   (`beginToolGesture` set ทั้งคู่ หรือ reset `painting=false` ถ้า gesture null; `startResizeDrag`/
+   `startRotateDrag` เป็น select-only) → return ที่ `if (this.activeGesture)` ก่อนถึงบล็อกนี้เสมอ
+   ลบ ~335 บรรทัด (net −309): บล็อก `onPointerMove` + `paintCell` + `strokeStep` + `strokeDirtyRects`
+   + `reflectRectAxis` + `clampRect` + `applyBrushAt` + `brushCellsAt` + `paintAllowed` + `mirrorCells`
+   + `symmetryTransforms` + `applyPixelPerfectCorner` + `restoreCellFromSnapshot` + `pixelPerfectActive`
+   + `currentPaintColor` + fields `strokeSnapshot`/`strokePoints`/`strokeVisits`/`lastPaintCell`
+   (ทั้งหมด reachable แค่จากบล็อกนี้ — logic จริงย้ายไป `src/lib/tools/paintPipeline.ts` + `penTool.ts`
+   ตั้งแต่ migrate แล้ว) · tsc / build / 154 tests / lint ผ่าน + Playwright (pixel-perfect corner trim,
+   eraser, off-canvas stroke, symmetry mirror, undo/redo) ผ่านหมด
 
 ### 6. ยังไม่มีเทสต์ในส่วนที่เสี่ยงที่สุด
 มีเทสต์แล้ว: `src/lib/tools/` (127 tests รวมครบทุก tool ที่ migrate แล้ว) + `pixelMath` (4 tests) +
