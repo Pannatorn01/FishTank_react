@@ -95,6 +95,32 @@ const ALGAE_WASTE_SPEEDUP_PER_ITEM = 0.4;
  *  (scrubbing should read as an actual chore, if a quick one). */
 const ALGAE_SCRUB_PX_TO_CLEAN = 1500;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** P5 §6 item 6 (breeding, docs/PIXI_MIGRATION_PLAN.md §9 Q4/§9.1). A day-by-day random chance, evaluated
+ *  continuously (see tickBreeding()) rather than as a once-a-day roll, so it isn't tied to any particular
+ *  moment the app happens to be open - a tank left running for exactly one day sees ~BREEDING_DAILY_CHANCE
+ *  odds of one birth, same as the design called for. */
+const BREEDING_DAILY_CHANCE = 0.1;
+/** The chance above is scaled down as the tank fills up (`* max(0, 1 - fishCount/this)`), reaching 0 at
+ *  this population - keeps breeding from compounding into unbounded exponential growth once the tank is
+ *  already crowded, per §9.1's own reasoning. */
+const BREEDING_POPULATION_CAP = 12;
+/** A fish only counts toward breeding eligibility once its hunger has stayed above 0.5 for this long
+ *  continuously (see wellFedSince) - per §9 Q4's "ต้องกินอิ่มมา ≥1 วันติดก่อน", keeps breeding from firing
+ *  the moment a starving tank gets one meal. */
+const WELL_FED_MIN_MS = DAY_MS;
+const WELL_FED_HUNGER_THRESHOLD = 0.5;
+/** How long a bred fish takes to reach full size - see growthScale(). */
+const BABY_MATURATION_MS = 3 * DAY_MS;
+/** A newborn renders at this fraction of adult size, growing linearly to 1 by BABY_MATURATION_MS - see
+ *  growthScale()'s own doc comment for why this only affects rendered size, not swim-bounds footprint.
+ *  Matches §9 Q4's "16×16 → 8×8" (half size). */
+const BABY_SCALE_FRAC = 0.5;
+/** How far (tank-logical px) a newborn appears from its parent, before being clamped into the tank's
+ *  actual swim bounds like any other placement. */
+const BABY_SPAWN_OFFSET = 24;
+
 /** Matches tankScene.ts's Pixi version exactly - see the hunger-bar comment in drawInstance(). */
 const HUNGER_BAR_HEIGHT = 4;
 const HUNGER_BAR_GAP = 4;
@@ -962,6 +988,7 @@ export class TankEngine {
     const swimSpeed: SwimSpeed = 'medium';
     const { vx, vy } = sprite.type === 'fish' ? randomSwimVelocity(swimSpeed) : { vx: 0, vy: 0 };
     const placed = this.clampTopLeftToShape(x - pw / 2, y - ph / 2, pw, ph, this.canvas.width, this.canvas.height);
+    const now = Date.now();
     const inst: Instance = {
       ...storage.newRecordMeta(),
       id: storage.uid('inst'),
@@ -982,12 +1009,15 @@ export class TankEngine {
       schoolOffsetY: (Math.random() - 0.5) * 40,
       zone: null,
       visible: true,
-      bornAt: Date.now(),
+      bornAt: now,
       lifespanMs: sprite.type === 'fish' ? storage.randomFishLifespanMs() : 0,
       dead: false,
       diedAt: 0,
       hunger: 1,
       starvingSince: 0,
+      // Placed directly by the user, not bred - already fully grown (see growthScale()).
+      matureAt: now,
+      wellFedSince: 0,
     };
     this.instances.push(inst);
     this.persist();
@@ -1954,7 +1984,107 @@ export class TankEngine {
         inst.diedAt = now;
         inst.groupId = null;
       }
+      // Breeding eligibility streak (P5 §6 item 6) - a plain "when did this last become true"
+      // timestamp, so (like bornAt/starvingSince) it stays correct across an app-closed gap with no
+      // special catch-up logic: comparing it against `now` is exactly as valid after reopening the app
+      // as it always was.
+      if (inst.hunger > WELL_FED_HUNGER_THRESHOLD) {
+        if (!inst.wellFedSince) inst.wellFedSince = now;
+      } else {
+        inst.wellFedSince = 0;
+      }
     });
+  }
+
+  /** BABY_SCALE_FRAC (newborn) .. 1 (fully grown), interpolated linearly between bornAt and matureAt - a purely
+   *  *visual* scale (see the callers in drawInstance()/tankScene.ts, which shrink only the drawn
+   *  sprite size). A newborn's swim-bounds footprint, hit-testing, and collision all stay full adult
+   *  size throughout growth - a deliberate simplification: touching every spritePx() consumer
+   *  (swimBoundsFor, clampTopLeftToShape, food-seeking, etc.) to also track a shrinking footprint
+   *  would be real additional surface area for a purely cosmetic detail, at the cost of a young fish's
+   *  hit box being a bit bigger than it visually looks - an acceptable trade for how rarely that
+   *  actually matters in play. */
+  private growthScale(inst: Instance): number {
+    if (inst.matureAt <= inst.bornAt) return 1;
+    const frac = (Date.now() - inst.bornAt) / (inst.matureAt - inst.bornAt);
+    const clamped = Math.max(0, Math.min(1, frac));
+    return BABY_SCALE_FRAC + (1 - BABY_SCALE_FRAC) * clamped;
+  }
+
+  /** One randomly-timed birth check per frame (P5 §6 item 6) - eligibility (≥2 fish that have each
+   *  been well-fed continuously for WELL_FED_MIN_MS, per §9 Q4) gates whether a birth can happen at
+   *  all; the tank's current total fish count then scales *how likely* one is this tick, tapering off
+   *  entirely at BREEDING_POPULATION_CAP. Evaluated as a per-ms rate over `elapsedMs` rather than
+   *  waiting for some fixed "once a day" moment, so the odds work out the same whether checked every
+   *  frame or (like everything else in this file) resolved as one lump sum after the app was closed
+   *  for a while - see the `elapsedMs` shape shared with tickHunger/tickWaterLevel/tickAlgae. Skipped
+   *  entirely during that closed-app catch-up though (see the `0` passed at its init() call site) -
+   *  unlike the others, missing a chance to breed while closed has no real correctness stakes the way
+   *  starvation timing does, so it's simplest to just start counting from the moment the app reopens. */
+  private tickBreeding(elapsedMs: number): void {
+    if (elapsedMs <= 0 || !this.canvas) return;
+    const now = Date.now();
+    const liveFish = this.instances.filter((i) => i.kind === 'fish' && !i.dead);
+    if (liveFish.length < 2) return;
+    const eligible = liveFish.filter(
+      (i) => i.matureAt <= now && i.wellFedSince !== 0 && now - i.wellFedSince >= WELL_FED_MIN_MS,
+    );
+    if (eligible.length < 2) return;
+    const dailyChance = BREEDING_DAILY_CHANCE * Math.max(0, 1 - liveFish.length / BREEDING_POPULATION_CAP);
+    if (dailyChance <= 0) return;
+    const chancePerMs = dailyChance / DAY_MS;
+    if (Math.random() < chancePerMs * elapsedMs) {
+      const parent = eligible[Math.floor(Math.random() * eligible.length)];
+      this.spawnBaby(parent);
+    }
+  }
+
+  /** Creates a newborn fish (P5 §6 item 6) next to `parent`, sharing its sprite (per §9 Q4 - a baby
+   *  looks like a small version of whichever fish had it, not some separate "baby" art) but otherwise
+   *  a brand new Instance with its own rolled lifespan/hunger/etc., same as one placed by the user -
+   *  the only things marking it as bred rather than placed are `matureAt` (see growthScale()) and
+   *  starting right next to its parent instead of wherever the user last clicked. */
+  private spawnBaby(parent: Instance): void {
+    const sprite = this.spriteFor(parent);
+    if (!sprite || !this.canvas) return;
+    const { pw, ph } = this.spritePx(sprite);
+    const swimSpeed: SwimSpeed = 'medium';
+    const { vx, vy } = randomSwimVelocity(swimSpeed);
+    const offsetX = parent.x + (Math.random() - 0.5) * 2 * BABY_SPAWN_OFFSET;
+    const offsetY = parent.y + (Math.random() - 0.5) * 2 * BABY_SPAWN_OFFSET;
+    const placed = this.clampTopLeftToShape(offsetX, offsetY, pw, ph, this.canvas.width, this.canvas.height);
+    const now = Date.now();
+    const baby: Instance = {
+      ...storage.newRecordMeta(),
+      id: storage.uid('inst'),
+      spriteId: parent.spriteId,
+      kind: 'fish',
+      x: placed.x,
+      y: placed.y,
+      dir: Math.random() < 0.5 ? -1 : 1,
+      vx,
+      vy,
+      targetY: this.randomTargetY(ph),
+      frameIndex: 0,
+      frameTimer: 0,
+      bobPhase: Math.random() * Math.PI * 2,
+      isDragging: false,
+      swimSpeed,
+      groupId: null,
+      schoolOffsetY: (Math.random() - 0.5) * 40,
+      zone: null,
+      visible: true,
+      bornAt: now,
+      lifespanMs: storage.randomFishLifespanMs(),
+      dead: false,
+      diedAt: 0,
+      hunger: 1,
+      starvingSince: 0,
+      matureAt: now + BABY_MATURATION_MS,
+      wellFedSince: 0,
+    };
+    this.instances.push(baby);
+    this.persist();
   }
 
   /** Nearest not-yet-eaten food item to (cx, cy), or null - no attraction-radius cutoff, a hungry fish
@@ -2020,6 +2150,7 @@ export class TankEngine {
     this.tickWaterLevel(dt * 1000);
     this.tickAlgae(dt * 1000, this.wasteItems.length);
     this.ensureAlgaePatches();
+    this.tickBreeding(dt * 1000);
 
     if (this.foodItems.length) {
       // Rests just above the sand strip fish can't swim into (see swimBoundsFor's own sandH) rather
@@ -2350,7 +2481,13 @@ export class TankEngine {
     const sprite = this.spriteFor(inst);
     if (!sprite || !this.ctx) return;
     const { width, height } = this.spriteDims(sprite);
-    const { pw, ph } = this.spritePx(sprite);
+    // Growing (P5 §6 item 6) shrinks only what's drawn here - see growthScale()'s own doc comment for
+    // why the swim-bounds footprint (spritePx(sprite) as everything else uses it) stays full adult
+    // size regardless.
+    const growth = inst.kind === 'fish' ? this.growthScale(inst) : 1;
+    const full = this.spritePx(sprite);
+    const pw = full.pw * growth;
+    const ph = full.ph * growth;
     const layers = sprite.frames[inst.frameIndex % sprite.frames.length];
     const renderY = inst.y + (inst.kind === 'fish' && !inst.isDragging ? Math.sin(inst.bobPhase) * 3 : 0);
 
@@ -2361,7 +2498,7 @@ export class TankEngine {
     this.ctx.translate(inst.x + pw / 2, renderY + ph / 2);
     if (inst.kind === 'fish' && inst.dir < 0) this.ctx.scale(-1, 1);
     this.ctx.translate(-pw / 2, -ph / 2);
-    paintLayers(this.ctx, layers, width, height, DISPLAY_SCALE);
+    paintLayers(this.ctx, layers, width, height, DISPLAY_SCALE * growth);
     this.ctx.restore();
 
     if (inst.id === this.selectedId || this.marqueeIds?.includes(inst.id)) {

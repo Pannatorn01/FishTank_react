@@ -65,6 +65,8 @@ function fish(over: Partial<Instance> = {}): Instance {
     diedAt: 0,
     hunger: 1,
     starvingSince: 0,
+    matureAt: NOW,
+    wellFedSince: 0,
     ...over,
   };
 }

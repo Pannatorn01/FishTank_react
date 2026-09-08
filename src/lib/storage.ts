@@ -348,14 +348,19 @@ export function randomFishLifespanMs(): number {
  *  never had a birth time recorded starts its clock now (treated as newly "born" on first load under
  *  the new build) rather than being treated as already dead or requiring guesswork about its true age. */
 function normalizeInstance(raw: Instance): Instance {
+  const bornAt = typeof raw.bornAt === 'number' ? raw.bornAt : Date.now();
   return {
     ...normalizeMeta(raw),
-    bornAt: typeof raw.bornAt === 'number' ? raw.bornAt : Date.now(),
+    bornAt,
     lifespanMs: typeof raw.lifespanMs === 'number' ? raw.lifespanMs : randomFishLifespanMs(),
     dead: typeof raw.dead === 'boolean' ? raw.dead : false,
     diedAt: typeof raw.diedAt === 'number' ? raw.diedAt : 0,
     hunger: typeof raw.hunger === 'number' ? raw.hunger : 1,
     starvingSince: typeof raw.starvingSince === 'number' ? raw.starvingSince : 0,
+    // A fish saved before this field existed was, as far as this app ever knew, always fully grown -
+    // treated as already mature (matureAt === bornAt) rather than guessing at a growth timeline for it.
+    matureAt: typeof raw.matureAt === 'number' ? raw.matureAt : bornAt,
+    wellFedSince: typeof raw.wellFedSince === 'number' ? raw.wellFedSince : 0,
   };
 }
 

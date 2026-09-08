@@ -994,4 +994,42 @@ code-split bundle ของ tank engine ออกจาก editor เหมื�
 
 ### ข้อสังเกตที่ยังไม่แก้ (ไม่บล็อก แต่ควรดูภายหลัง)
 
-QA เจอ: บางครั้งหลัง navigate จาก Build Tank → Life, canvas ของ Life ล็อกขนาดเล็กกว่าพื้นที่จริง (เช่น ~800×600 ใน host กว้าง 1264px) เหลือพื้นที่ว่างด้านขวา - ไม่กระทบความถูกต้องของ logic การโต้ตอบ (พิกัด hit-test ยังตรงกับ canvas ที่ render จริงเสมอ) เป็นแค่ปัญหา layout/resize อาจมาจาก `pixiApp.ts`'s `resizeTo`/`autoDensity` หรือ React effect timing - ยังไม่ได้ไล่ดูรอบนี้
+~~QA เจอ: บางครั้งหลัง navigate จาก Build Tank → Life, canvas ของ Life ล็อกขนาดเล็กกว่าพื้นที่จริง~~ **แก้แล้ว 2026-09-09 (commit `244ca8f`)** - เพิ่ม `app.renderer.resize(host.clientWidth, host.clientHeight)` ทั้งตอนสร้าง Pixi app และทุกครั้งที่ prop `active` ใหม่ของ `LifePanel` เปลี่ยนเป็น true (ส่งมาจาก `TankSection`) - verify ด้วย Playwright: ขนาด canvas ตรงกับ host เป๊ะทั้ง 5 รอบสลับแท็บ + 2 รอบ resize หน้าต่าง ไม่มี console error
+
+---
+
+## 22. P5 ข้อ 6: ผสมพันธุ์ (2026-09-09)
+
+**สรุป: เสร็จและ verify แล้วด้วย Playwright จริง (บังคับ `Math.random()=0` เพื่อทดสอบกลไกที่ปกติสุ่มและช้ามาก) - เจอ population cap ทำงานถูกต้องเป๊ะที่ 12 ตัวพอดีตามสูตร**
+
+### สิ่งที่ทำจริง
+
+| ไฟล์ | เปลี่ยนอะไร |
+|---|---|
+| `src/lib/types.ts` | `Instance` เพิ่ม `matureAt` (เวลาที่โตเต็มวัย - เท่ากับ `bornAt` สำหรับปลาที่ผู้ใช้วางเอง) และ `wellFedSince` (เวลาที่ hunger>0.5 ต่อเนื่องล่าสุด - เคลียร์เป็น 0 ทันทีที่หิวลง) |
+| `src/lib/storage.ts` | `normalizeInstance()` backfill ทั้งสองฟิลด์ (ปลาเก่าก่อนมีฟีเจอร์นี้ = ถือว่าโตเต็มวัยแล้ว) |
+| `src/hooks/useTank.ts` | `tickHunger()` เพิ่ม logic set/clear `wellFedSince` ตาม hunger ปัจจุบัน (wall-clock timestamp เหมือน `bornAt`/`starvingSince` เดิม เลยไม่ต้องมี catch-up พิเศษตอนเปิดแอปใหม่) · `tickBreeding()` ใหม่ - เช็คทุกเฟรมแบบ per-ms rate (เหมือน tick อื่นๆ) แต่ข้ามตอน catch-up ของ `init()` โดยตั้งใจ (ส่ง elapsed=0 เพราะพลาดโอกาสผสมพันธุ์ตอนปิดแอปไม่กระทบความถูกต้องแบบตายเพราะอดอาหาร) · `spawnBaby()` สร้าง Instance ใหม่ใช้สไปรท์แม่ปลาเดิม `matureAt = now + 3 วัน` · `growthScale()` คำนวณสัดส่วนขนาดวาด (0.5→1.0) - ตั้งใจปรับแค่ขนาดที่ **วาด** เท่านั้น ไม่แตะพื้นที่ว่าย/hit-box (ไม่ต้องแก้ `spritePx()` consumer ทุกจุดที่มีอยู่เยอะมาก) · `drawInstance()` ใช้ growth scale คูณ pw/ph ก่อนวาด |
+| `src/tank/render/tankScene.ts` | duplicate `growthScale()` เดียวกัน (อ่าน `inst.bornAt/matureAt` ตรง ๆ ไม่เรียกผ่าน engine method - ตามธรรมเนียม constant ที่ sync กันด้วยคอมเมนต์ เหมือน HUNGER_BAR_HEIGHT ฯลฯ) |
+| `src/hooks/__tests__/useTank.test.ts` | เพิ่ม `matureAt`/`wellFedSince` ใน test helper `fish()` (ของผู้ใช้เอง - แก้ให้ compile ผ่านหลัง type เปลี่ยน) |
+
+### ผลตรวจ (Playwright, บังคับ `Math.random()=0` เพื่อ trigger กลไกที่ปกติช้าและสุ่มมาก)
+
+| เกณฑ์ | ผล |
+|---|---|
+| ผสมพันธุ์ได้เมื่อมี ≥2 ตัว eligible (กินอิ่ม ≥1 วัน) | ✅ จำนวนปลาโตจาก 2 → 12 ทันทีหลัง reload |
+| ลูกปลาใช้สไปรท์เดียวกับแม่ | ✅ `spriteId` ตรงกันทุกตัว |
+| ลูกปลา `matureAt - bornAt` = 3 วันเป๊ะ | ✅ วัดได้ 259200000ms (=3×24×60×60×1000) เป๊ะทุกตัว ต่างจากพ่อแม่ที่ `matureAt===bornAt` |
+| ลูกปลาวาดเล็กกว่าพ่อแม่จริง | ✅ เห็นชัดในภาพ (~50% ตาม `BABY_SCALE_FRAC`) |
+| **Population cap ทำงานถูกต้อง** | ✅ หยุดโตพอดีที่ 12 ตัว แม้ `Math.random()` ถูกบังคับเป็น 0 ตลอด (สูตร `dailyChance = 0.1 * max(0, 1-fishCount/12)` แตะ 0 พอดีที่ 12 - ยืนยันว่า cap ทำงานจริง ไม่ใช่แค่ทฤษฎี) |
+| build/lint/test สะอาด | ✅ `tsc -b` เงียบ, build ผ่าน, `oxlint` warning เดิม 4 ตัว, `npm test` 249/249 |
+| console/page error | ✅ ไม่มีเลย |
+
+### หมายเหตุสภาพแวดล้อม (ไม่เกี่ยวกับ P5 โดยตรง)
+
+ระหว่าง verify รอบนี้พบว่าระบบ persistence ของแอปมีการอัปเกรดขนานกันไปเป็น IndexedDB-based repository pattern (`src/lib/data/` - `TankRepo`/`adapter`/`indexedDbAdapter` เป็นต้น) โดยผู้ใช้เอง (งานแยกจาก P5) - `TankState` type ใน `src/lib/data/adapter.ts` มี `waterLevel`/`algae`/`lastTickAt` เป็น field อยู่แล้วตรงกับชื่อที่ P5 ใช้ ยืนยันด้วย `tsc -b` สะอาดและ QA เห็นข้อมูลปลา (`bornAt`/`matureAt`/`wellFedSince`) ครบถ้วนถูกต้องใน IndexedDB จริงหลัง save - ระบบ P5 ทำงานร่วมกับ persistence layer ใหม่ได้ปกติ ไม่ต้องแก้อะไรเพิ่ม
+
+### ข้อจำกัด/ของค้าง
+
+- ยังไม่ verify การเติบโตของขนาดภาพแบบต่อเนื่อง (แค่เห็น snapshot ตอนอายุไม่กี่วินาที) - สูตรเป็น linear interpolation ตรงไปตรงมา ความเสี่ยงต่ำ
+- Growth scale ปรับแค่ภาพที่วาด ไม่ปรับพื้นที่ว่าย/hit-box จริง (ตั้งใจ - ดู comment ใน `growthScale()`) - ลูกปลาเล็กจะมี hit-box เท่าตัวโตเต็มวัยไปก่อน ไม่กระทบการเล่นมากนักแต่เป็นความคลาดเคลื่อนที่รู้ตัว
+- เหลือกลไกสุดท้ายของ P5: ข้อ 7 (แมว/นก)

@@ -36,9 +36,22 @@ const WASTE_RADIUS_X = 3;
 const WASTE_RADIUS_Y = 5;
 /** Matches useTank.ts's Canvas2D drawAlgae() stroke color exactly. */
 const ALGAE_COLOR = 0x4ade80;
+/** Matches useTank.ts's Canvas2D BABY_SCALE_FRAC exactly - see growthScale() below. */
+const BABY_SCALE_FRAC = 0.5;
 
 function spriteDims(sprite: SpriteData): { width: number; height: number } {
   return { width: sprite.width || 16, height: sprite.height || 16 };
+}
+
+/** Mirrors useTank.ts's private TankEngine.growthScale() (P5 §6 item 6) - duplicated rather than
+ *  called on the engine since it's pure math over fields already on `inst` (bornAt/matureAt), the same
+ *  "small pure formula kept in sync by comment, not by sharing a function" pattern already used here
+ *  for the hunger bar / dead-fish grayscale constants. */
+function growthScale(inst: Instance): number {
+  if (inst.matureAt <= inst.bornAt) return 1;
+  const frac = (Date.now() - inst.bornAt) / (inst.matureAt - inst.bornAt);
+  const clamped = Math.max(0, Math.min(1, frac));
+  return BABY_SCALE_FRAC + (1 - BABY_SCALE_FRAC) * clamped;
 }
 
 /**
@@ -285,8 +298,11 @@ export function createTankScene(stage: Container): TankSceneHandle {
 
   function updateInstanceView(v: InstanceView, inst: Instance, sprite: SpriteData, selected: boolean): void {
     const { width, height } = spriteDims(sprite);
-    const pw = width * DISPLAY_SCALE;
-    const ph = height * DISPLAY_SCALE;
+    // Growing (P5 §6 item 6) shrinks only what's drawn here, same as Canvas2D's drawInstance() - see
+    // growthScale()'s own doc comment for why the swim-bounds footprint stays full adult size.
+    const growth = inst.kind === 'fish' ? growthScale(inst) : 1;
+    const pw = width * DISPLAY_SCALE * growth;
+    const ph = height * DISPLAY_SCALE * growth;
     const renderY = inst.y + (inst.kind === 'fish' && !inst.isDragging ? Math.sin(inst.bobPhase) * 3 : 0);
     const frameIndex = inst.frameIndex % sprite.frames.length;
 

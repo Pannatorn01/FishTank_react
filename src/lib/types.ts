@@ -207,6 +207,19 @@ export interface Instance extends RecordMeta {
    *  `dead`/`diedAt` fields old-age death uses - starvation is just a second way to trigger the same
    *  outcome, not a separate state. */
   starvingSince: number;
+  /** Epoch ms this fish finishes growing to full size - equal to `bornAt` for a fish that was already
+   *  adult the moment it existed (placed by the user, or migrated from before this field existed), or
+   *  `bornAt + BABY_MATURATION_MS` for one born via breeding (P5 §6 item 6) - see growthScale() in
+   *  useTank.ts, which interpolates the fish's *rendered* size (not its swim-bounds footprint, which
+   *  stays adult-sized throughout - a deliberate simplification, see growthScale's own doc comment)
+   *  between `bornAt` and this. Only meaningful for kind 'fish'. */
+  matureAt: number;
+  /** Epoch ms this fish's `hunger` most recently rose above the "well fed" threshold and has stayed
+   *  there continuously since, or 0 if it isn't currently well-fed - cleared the moment hunger drops
+   *  back to/below that threshold. A fish only counts toward breeding eligibility (P5 §6 item 6) once
+   *  this has held for WELL_FED_MIN_MS, per §9 Q4/§9.1: "ปลาต้องกินอิ่มมา ≥1 วันติดก่อนถึงจะนับสิทธิ์
+   *  สุ่มเกิดในวันนั้น". Only meaningful for kind 'fish'. */
+  wellFedSince: number;
 }
 
 /** A single food pellet dropped into the tank (see TankEngine.feedAt / feedItems) - falls slowly
