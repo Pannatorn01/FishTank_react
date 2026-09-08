@@ -254,13 +254,33 @@ create policy sprites_shared_read on public.sprites
     or public.sprite_in_visible_tank(public.sprites.id)
   );
 
--- ---------------------------------------------------------------- server-assigned revisions
--- `rev` breaks ties when two devices' clocks disagree closely enough that updated_at cannot. It is
--- assigned here rather than by the client for the obvious reason: a client cannot be trusted to know
--- what the previous revision was.
+-- ---------------------------------------------------------------- server-assigned bookkeeping
+-- Two things the client is not allowed to decide.
+--
+-- `rev` breaks ties when two devices' clocks disagree closely enough that updated_at cannot. A client
+-- cannot be trusted to know what the previous revision was.
+--
+-- `server_updated_at` is what delta pulls filter on. `updated_at` (the client's clock) cannot do that
+-- job: a record uploaded now can carry an older client timestamp than one uploaded a minute ago - a
+-- sample sprite created on first run and uploaded later at sign-in, say - and would then sit forever
+-- below the pulling device's high-water mark, never sent back, never learning its revision. That bug
+-- cost real data in testing before this column existed.
+alter table public.sprites        add column if not exists server_updated_at timestamptz not null default now();
+alter table public.tanks          add column if not exists server_updated_at timestamptz not null default now();
+alter table public.tank_instances add column if not exists server_updated_at timestamptz not null default now();
+alter table public.tank_groups    add column if not exists server_updated_at timestamptz not null default now();
+alter table public.room_instances add column if not exists server_updated_at timestamptz not null default now();
+
+create index if not exists sprites_pull_idx        on public.sprites (user_id, server_updated_at);
+create index if not exists tanks_pull_idx          on public.tanks (user_id, server_updated_at);
+create index if not exists tank_instances_pull_idx on public.tank_instances (tank_id, server_updated_at);
+create index if not exists tank_groups_pull_idx    on public.tank_groups (tank_id, server_updated_at);
+create index if not exists room_instances_pull_idx on public.room_instances (tank_id, server_updated_at);
+
 create or replace function public.bump_rev() returns trigger as $$
 begin
   new.rev := coalesce(old.rev, 0) + 1;
+  new.server_updated_at := now();
   return new;
 end;
 $$ language plpgsql;

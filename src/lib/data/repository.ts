@@ -39,6 +39,11 @@ export class SpriteRepo {
     return this.pending;
   }
 
+  /** Re-reads the library from storage - used after a sync has written to it underneath the cache. */
+  async refresh(): Promise<void> {
+    this.sprites = await this.adapter.listSprites();
+  }
+
   get isHydrated(): boolean {
     return this.hydrated;
   }

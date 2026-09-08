@@ -19,6 +19,9 @@ import type { TankState } from './adapter';
 
 export interface SpriteRow {
   id: string;
+  /** Set by the database on every write (see supabase/schema.sql). Only the sync engine reads it, to
+   *  ask for "everything changed since I last looked" without trusting any client's clock. */
+  server_updated_at?: string;
   name: string;
   type: string;
   width: number;
@@ -67,6 +70,7 @@ export type TankSettings = Omit<TankState, 'instances' | 'groups' | 'roomInstanc
 
 export interface TankRow {
   id: string;
+  server_updated_at?: string;
   name: string;
   settings: TankSettings;
   updated_at: number;
@@ -83,6 +87,7 @@ export function tankToRow(id: string, name: string, state: TankState, updatedAt:
  *  differ, the sync rules do not. */
 export interface ChildRow {
   id: string;
+  server_updated_at?: string;
   tank_id: string;
   sprite_id?: string | null;
   data: Record<string, unknown>;

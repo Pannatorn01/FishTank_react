@@ -53,9 +53,20 @@
 [`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — **25/25 ผ่าน** และ
 [`scripts/auth-smoke.cjs`](../scripts/auth-smoke.cjs) — **9/9 ผ่าน** (รันคู่กับ `npm run dev`)
 
-> ⚠️ **สิ่งที่ยังไม่ได้พิสูจน์:** โค้ด sync ทั้งหมดยังไม่เคยคุยกับ Supabase จริงสักครั้ง (ยังไม่มีโปรเจกต์/credential)
-> · logic ที่ทดสอบได้แบบ pure — merge, outbox, การ map record↔row — มี unit test 13 เคสครบ
-> · **ขั้นตอนถัดไปฝั่งคุณ:** สร้างโปรเจกต์ Supabase → รัน `supabase/schema.sql` → ใส่ค่าใน `.env` → แล้วค่อยไล่ P5-5 · งานถัดไปคือ **P3 — เฟสที่ใหญ่และเสี่ยงที่สุด**
+### บั๊กที่เจอตอนยิงกับ Supabase จริง (สรุปไว้เพื่อไม่ให้พลาดซ้ำ)
+
+| บั๊ก | อาการ | บทเรียน |
+|------|-------|---------|
+| `42702` ambiguous column | schema รันไม่ผ่านเลย | ใน policy ต้องอ้างแถวของตัวเองแบบเต็มชื่อ (`public.sprites.id`) |
+| `42P17` infinite recursion | ทุก query ตอบ 500 | policy ที่อ่านตารางอื่นจะเรียก policy ของตารางนั้นด้วย → ใช้ `SECURITY DEFINER` function ตัดวงจร |
+| เขียนข้ามตู้ได้ | **บัญชีอื่นแทรกปลาเข้าตู้เราได้** | `user_id` มี default = ผู้เรียก → ต้องเช็ค `owns_tank(tank_id)` ด้วย |
+| delta pull ใช้นาฬิกา client | record ที่อัปโหลดทีหลังแต่ timestamp เก่า **ไม่มีวันถูกดึงกลับ** | เพิ่มคอลัมน์ `server_updated_at` ให้ database ประทับเอง |
+| heuristic ลบ sprite ตัวอย่าง | **ลบ sprite ที่อยู่บน server แล้วทิ้ง (ข้อมูลหายจริง)** | อย่าลบข้อมูลที่ผู้ใช้เห็นด้วยการเดา — ถอดออกทั้งหมด |
+| `syncNow()` เงียบเมื่อมี sync ค้างอยู่ | "อัปโหลดเสร็จแล้ว" ทั้งที่ยังค้างคิว | ให้ต่อคิวแทนการ return เฉย ๆ |
+| pull เขียนลง IndexedDB ตรง ๆ | งานจากอีกเครื่องไม่ขึ้นจอจนกว่าจะ reload | ต้องแจ้ง cache ชั้นบน (`onPulled` → refresh + ยิง event เดิม) |
+
+> **ยังเหลือ (ยอมรับไว้ ไม่ใช่บั๊ก):** เครื่องที่เคยเล่นแบบ guest จะมี sprite ตัวอย่าง 2 ตัวของตัวเอง
+> ค้างอยู่ปนกับ library ของบัญชีหลังล็อกอิน · ผู้ใช้ลบเองได้ · **เคยลองแก้ด้วย heuristic แล้วมันลบข้อมูลจริงทิ้ง จึงถอดออก** · งานถัดไปคือ **P3 — เฟสที่ใหญ่และเสี่ยงที่สุด**
 
 ---
 
@@ -631,7 +642,7 @@ create policy read_used_in_shared on sprites for select using (
 - [x] **P5-2** [`supabase/schema.sql`](../supabase/schema.sql) **รันจริงบนโปรเจกต์แล้ว (2026-09-08)** — ตาราง 7 ตัว + RLS + `bump_rev` ครบ · ยืนยันด้วย REST: ผู้ใช้นิรนามอ่านได้ `200 []` ทุกตาราง (ไม่เห็นอะไรเลย = ถูก) และ insert โดนปฏิเสธ `42501 violates row-level security` · ⚠️ ยังเหลือ **เทสต์ด้วยบัญชีจริง 2 คน** ว่า A อ่านของ B ไม่ได้ (ต้องมี auth = P6 ก่อน)
 - [x] **P5-3** [`outbox.ts`](../src/lib/data/outbox.ts) — คิวใน IndexedDB store `outbox` + exponential backoff (cap 5 นาที) + coalesce เหลือรายการเดียวต่อ record
 - [x] **P5-4** [`syncEngine.ts`](../src/lib/data/syncEngine.ts) (flush + delta pull + merge) · [`rows.ts`](../src/lib/data/rows.ts) (map record ↔ row) · [`merge.ts`](../src/lib/data/merge.ts) (last-write-wins + tiebreak ด้วย `rev`)
-- [ ] **P5-5** ⚠️ **ยังทดสอบกับ Supabase จริงไม่ได้** (ไม่มี credential) — logic ทั้งหมดมี unit test 13 เคส แต่ยังไม่เคยยิงขึ้น server จริงสักครั้ง · ต้องทำเมื่อมีโปรเจกต์: ตัดเน็ต → ทำงาน → ต่อเน็ต → ข้อมูลครบไม่ซ้ำ · 2 เครื่องบัญชีเดียวกัน
+- [x] **P5-5** ทดสอบกับโปรเจกต์จริงแล้ว — [`scripts/sync-smoke.cjs`](../scripts/sync-smoke.cjs) **17/17** (อัปโหลดตอนล็อกอินครั้งแรก → ตัดเน็ต → แก้งาน → ต่อเน็ต → ข้อมูลครบไม่ซ้ำ → เครื่องที่สองเห็นงานโดยไม่ต้อง reload) และ [`scripts/rls-smoke.cjs`](../scripts/rls-smoke.cjs) **18/18** (2 บัญชีจริง)
 - [ ] **P5-6** ตัดสินใจว่า sprite ต้องย้ายไป Supabase Storage ไหม (ใช้ตัวเลขจริงจาก P2)
 - [x] **P6-1** guest mode — `localUserId` มีตั้งแต่ P4 · ปุ่ม "Back up my work" เป็นข้อเสนอ ไม่ใช่ประตู · ไม่มี modal บังคับตอนโหลด (มีเทสต์คุม)
 - [x] **P6-2** magic link ([`useAuth.ts`](../src/hooks/useAuth.ts) + [`AccountMenu.tsx`](../src/components/AccountMenu.tsx)) + flow ถามตอนล็อกอินครั้งแรกว่าจะอัปโหลดงานในเครื่องไหม · `claimLocalWork()` ผ่าน outbox (ขัดจังหวะแล้วทำต่อได้ · รันซ้ำได้) · **เขียนธง `claimedBy` ต่อเมื่อ outbox ว่างจริง** · ไม่ลบข้อมูล local เลย · (Google login ยังไม่ทำ — magic link พอสำหรับตอนนี้)
