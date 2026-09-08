@@ -39,8 +39,10 @@ cells.length === width*height) ถ้าไม่ผ่านให้ fallback 
 ## P1 — หนี้ทางสถาปัตยกรรม
 
 ### 4. `usePixelEditor.ts` ยังใหญ่ (กำลังเล็กลงเรื่อยๆ)
-migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้ว 9 ตัว (pen, eraser, rect, ellipse, line, magicWand, move,
-select, lasso) เหลืออีก 5 ตัวที่ยังเป็น if-chain เดิม: **spray, fill, curve, gradient, eyedropper**
+migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้ว 11 ตัว (pen, eraser, rect, ellipse, line, magicWand, move,
+select, lasso, eyedropper, fill) เหลืออีก 3 ตัวที่ยังเป็น if-chain เดิม: **gradient, spray, curve**
+(curve เป็นตัวใหญ่สุด ต้องขยาย interface รองรับ gesture ข้ามหลาย pointerdown-cycle — ดูรายละเอียดใน
+ARCHITECTURE.md §Migration plan)
 การ migrate select/lasso ลบโค้ดตายจริง (`startMoveGesture`, `moveStartCell`, legacy `moveBuffer`
 branch, `draftSelectionMode`) ออกไปด้วย หลังยืนยัน caller ครบทุกจุด — migrate line รอบถัดมาลบ
 `computeShapeCells()` เต็มตัว + `shapeStart` field ออกไปด้วยเหตุผลเดียวกัน (branch rect/ellipse ใน
@@ -62,7 +64,7 @@ branch, `draftSelectionMode`) ออกไปด้วย หลังยืน�
 **ยังไม่ได้ตรวจซ้ำ** — ห้ามสมมติว่าลบได้จนกว่าจะไล่ทุก caller แบบเดียวกัน
 
 ### 6. ยังไม่มีเทสต์ในส่วนที่เสี่ยงที่สุด
-มีเทสต์แล้ว: `src/lib/tools/` (39 tests) + `pixelMath` (4 tests)
+มีเทสต์แล้ว: `src/lib/tools/` (94 tests รวม eyedropper/fill) + `pixelMath` (4 tests)
 **ยังไม่มีเลย:** `storage.ts` (520 บรรทัด — พังแล้วข้อมูลผู้ใช้หาย), `useTank.ts` (2,083 บรรทัด)
 **แนวทาง:** เริ่มจาก `storage.ts` ก่อน — เทสต์ round-trip save→load + ข้อมูลเสีย/ขาดฟิลด์
 

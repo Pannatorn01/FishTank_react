@@ -1,10 +1,10 @@
 # Pixel editor tool architecture
 
 Response to `.claude/prompt/edit-pixeleditor.md`: a from-scratch architecture for the drawing-tool
-engine. **Seven tools are migrated and wired into the live `PixelEditorEngine`**: Pen/Eraser,
-Rect/Ellipse/Line, Magic Wand, Move, Select, Lasso. Every other tool (curve, fill, gradient,
-eyedropper, spray) is untouched, still running on the original inline `if (this.tool === 'xxx')`
-handling in `src/hooks/usePixelEditor.ts`.
+engine. **Nine tools are migrated and wired into the live `PixelEditorEngine`**: Pen/Eraser,
+Rect/Ellipse/Line, Magic Wand, Move, Select, Lasso, Eyedropper, Fill. Every other tool (gradient,
+spray, curve) is untouched, still running on the original inline `if (this.tool === 'xxx')` handling
+in `src/hooks/usePixelEditor.ts`.
 
 ## Why
 
@@ -31,7 +31,9 @@ src/lib/tools/
     moveTool.ts               Move
     selectTool.ts              Select (marquee)
     lassoTool.ts                Lasso
-  __tests__/             vitest unit tests for all of the above (81 tests, no DOM)
+    eyedropperTool.ts            Eyedropper
+    fillTool.ts                   Fill
+  __tests__/             vitest unit tests for all of the above (94 tests, no DOM)
 ```
 
 **Tool** is a stateless factory: given a `ToolPointerEvent` (a pointer event already resolved to a
@@ -79,12 +81,34 @@ interchangeable** - don't be tempted to unify them, same reasoning as Magic Wand
 combine-mode rules above. The engine's own `constrainShapeEnd` keeps its angle-snap branch too, since
 gradient (not yet migrated) still calls it.
 
+**Eyedropper and Fill are both "instant action" gestures**, the same shape as Magic Wand: all the work
+happens synchronously in `beginGesture` (which needs `ToolContext.getVisibleColor(x, y)` for
+Eyedropper - the topmost visible layer's color across the *whole* layer stack, a real gap `getCell`
+alone couldn't fill since that only reads the active layer), `onPointerMove` always returns `null`,
+`onPointerUp` just replays the precomputed `GestureResult`. Eyedropper's result carries two new fields,
+`pickedColor`/`switchToPen`, applied by `commitGestureResult` *before* its `if (!result.changed) return`
+early-out (Eyedropper's `changed` is always `false` - picking a color isn't a pixel edit - so the
+side effect has to land before that check, not after).
+
+**Fill's one real subtlety**: a plain (non-Shift) click floods **once per mirrored start point**
+(`mirrorPoints(...).forEach(m => floodFillOps(ctx, m.x, m.y, ...))`), each sampling *its own* target
+color at that point and flooding independently - this is not the shared `withSymmetry` pipeline every
+other tool uses (mirror one final color across copies), and must not be "simplified" into it. Global
+replace (Shift+click) ignores symmetry entirely, matching the original. The selection also acts as a
+**flood traversal barrier**, not just an output filter: `floodFillOps`'s `inSelection` check runs
+inside the loop's continuation test, exactly like the color-match check, so two disjoint blobs inside a
+selection connected only via a path *outside* it don't both fill from clicking one of them - a real
+correctness case, covered by its own test (`fillTool.test.ts`).
+
 ### Integration into `PixelEditorEngine`
 
 A module-level `TOOL_REGISTRY` maps
-`pen`/`eraser`/`rect`/`ellipse`/`line`/`magicWand`/`move`/`select`/`lasso` to their `Tool`. `NO_UNDO_TOOLS` (`magicWand`/`select`/`lasso`) skips `pushGestureUndo()` for gestures
-that never touch a pixel. `onPointerDown` dispatches to the registry, with two routing checks ahead of
-it for the two tools that can instead start a Move:
+`pen`/`eraser`/`rect`/`ellipse`/`line`/`magicWand`/`move`/`select`/`lasso`/`eyedropper`/`fill` to their
+`Tool`. `NO_UNDO_TOOLS` (`magicWand`/`select`/`lasso`/`eyedropper`) skips `pushGestureUndo()` for
+gestures that never touch a pixel - `fill` is deliberately **not** in that set, since it pushes undo
+and rolls it back on a no-op release instead, matching the original exactly (the *only* other tool with
+that specific rollback rule besides Fill itself). `onPointerDown` dispatches to the registry, with two
+routing checks ahead of it for the two tools that can instead start a Move:
 - **Magic Wand**: a click that resolves (`resolveWandCombine`) to `'subtract'` always subtracts even
   inside the existing selection; any other click inside it starts Move instead.
 - **Select/Lasso**: a *different* rule (`resolveMarqueeMode`) - only a click that resolves to `'new'`
@@ -113,6 +137,13 @@ removable), and the `shapeStart` field. **Not removed**, deliberately: `constrai
 `thickenPath` on the engine (gradient and curve still call them respectively), and `shapePreviewCells`
 (curve and `redrawShapePreview` both still depend on it).
 
+Migrating Eyedropper and Fill removed, after the same re-verification discipline: the `if (this.tool
+=== 'eyedropper')` and `if (this.tool === 'fill')` branches in `onPointerDown`, and the engine's own
+`floodFill`/`globalReplace`/`colorsMatch` methods (all now dead - `colorsMatch` had no callers left
+once `floodFill`/`globalReplace` were gone; it lives on as a pure function duplicated in both
+`fillTool.ts` and `magicWandTool.ts` instead). `pickColor` itself stays on the engine - the separate
+Alt-temporary-pick path still calls it directly, independent of the Eyedropper tool.
+
 ### Deviations found during implementation (worth flagging for future migration steps)
 
 - **Pen/Eraser and Move never roll back their undo entry on a no-op release** (a click outside the
@@ -137,26 +168,23 @@ removable), and the `shapeStart` field. **Not removed**, deliberately: `constrai
 
 ## Migration plan
 
-Already migrated: **pen, eraser, rect, ellipse, line, magicWand, move, select, lasso.**
+Already migrated: **pen, eraser, rect, ellipse, line, magicWand, move, select, lasso, eyedropper,
+fill.**
 
 Proposed order for the rest, each independently swappable behind the same `TOOL_REGISTRY` pattern:
 
-1. **spray** - timer-driven (`sprayTimer`/`sprayTick`), needs an optional `Gesture.onTick?()` hook added
-   to the interface - the first required interface extension.
-2. **fill** - flood fill + tolerance + global replace; single-click commit, no live preview, moderate
-   risk around the global-replace mode.
-3. **curve** - 2-phase drag (`drag-end` → `bend`), the most stateful remaining tool; do after the
-   simpler ones establish the pattern. Once curve is the only caller left, `thickenPath` and
-   `shapePreviewCells`/`redrawShapePreview` can finally move too (or be retired if curve absorbs them).
-4. **gradient** - needs `ToolPreview`'s native-canvas-gradient fast path preserved as an escape hatch
+1. **gradient** - needs `ToolPreview`'s native-canvas-gradient fast path preserved as an escape hatch
    (see the original's own perf rationale) or accept per-cell dither-preview cost, already the status
    quo when dither is on. Once gradient is migrated, `constrainShapeEnd` on the engine has zero
    remaining callers and its own angle-snap logic (now duplicated in `shapeTool.ts`'s
    `constrainToAngle`) can finally be deleted - the last piece of the original shape-tool machinery.
-5. **eyedropper** - arguably not a gesture at all today (instant Alt-shortcut); likely stays a
-   special-cased instant action outside the registry.
+2. **spray** - timer-driven (`sprayTimer`/`sprayTick`), needs an optional `Gesture.onTick?()` hook added
+   to the interface - the first required interface extension.
+3. **curve** - 2-phase drag (`drag-end` → `bend`), the most stateful remaining tool; do last, after the
+   simpler ones establish the pattern. Once curve is the only caller left, `thickenPath` and
+   `shapePreviewCells`/`redrawShapePreview` can finally move too (or be retired if curve absorbs them).
 
-**Highest-risk points for whoever does steps 1-5:**
+**Highest-risk points for whoever does steps 1-3:**
 - **Never spread a native DOM event** (`{ ...pointerEvent }`) when building a `ToolPointerEvent`. On a
   native event - which is what `getCoalescedEvents()` returns, unlike React's synthetic event -
   `clientX`/`clientY` are prototype getters, not own enumerable properties, so a spread silently drops
@@ -176,7 +204,7 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
 
 ## Test coverage
 
-`npm test` (`vitest run`) - 81 tests, all pure logic, no DOM/canvas:
+`npm test` (`vitest run`) - 94 tests, all pure logic, no DOM/canvas:
 - **paintPipeline**: selection-clip inside/outside a rect and a sparse mask; symmetry mirroring
   on-axis (no duplicate) and off-axis, composed with selection-clip.
 - **DirtyRectTracker**: single cell, disjoint-cell union, canvas-edge clamping, empty input.
@@ -198,6 +226,15 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
   the pointer leaves canvas bounds; never touches a pixel; `onCancel`.
 - **LassoTool**: same shape of coverage as Select, plus that a too-short path (a click, not a drag)
   behaves the same as Select's plain-click cases even though Lasso always goes through mask machinery.
+- **EyedropperTool**: picks a color and sets `switchToPen`; samples the topmost *visible* layer via
+  `getVisibleColor` rather than just the active layer; a no-op (`changed: false`, no `pickedColor`) on
+  an empty cell; never emits a paint op and never reports `changed`; `onCancel`.
+- **FillTool**: floods a contiguous same-color region; stops at a color boundary; a selection blocks the
+  flood from leaking through a path that runs outside it (two disjoint in-selection regions joined only
+  by an out-of-selection cell); Shift+click global replace reaches every matching pixel regardless of
+  adjacency; symmetry runs as N independent per-mirror-point floods (each sampling its own target color)
+  rather than one mirrored result; right-click erases; `changed: false` when the clicked pixel already
+  matches the fill color; `onCancel`.
 - Pure functions moved into `selectionMask.ts` are exercised indirectly through Magic Wand/Select/
   Lasso's own tests (all pre-existing Magic Wand tests still pass unchanged, confirming the move was
   behavior-preserving).
@@ -205,9 +242,9 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
 ## Verification performed
 
 - `npx tsc -b --noEmit` - clean.
-- `npx vitest run` - 81/81 passing.
+- `npx vitest run` - 94/94 passing.
 - `npm run build` - production build succeeds.
-- Manual Playwright smoke test against the running dev server, three rounds:
+- Manual Playwright smoke test against the running dev server, four rounds:
   - *Pen/Rect/MagicWand/Move round*: Pen L-stroke with corner trim, undo/redo across two strokes,
     filled and outline Rect, Magic Wand select-then-drag-to-move (both the outline-only and filled
     cases, including the click-inside-selection → Move routing), and Escape mid-Pen-stroke fully
@@ -224,4 +261,15 @@ Proposed order for the rest, each independently swappable behind the same `TOOL_
     erasing a previously drawn line back to nothing, Escape mid-drag cancelling with nothing painted,
     and - since this migration touched shared code - re-confirmed Curve (bent bezier still draws
     correctly) and Gradient (Shift-snap axis still works) both still work unchanged.
+  - *Eyedropper/Fill round*: picking a color from a freshly painted, distinctively-colored pixel and
+    confirming both the hex readout and the toolbar's `aria-pressed` state switched to Pen; a rect
+    outline drawn with Rect, then Fill clicked inside it flooding only the enclosed interior; a
+    click *outside* the rect confirmed it stops at the border instead of leaking through; a
+    Shift+click on the border recoloring every matching border pixel globally (not just the
+    contiguous run under the cursor); three successive Undo presses unwinding all three paint
+    operations cleanly back to the blank canvas - all confirmed via raw canvas pixel readback
+    (`getImageData`), not just screenshots. (One early run of this round hit a false alarm: after
+    switching tools via the toolbar, a stale pre-switch canvas coordinate missed the canvas because
+    the options-bar height differs between tools and shifted the canvas's on-screen position - fixed
+    by always recomputing `boundingBox()` immediately before each click, not a product-code bug.)
   - No console/runtime errors in any run.

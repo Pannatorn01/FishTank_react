@@ -23,6 +23,8 @@ import { createMagicWandTool, resolveWandCombine } from '@/lib/tools/tools/magic
 import { createMoveTool } from '@/lib/tools/tools/moveTool';
 import { createSelectTool } from '@/lib/tools/tools/selectTool';
 import { createLassoTool } from '@/lib/tools/tools/lassoTool';
+import { createEyedropperTool } from '@/lib/tools/tools/eyedropperTool';
+import { createFillTool } from '@/lib/tools/tools/fillTool';
 import { resolveMarqueeMode } from '@/lib/tools/selectionMask';
 import type { Gesture, GestureResult, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '@/lib/tools/types';
 import type {
@@ -146,11 +148,13 @@ const TOOL_REGISTRY: Partial<Record<ToolName, Tool>> = {
   move: createMoveTool(),
   select: createSelectTool(),
   lasso: createLassoTool(),
+  eyedropper: createEyedropperTool(),
+  fill: createFillTool(),
 };
 /** Tools whose gestures never touch a pixel - adjusting a selection isn't an edit, so
  *  `beginToolGesture` skips `pushGestureUndo()` for these entirely (matches `applyMagicWandAt`'s own
  *  doc comment, which the same reasoning always applied to Select/Lasso's marquee/lasso drags too). */
-const NO_UNDO_TOOLS = new Set<ToolName>(['magicWand', 'select', 'lasso']);
+const NO_UNDO_TOOLS = new Set<ToolName>(['magicWand', 'select', 'lasso', 'eyedropper']);
 
 export type HandleName = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e';
 /** Size (px) of a resize handle's square - exported for PixelSelectionOverlay.tsx, which draws the
@@ -2506,6 +2510,17 @@ class PixelEditorEngine {
       fillTolerance: this.fillTolerance,
       wandContiguous: this.wandContiguous,
       selectionMode: this.selectionMode,
+      getVisibleColor: (x, y) => {
+        if (x < 0 || y < 0 || x >= width || y >= height) return null;
+        const layers = this.layers();
+        for (let i = layers.length - 1; i >= 0; i--) {
+          if (!layers[i].visible) continue;
+          const sampled = layers[i].cells[y * width + x];
+          if (sampled) return sampled;
+        }
+        return null;
+      },
+      sprayDensity: this.sprayDensity,
     };
   }
 
@@ -2599,6 +2614,10 @@ class PixelEditorEngine {
       this.selectionMask = result.selection.mask ? new Set(result.selection.mask) : null;
       this.lassoPoints = result.selection.outline;
     }
+    if (result.pickedColor !== undefined) {
+      this.color = result.pickedColor;
+      if (result.switchToPen) this.tool = 'pen';
+    }
     const wasMove = result.moveSelectionBy !== undefined;
     if (result.moveSelectionBy) {
       const { dx, dy } = result.moveSelectionBy;
@@ -2663,11 +2682,6 @@ class PixelEditorEngine {
     if (!cell) return;
     if (this.painting) this.resetGestureState();
     this.canvas?.setPointerCapture(e.pointerId);
-
-    if (this.tool === 'eyedropper') {
-      this.pickColor(cell.x, cell.y);
-      return;
-    }
 
     if (e.altKey && ALT_PICK_TOOLS.has(this.tool)) {
       this.pickColor(cell.x, cell.y, false);
@@ -2735,33 +2749,7 @@ class PixelEditorEngine {
     this.painting = true;
     this.eraseOverride = e.button === 2;
 
-    if (this.tool === 'fill') {
-      const frame = this.activeCells();
-      const { width, height } = this.current;
-      const fillColor = this.eraseOverride ? null : this.color;
-      let changed = 0;
-      if (e.shiftKey) {
-        // Shift+click = global replace: every pixel in the layer matching the clicked color (within
-        // tolerance), not just the contiguous region a plain click would flood-fill.
-        const target = frame[cell.y * width + cell.x];
-        changed = this.globalReplace(frame, width, target, fillColor, this.fillTolerance);
-      } else {
-        this.mirrorCells(cell.x, cell.y).forEach((m) => {
-          changed += this.floodFill(frame, width, height, m.x, m.y, frame[m.y * width + m.x], fillColor, this.fillTolerance);
-        });
-      }
-      if (changed === 0) {
-        // Clicking a pixel that is already the fill color - or one outside the selection, where nothing
-        // may be painted at all - repaints nothing, so the undo entry pushed a moment ago would be a
-        // history step that undoes nothing. Taking it back is the difference between Ctrl+Z reversing
-        // the last thing actually drawn and it reversing a stray click first.
-        this.rollbackGestureUndo();
-        this.reactNotify();
-      } else {
-        if (fillColor) this.addSavedColor(fillColor);
-        this.refresh();
-      }
-    } else if (this.tool === 'spray') {
+    if (this.tool === 'spray') {
       this.sprayPointerCell = cell;
       this.sprayTick();
       this.startSprayTimer();
@@ -3599,95 +3587,11 @@ class PixelEditorEngine {
     }
   }
 
-  /** Whether two cell colors are "the same" for fill purposes: exact match always counts (including
-   *  null===null, i.e. both transparent), and above 0 tolerance, an RGB-distance-based fuzzy match also
-   *  counts (only between two actual colors - transparent never fuzzy-matches a real color, or a fill
-   *  could leak across a fully-transparent gap). `tolerance` is 0-100, scaled against the maximum
-   *  possible RGB distance so it reads as a percentage regardless of which two colors are compared. */
-  private colorsMatch(a: string | null, b: string | null, tolerance: number): boolean {
-    if (a === b) return true;
-    if (tolerance <= 0 || a === null || b === null) return false;
-    const [ar, ag, ab] = hexToRgb(a);
-    const [br, bg, bb] = hexToRgb(b);
-    const dist = Math.sqrt((ar - br) ** 2 + (ag - bg) ** 2 + (ab - bb) ** 2);
-    const maxDist = Math.sqrt(255 * 255 * 3);
-    return (dist / maxDist) * 100 <= tolerance;
-  }
+  // colorsMatch (the fuzzy tolerance-aware color comparison Fill/Magic Wand both need) now lives as a
+  // pure function duplicated in fillTool.ts and magicWandTool.ts, ported alongside those tools.
 
-  /**
-   * Flood fill with an optional color-distance tolerance (see colorsMatch) - a fuzzy match still needs
-   * a `reference` snapshot taken once up front, not the live (being-mutated) `frame`: once a cell is
-   * repainted to `fillColor`, a live re-check against `target` could keep matching indefinitely if
-   * `fillColor` itself happens to sit within tolerance of `target` (fillColor never changes across the
-   * scan), which would loop forever re-queueing already-filled neighbors. Snapshotting up front and
-   * tracking `visited` separately sidesteps that entirely, and is pixel-identical to the old exact-match
-   * algorithm when tolerance is 0.
-   */
-  private floodFill(
-    frame: Frame,
-    width: number,
-    height: number,
-    x: number,
-    y: number,
-    target: string | null,
-    fillColor: string | null,
-    tolerance = 0
-  ): number {
-    if (this.colorsMatch(target, fillColor, tolerance)) return 0;
-    const reference = tolerance > 0 ? frame.slice() : frame;
-    const visited = tolerance > 0 ? new Uint8Array(width * height) : null;
-    // Packed 1D indices on a plain number[] stack, not [number, number] tuples - avoids allocating
-    // a small array object per visited cell (up to width*height of them on a large canvas), which
-    // mattered once a background-sized fill made this the dominant cost of the fill tool. Bounds are
-    // checked before pushing (not after popping), so an out-of-range neighbor never round-trips
-    // through the stack at all.
-    const stack: number[] = [y * width + x];
-    // How many cells this actually repainted, so a click that changes nothing (an already-filled
-    // region, or one wholly outside the selection) can have its undo entry rolled back - see the fill
-    // branch of onPointerDown.
-    let changed = 0;
-    if (visited) visited[y * width + x] = 1;
-    while (stack.length) {
-      const idx = stack.pop()!;
-      if (!this.colorsMatch(reference[idx], target, tolerance)) continue;
-      const cx = idx % width;
-      const cy = (idx - cx) / width;
-      // A selection boundary blocks the flood the same way a color mismatch does - it stops the fill
-      // from crossing into (or painting) protected pixels outside it, instead of leaking through.
-      if (!this.paintAllowed(cx, cy)) continue;
-      if (frame[idx] !== fillColor) changed++;
-      frame[idx] = fillColor;
-      const tryPush = (idx2: number) => {
-        if (!visited) {
-          stack.push(idx2);
-        } else if (!visited[idx2]) {
-          visited[idx2] = 1;
-          stack.push(idx2);
-        }
-      };
-      if (cx + 1 < width) tryPush(idx + 1);
-      if (cx - 1 >= 0) tryPush(idx - 1);
-      if (idx + width < width * height) tryPush(idx + width);
-      if (idx - width >= 0) tryPush(idx - width);
-    }
-    return changed;
-  }
-
-  /** Shift+click on the fill tool: replaces every pixel in the layer matching `target` (within
-   *  tolerance), not just the contiguous region floodFill would reach - a global find-and-replace. */
-  private globalReplace(frame: Frame, width: number, target: string | null, fillColor: string | null, tolerance: number): number {
-    const reference = frame.slice();
-    let changed = 0;
-    for (let i = 0; i < reference.length; i++) {
-      if (!this.colorsMatch(reference[i], target, tolerance)) continue;
-      const cx = i % width;
-      const cy = (i - cx) / width;
-      if (!this.paintAllowed(cx, cy)) continue;
-      if (frame[i] !== fillColor) changed++;
-      frame[i] = fillColor;
-    }
-    return changed;
-  }
+  // floodFill/globalReplace (the Fill tool's own flood/global-replace algorithms) now live as pure
+  // functions in src/lib/tools/tools/fillTool.ts, ported alongside the rest of that tool.
 
   // floodSelectMask/globalSelectMask (Magic Wand's own tolerance-aware region walk) now live as pure
   // functions in src/lib/tools/tools/magicWandTool.ts, ported alongside the rest of that tool.

@@ -17,6 +17,8 @@ export function makeContext(
     width: frame.width,
     height: frame.height,
     getCell: (x, y) => (x >= 0 && y >= 0 && x < frame.width && y < frame.height ? frame.cells[y * frame.width + x] : null),
+    getVisibleColor: (x, y) => (x >= 0 && y >= 0 && x < frame.width && y < frame.height ? frame.cells[y * frame.width + x] : null),
+    sprayDensity: 1,
     color: '#ff0000',
     secondaryColor: '#0000ff',
     brushSize: 1,
