@@ -52,6 +52,9 @@ function attachSync(adapter: StorageAdapter, repos: Repos): void {
   sync = new SyncEngine(adapter, supabase);
   repos.sprites.onWrite = (sprites) => void sync?.queueSprites(sprites);
   repos.tank.onWrite = (state, tankId) => void sync?.queueTank(tankId, state);
+  // Signing in (or out, or a token refresh) changes what a sync would do, so it is worth one
+  // immediately rather than waiting up to a minute for the heartbeat.
+  supabase.auth.onAuthStateChange(() => void sync?.syncNow());
   sync.start();
 }
 

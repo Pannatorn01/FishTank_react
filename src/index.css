@@ -533,6 +533,8 @@ body, #root { height: 100%; margin: 0; }
   opacity: 0.75;
   white-space: nowrap;
 }
+.account-error { margin: 4px 0 0; font-size: 0.72rem; color: #a83232; }
+
 .sync-chip-error,
 .sync-chip-offline { opacity: 1; color: #f2c14e; }
 .tab-panel-loading { padding: 24px; opacity: 0.7; }

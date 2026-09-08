@@ -2,6 +2,7 @@ import { Suspense, lazy, useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { PixelEditorPanel } from '@/components/editor/PixelEditorPanel';
+import { AccountMenu } from '@/components/AccountMenu';
 import { StorageBanner } from '@/components/StorageBanner';
 import { SyncStatusChip } from '@/components/SyncStatusChip';
 
@@ -57,6 +58,7 @@ export default function App() {
           </h1>
           <div className="title-bar-actions">
             <SyncStatusChip />
+            <AccountMenu />
             <Select value={scale} onValueChange={(v) => setScale(v as UiScale)}>
               <SelectTrigger className="ui-scale-trigger text-xs" size="sm" title={t('scale.title')}>
                 <SelectValue>

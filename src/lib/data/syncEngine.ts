@@ -16,6 +16,7 @@ import {
 } from './rows';
 
 const MARK_SPRITES = 'sync.mark.sprites';
+const CLAIMED_BY = 'sync.claimedBy';
 const MARK_TANK = 'sync.mark.tank';
 const TABLE_SPRITES = 'sprites';
 const TABLE_TANKS = 'tanks';
@@ -107,6 +108,35 @@ export class SyncEngine {
 
   private async refreshPending(): Promise<void> {
     this.setStatus({ pending: (await this.local.outboxAll()).length });
+  }
+
+  /**
+   * Uploads everything this browser holds to the signed-in account - the "yes, keep my work" answer at
+   * first sign-in (plan P6.2).
+   *
+   * It queues rather than uploads directly, so the work goes through the same outbox as everything
+   * else: interrupted halfway, it resumes; run twice, it uploads the same rows to the same ids and
+   * changes nothing. Local data is never deleted here, and the flag is only written once the queue has
+   * actually drained - claiming to have uploaded work that is still sitting in a queue is how people
+   * lose it.
+   */
+  async claimLocalWork(userId: string): Promise<{ ok: boolean; uploaded: number }> {
+    const sprites = (await this.local.allSpriteRecords()).filter((s) => s.deletedAt === 0);
+    const tankId = await this.local.getCurrentTankId();
+    const tank = await this.local.loadTankState(tankId);
+
+    await this.queueSprites(sprites);
+    await this.queueTank(tankId, tank);
+    await this.syncNow();
+
+    const remaining = (await this.local.outboxAll()).length;
+    if (remaining === 0) await this.local.setMetaValue(CLAIMED_BY, userId);
+    return { ok: remaining === 0, uploaded: sprites.length + 1 };
+  }
+
+  /** Whether this browser's work has already been attached to an account, and which one. */
+  async claimedBy(): Promise<string | null> {
+    return this.local.getMeta(CLAIMED_BY);
   }
 
   async syncNow(): Promise<void> {
