@@ -1,7 +1,8 @@
 import { Container, FillGradient, Graphics, Sprite } from 'pixi.js';
-import { OVAL_TOP_CUT_MAX, OVAL_TOP_CUT_MIN, ROUNDED_RADIUS_MAX, ROUNDED_RADIUS_MIN, type TankEngine } from '@/hooks/useTank';
+import type { TankEngine } from '@/hooks/useTank';
 import { roomSceneMargin } from '@/lib/storage';
 import type { Instance, RoomInstance, SelectionBox, Sprite as SpriteData, TankShape } from '@/lib/types';
+import { ovalFlatTopGeometry, roundedCornerRadius } from '@/tank/sim/geometry';
 import { textureFor } from './textureCache';
 
 /** Kept identical to the constants of the same name in useTank.ts's Canvas2D draw() - this file is
@@ -27,40 +28,32 @@ function spriteDims(sprite: SpriteData): { width: number; height: number } {
 }
 
 /**
- * Traces the exact same swim-area silhouette as TankEngine's private shapePath() (useTank.ts) onto a
- * Pixi Graphics context instead of a Path2D - used both as the water/instance layer's mask (replacing
- * ctx.clip()) and, traced a second time, as the visible glass outline (replacing ctx.stroke()). Kept
- * in lockstep with shapePath()'s math on purpose: an oval's flat-top cut is reproduced by sampling
- * the same parametric ellipse equation shapePath solves analytically, since Pixi's Graphics has no
- * partial-ellipse-arc primitive to call directly (only a full ellipse) - polygon-approximated at
- * OVAL_ARC_SEGMENTS points, which reads as a smooth curve at every tank size this app supports.
+ * Traces the tank's swim-area silhouette onto a Pixi Graphics context instead of a Path2D - used
+ * both as the water/instance layer's mask (replacing ctx.clip()) and, traced a second time, as the
+ * visible glass outline (replacing ctx.stroke()). Built from geometry.ts's pure
+ * ovalFlatTopGeometry/roundedCornerRadius (see docs/PIXI_MIGRATION_PLAN.md P3) - the same functions
+ * useTank.ts's own Canvas2D shapePath() and clamp logic use, so this can no longer drift out of sync
+ * with them the way it could back when each independently re-derived the same trigonometry (see this
+ * function's own git history for what that looked like). An oval's flat-top cut is reproduced by
+ * polygon-sampling the arc geometry.ts already solved analytically, since Pixi's Graphics has no
+ * partial-ellipse-arc primitive to call directly (only a full ellipse) - OVAL_ARC_SEGMENTS points
+ * reads as a smooth curve at every tank size this app supports.
  */
 function traceShape(g: Graphics, shape: TankShape, w: number, h: number, cornerRadiusFrac: number, ovalTopCutFrac: number): void {
   if (shape === 'oval') {
-    const cx = w / 2;
-    const cy = h / 2;
-    const rx = Math.max(0, w / 2);
-    const ry = Math.max(0, h / 2);
-    const t = Math.max(OVAL_TOP_CUT_MIN, Math.min(OVAL_TOP_CUT_MAX, ovalTopCutFrac));
-    if (t <= 0.001 || ry <= 0) {
-      g.ellipse(cx, cy, rx, ry);
+    const geo = ovalFlatTopGeometry(w, h, ovalTopCutFrac);
+    if (!geo.hasCut) {
+      g.ellipse(geo.cx, geo.cy, geo.rx, geo.ry);
       return;
     }
-    const s = Math.max(-0.999, Math.min(0.999, 2 * t - 1));
-    const thetaRight = Math.asin(s);
-    const thetaLeft = Math.PI - thetaRight;
-    const topCutY = cy + ry * s;
-    const xRight = cx + rx * Math.cos(thetaRight);
-    const xLeft = cx - rx * Math.cos(thetaRight);
-    const points: number[] = [xLeft, topCutY, xRight, topCutY];
+    const points: number[] = [geo.xLeft, geo.topCutY, geo.xRight, geo.topCutY];
     for (let i = 1; i <= OVAL_ARC_SEGMENTS; i++) {
-      const theta = thetaRight + ((thetaLeft - thetaRight) * i) / OVAL_ARC_SEGMENTS;
-      points.push(cx + rx * Math.cos(theta), cy + ry * Math.sin(theta));
+      const theta = geo.thetaRight + ((geo.thetaLeft - geo.thetaRight) * i) / OVAL_ARC_SEGMENTS;
+      points.push(geo.cx + geo.rx * Math.cos(theta), geo.cy + geo.ry * Math.sin(theta));
     }
     g.poly(points, true);
   } else if (shape === 'rounded') {
-    const frac = Math.max(ROUNDED_RADIUS_MIN, Math.min(ROUNDED_RADIUS_MAX, cornerRadiusFrac));
-    const r = Math.max(0, Math.min(Math.min(w, h) * frac, w / 2, h / 2));
+    const r = Math.max(0, Math.min(roundedCornerRadius(w, h, cornerRadiusFrac), w / 2, h / 2));
     g.roundRect(0, 0, w, h, r);
   } else {
     g.rect(0, 0, w, h);
@@ -151,6 +144,20 @@ export function createTankScene(stage: Container): TankSceneHandle {
   backgroundSprite.anchor.set(0.5);
 
   root.addChild(water, backgroundSprite, waterline, zoneBelowLayer, instanceLayer, overlayLayer);
+  // `mask` is added as root's own child (not left floating outside the scene graph) specifically so
+  // it inherits root's transform - a mask that's never actually parented anywhere keeps Pixi's
+  // default identity transform regardless of where the container using it as a mask ends up moving.
+  // This bit for real: once P2 added sceneRoot's own margin offset (see its declaration comment)
+  // shifting `root` away from world (0,0), an unparented mask kept clipping at the *old*, unshifted
+  // position instead of following along - for a plain rectangle tank this went unnoticed (Pixi
+  // appears to fast-path an axis-aligned rectangle mask via scissor testing, deriving the clip bounds
+  // from the *masked container's* own transform rather than the mask object's), but 'oval' and
+  // 'rounded' (arbitrary polygon shapes, needing the slower stencil-buffer path, which does depend on
+  // the mask's own transform) rendered the water clipped to entirely the wrong region. Adding it as a
+  // normal child here doesn't make it paint as an ordinary visible white shape on top of everything
+  // else - Pixi already excludes a container's own assigned mask object from its own normal render
+  // pass.
+  root.addChild(mask);
   root.mask = mask;
   // Draw order: tank (water/instances/mask), its outline, then room decor last - "always renders
   // above the tank frame, can overlap it" (see RoomInstance's doc comment in types.ts).

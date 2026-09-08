@@ -452,7 +452,7 @@ age > lifespan                              → ตาย
 | P0 Spike | ✅ done | 2026-09-07 | (pending) | ดู §11 — คมเท่า Canvas2D, bundle ~145KB gzip (< 400KB), dynamic-import ไม่กระทบ main bundle |
 | P1 Pixi render parity | ✅ done | 2026-09-07 | (pending) | ดู §12 — pixel-diff ผ่านทั้ง 3 ทรง, flag `?tankRenderer=pixi`/`VITE_TANK_RENDERER`, main bundle ไม่โต (dynamic import) |
 | P2 room decor เข้า scene | 🟡 partial | 2026-09-08 | (pending) | ดู §13 — room decor เสร็จ+verify แล้ว, background overlay handles / Canvas2D retirement เลื่อนไป P2b/P3 โดยตั้งใจ |
-| P3 แยก model/sim/render | ⬜ not started | | | |
+| P3 แยก model/sim/render | 🟡 partial | 2026-09-08 | (pending) | ดู §14 — geometry.ts เสร็จ+verify แล้ว (เจอ+แก้บั๊ก mask จริงจาก P2 ระหว่างทำ), swim.ts/model extraction ยังไม่ทำ |
 | P4 ฉากห้อง + สลับโหมด | ⬜ not started | | | รอ asset ห้องจากผู้ใช้ (§9.2) — ทำโครงไปก่อนได้ |
 | P5 กลไกเลี้ยง | ⬜ not started | | | **ไม่ blocked แล้ว** — ค่า balance เริ่มต้นอยู่ §9.1 |
 
@@ -639,3 +639,61 @@ Canvas2D หรือรวม input** — เก็บไว้เป็นง�
 2. **TankBackgroundOverlay.tsx → Pixi Graphics handles** - ไม่มีบั๊กให้แก้ แต่ทำพร้อม input consolidation ใน P3 จะสมเหตุสมผลกว่า
 3. **ปิด flag / ลบ Canvas2D draw() ทั้งหมด** - รอจนกว่า input จะรวมเป็นระบบเดียวก่อน (Canvas2D ยังจำเป็นสำหรับ hit-test ตราบใดที่ยังไม่มี Pixi-native input) - export ก็ยังอ่าน `this.canvas` (Canvas2D raster) อยู่ ต้องสลับเป็น `app.renderer.extract.canvas()` พร้อมกัน
 4. Marquee/zone-draft dashed rectangle และ multi-fish schooling ใน pixi mode ยังไม่ pixel-diff ทดสอบ (เหมือนที่ระบุไว้ใน §12 P1 - ยังไม่ได้แก้เพิ่มใน P2)
+
+---
+
+## 14. P3 Geometry Extraction — ผลลัพธ์ (2026-09-08) — **partial**
+
+**สรุป: ส่วน geometry (shape math) เสร็จและ verify แล้ว - เจอ+แก้บั๊กจริงจาก P2 ระหว่างทำด้วย
+ส่วน `swim.ts`/`model/tankState.ts` (§6 เดิม) ยังไม่ได้ทำ - scope ลงเหตุผลเดียวกับ P2: ความเสี่ยงสูงเทียบกับ
+ประโยชน์ที่ได้ในรอบนี้**
+
+### ทำไม scope ลงเหลือแค่ geometry
+
+§6 P3 เดิมตั้งใจแตกทั้ง `model/` (state+persistence) และ `sim/` (swim update loop + geometry) ออกจาก
+`useTank.ts` ทั้งก้อน แต่ `update()` (swim/schooling logic) พันกับ method อื่นของ engine แน่นมาก
+(`spriteFor`, `zoneFor`, `coMoversFor`, `reactNotify` ฯลฯ) การแยกให้เป็น pure function จริงจะต้องออกแบบ
+"snapshot ของ engine state" ใหม่ทั้งหมดที่ swim logic อ่าน ไม่ใช่แค่ copy-paste - เสี่ยงสูงกว่า geometry มาก
+(ซึ่งเป็น pure math ล้วน แยกออกมาตรงไปตรงมา) จึงเลือกทำเฉพาะ geometry ส่วนที่ **มีคุณค่าเป็นรูปธรรมชัดเจนและ
+ความเสี่ยงต่ำ** ในรอบนี้ก่อน แล้วปล่อย `swim.ts`/`model/` เป็นงานต่อ (บันทึกไว้ด้านล่าง)
+
+### ของแถมที่ไม่คาดคิด: เจอบั๊ก mask จริงจาก P2
+
+ระหว่างเทียบผล pixel-diff ของทรง oval/rounded หลัง refactor (คาดว่าจะเหมือนเดิมเป๊ะ) เจอว่า **น้ำในตู้ทรง
+oval/rounded เพี้ยนไปคนละรูปกับเส้นขอบ** (เส้นขอบถูก แต่พื้นน้ำถูกตัดผิดตำแหน่ง/ผิดขนาด) - ไล่จนพบว่าเป็นบั๊ก
+จริงที่มีอยู่แล้วตั้งแต่ P2 commit (`89fe4d0`) ไม่เกี่ยวกับ geometry refactor เลย:
+
+**ต้นเหตุ:** `mask` (Pixi Graphics ที่ใช้เป็น `root.mask`) ไม่เคยถูกเพิ่มเข้า scene graph เลย (ลอยอยู่นอก
+`sceneRoot`) พอ P2 เพิ่ม `sceneRoot.position.set(marginX, marginY)` มา `root` (มีน้ำ/ปลาข้างใน) ขยับตาม
+offset ถูกต้อง แต่ `mask` (ไม่มี parent) ยังคง transform เดิม (world 0,0) - clip ผิดตำแหน่งไปเลย **ทรง
+rectangle รอดมาได้เพราะ Pixi ใช้ scissor-rect fast path สำหรับ mask สี่เหลี่ยมตรง (คำนวณจาก transform ของ
+container ที่ถูก mask ไม่ใช่ตัว mask เอง) แต่ oval/rounded เป็น polygon ต้องใช้ stencil-buffer path ซึ่งพึ่ง
+transform ของ mask เองจริง ๆ** - บั๊กเลยซ่อนอยู่และไม่มีใครเห็นจนกว่าจะมาทดสอบทรงอื่นที่ไม่ใช่ rectangle
+
+**วิธีแก้:** เพิ่ม `root.addChild(mask)` (ให้ mask เป็นลูกของ `root` เอง จึงรับ transform เดียวกัน) - ยืนยัน
+ว่า Pixi ไม่เอา mask object ไปวาดซ้ำเป็นรูปสีขาวทับหน้าจอด้วย (ลองแล้ว ไม่มีปัญหานั้น)
+
+### สิ่งที่ทำจริง
+
+| ไฟล์ | เปลี่ยนอะไร |
+|---|---|
+| `src/tank/sim/geometry.ts` | ใหม่ - `ROUNDED_RADIUS_MIN/MAX`, `OVAL_TOP_CUT_MIN/MAX` (ย้ายมาจาก useTank.ts), `roundedCornerRadius()`, `ovalFlatTopGeometry()`, `clampCenterToShape()`, `clampTopLeftToShape()` - pure functions ล้วน ไม่ import pixi/DOM เลย |
+| `src/tank/sim/__tests__/geometry.test.ts` | ใหม่ - unit test 13 เคส (vitest, headless) ครอบคลุมทั้ง 3 ทรง + edge case (คลิปเป็น 0, cut fraction เกินขอบ, ฯลฯ) |
+| `src/hooks/useTank.ts` | `shapePath()`/`clampCenterToShape()`/`clampTopLeftToShape()`/`shapeCornerRadius()` เดิม แทนที่ด้วยการเรียก geometry.ts (`clampCenterToShape` wrapper method กลายเป็น dead code เพราะไม่มีคนเรียกอีกแล้ว - ลบทิ้งไปด้วย - TS compiler เป็นคนจับได้เอง!) - re-export ค่าคงที่ 4 ตัวจาก geometry.ts ให้ import site เดิม (`TankCanvas.tsx`) ไม่ต้องแก้ |
+| `src/tank/render/tankScene.ts` | `traceShape()` ใช้ `ovalFlatTopGeometry`/`roundedCornerRadius` ร่วมกับ useTank.ts แทนที่จะคำนวณ trig เองอีกชุด (ลบความเสี่ยง "sync กันแค่ด้วยตา" ที่เคยเขียนเตือนไว้ในคอมเมนต์ตัวเองจริง ๆ) + **แก้บั๊ก mask ตามด้านบน** |
+
+### ผลตรวจ
+
+| เกณฑ์ (§6 P3 Done-when, เฉพาะส่วน geometry) | ผล |
+|---|---|
+| พฤติกรรมเหมือนเดิมทุกอย่าง | ✅ pixel-diff ยืนยันหลังแก้บั๊ก mask: oval diff 4,407px (0.35%), rounded diff 7,442px (0.59%) - ระดับเดียวกับ AA-noise ที่เจอใน P1 (ไม่ใช่บั๊ก) - regression suite เดิมทั้งหมดผ่าน (room decor lockstep/drag ทั้งสองโหมด, zoom cycle, tank layers, export PNG/GIF/WebM, editor pen/eraser/dock, tab-switch × 6 ไม่ leak) |
+| `sim/` ทดสอบได้แบบ headless | ✅ `npm test` รัน geometry.test.ts ผ่านหมด 13/13 ไม่ต้องมี browser/DOM |
+| ไม่มี import pixi ใน model/sim | ✅ ยืนยันด้วย `grep -rn "pixi" src/tank/sim/` ไม่เจอเลย |
+| `useTank.ts` เหลือแค่ React glue | ❌ ยังไม่ทำ (ตัดสินใจ scope ออกตามเหตุผลด้านบน) - ยังเป็นงานเปิดของ P3 ต่อ |
+
+### สิ่งที่เหลือสำหรับ P3 ต่อ (รวมกับ P2's §13 list เดิม)
+1. **`sim/swim.ts`** - แยก `update()` (schooling/bounce/frame-animation) ออกจาก engine เป็น pure function - งานเปิดใหญ่สุดที่เหลือของ P3 เดิม ต้องออกแบบ "engine state snapshot" ที่ swim logic อ่านก่อน ไม่ใช่ mechanical extraction ตรงไปตรงมาแบบ geometry
+2. **`model/tankState.ts`** - แยก state fields + persistence ออกจาก engine class
+3. รวม input เป็นระบบเดียว (จาก P2 §13) - ยังไม่ทำ
+4. `TankBackgroundOverlay.tsx` → Pixi Graphics handles (จาก P2 §13) - ยังไม่ทำ
+5. ปิด flag / ลบ Canvas2D ทั้งหมด (จาก P2 §13) - ยังไม่ทำ - รอข้อ 3 ก่อน

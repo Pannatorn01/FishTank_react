@@ -4,7 +4,22 @@ import { t } from '@/lib/i18n';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { paintLayers } from '@/lib/pixelMath';
 import * as storage from '@/lib/storage';
+import {
+  clampTopLeftToShape as clampTopLeftToShapePure,
+  OVAL_TOP_CUT_MAX,
+  OVAL_TOP_CUT_MIN,
+  ovalFlatTopGeometry,
+  ROUNDED_RADIUS_MAX,
+  ROUNDED_RADIUS_MIN,
+  roundedCornerRadius,
+} from '@/tank/sim/geometry';
 import type { BackgroundTransform, Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape } from '@/lib/types';
+
+/** Re-exported from geometry.ts (their canonical home as of P3 - see docs/PIXI_MIGRATION_PLAN.md) so
+ *  existing `from '@/hooks/useTank'` import sites (TankCanvas.tsx's shape sliders) didn't need to
+ *  change. Slider ranges for the two shape-specific knobs below - see TankEngine.tankCornerRadiusFrac
+ *  and tankOvalTopCutFrac. Capped well short of 0.5 so the shape can't invert/degenerate into nothing. */
+export { ROUNDED_RADIUS_MIN, ROUNDED_RADIUS_MAX, OVAL_TOP_CUT_MIN, OVAL_TOP_CUT_MAX };
 
 const DISPLAY_SCALE = 4;
 const TAP_MOVE_THRESHOLD = 6;
@@ -13,12 +28,6 @@ const TAP_MOVE_THRESHOLD = 6;
  *  aquarium glass doesn't recolor to match a cotton-candy desk skin). */
 const TANK_OUTLINE_COLOR = '#1c2436';
 const TANK_OUTLINE_WIDTH = 5;
-/** Slider ranges for the two shape-specific knobs below - see TankEngine.tankCornerRadiusFrac and
- *  tankOvalTopCutFrac. Capped well short of 0.5 so the shape can't invert/degenerate into nothing. */
-export const ROUNDED_RADIUS_MIN = 0.05;
-export const ROUNDED_RADIUS_MAX = 0.5;
-export const OVAL_TOP_CUT_MIN = 0;
-export const OVAL_TOP_CUT_MAX = 0.45;
 
 /** Background free-transform handles - see TankBackgroundOverlay.tsx, which renders these as a DOM
  *  layer in .tank-viewport (not this engine's own <canvas>) specifically so a placement dragged past
@@ -401,87 +410,13 @@ class TankEngine {
     return yMin + Math.random() * Math.max(0, yMax - yMin);
   }
 
-  /** Corner radius used for the 'rounded' tank shape, in canvas px - scaled off the smaller
-   *  dimension so it reads consistently whether the tank is wide or tall. Shared by the draw-time
-   *  clip path and the placement/physics clamp below so the two always agree on where the corner
-   *  cut actually is. */
-  private shapeCornerRadius(w: number, h: number): number {
-    return Math.min(w, h) * this.tankCornerRadiusFrac;
-  }
-
-  /** Pushes a sprite's center point (cx, cy), given its half-width/height (hx, hy), back inside the
-   *  tank's chosen shape for a canvas of size w x h - the containment counterpart to the draw-time
-   *  clip path (see shapePath). 'rectangle' behaves exactly like a plain edge clamp (so switching
-   *  back to it is lossless); 'oval' and 'rounded' shrink that rectangle by the sprite's own
-   *  half-extents and test/clamp against an inset ellipse or rounded-rect so the whole sprite - not
-   *  just its center - stays inside the visible glass. Used for every placement/drag/swim site
-   *  below, so an object dropped in a round tank's corner (or a fish swimming toward it) can't sit
-   *  half outside the visible water. */
-  private clampCenterToShape(cx: number, cy: number, hx: number, hy: number, w: number, h: number): { cx: number; cy: number; moved: boolean } {
-    if (this.tankShape === 'rectangle' || w <= 0 || h <= 0) {
-      const ncx = Math.min(Math.max(cx, hx), Math.max(hx, w - hx));
-      const ncy = Math.min(Math.max(cy, hy), Math.max(hy, h - hy));
-      return { cx: ncx, cy: ncy, moved: ncx !== cx || ncy !== cy };
-    }
-    if (this.tankShape === 'oval') {
-      const ecx = w / 2;
-      const ecy = h / 2;
-      const rx = Math.max(1, w / 2 - hx);
-      const ry = Math.max(1, h / 2 - hy);
-      const dx = cx - ecx;
-      const dy = cy - ecy;
-      const norm = (dx * dx) / (rx * rx) + (dy * dy) / (ry * ry);
-      let ncx = cx;
-      let ncy = cy;
-      let moved = false;
-      if (norm > 1) {
-        const scale = 1 / Math.sqrt(norm);
-        ncx = ecx + dx * scale;
-        ncy = ecy + dy * scale;
-        moved = true;
-      }
-      // Flattened top (tankOvalTopCutFrac): the exact chord width at the cut line is narrower than
-      // the full-ellipse rx used above, but re-deriving it here would only matter right at the two
-      // corners where the flat top meets the curve - close enough for physics, exact for the visual
-      // clip in shapePath.
-      const topCut = Math.max(OVAL_TOP_CUT_MIN, Math.min(OVAL_TOP_CUT_MAX, this.tankOvalTopCutFrac));
-      if (topCut > 0) {
-        const topLimit = h * topCut + hy;
-        if (ncy < topLimit) {
-          ncy = topLimit;
-          moved = true;
-        }
-      }
-      return { cx: ncx, cy: ncy, moved };
-    }
-    // rounded
-    let ncx = Math.min(Math.max(cx, hx), Math.max(hx, w - hx));
-    let ncy = Math.min(Math.max(cy, hy), Math.max(hy, h - hy));
-    const edgeMoved = ncx !== cx || ncy !== cy;
-    const r = Math.max(0, Math.min(this.shapeCornerRadius(w, h), w / 2 - hx, h / 2 - hy));
-    if (r > 0) {
-      const cornerX = ncx < hx + r ? hx + r : ncx > w - hx - r ? w - hx - r : ncx;
-      const cornerY = ncy < hy + r ? hy + r : ncy > h - hy - r ? h - hy - r : ncy;
-      const ddx = ncx - cornerX;
-      const ddy = ncy - cornerY;
-      const dist = Math.hypot(ddx, ddy);
-      if (dist > r) {
-        const scale = r / dist;
-        ncx = cornerX + ddx * scale;
-        ncy = cornerY + ddy * scale;
-        return { cx: ncx, cy: ncy, moved: true };
-      }
-    }
-    return { cx: ncx, cy: ncy, moved: edgeMoved };
-  }
-
-  /** Top-left-anchored convenience wrapper around clampCenterToShape - every existing clamp site
-   *  below worked in top-left x/y, so this keeps them as one-line swaps. */
+  /** Thin instance-bound wrapper around geometry.ts's pure clampTopLeftToShape (see
+   *  docs/PIXI_MIGRATION_PLAN.md P3) - every call site below already works in terms of `this`, so
+   *  this just forwards the engine's own tankShape/tankCornerRadiusFrac/tankOvalTopCutFrac fields as
+   *  explicit arguments rather than the pure function reading them off `this` directly (which would
+   *  make it not-actually-pure and defeat the point of having pulled it out). */
   private clampTopLeftToShape(x: number, y: number, pw: number, ph: number, w: number, h: number): { x: number; y: number; moved: boolean } {
-    const hx = pw / 2;
-    const hy = ph / 2;
-    const { cx, cy, moved } = this.clampCenterToShape(x + hx, y + hy, hx, hy, w, h);
-    return { x: cx - hx, y: cy - hy, moved };
+    return clampTopLeftToShapePure(this.tankShape, this.tankCornerRadiusFrac, this.tankOvalTopCutFrac, x, y, pw, ph, w, h);
   }
 
   /** Screen (client) point -> canvas-relative *logical* point (i.e. dividing out displayScale, so
@@ -1911,37 +1846,25 @@ class TankEngine {
     this.ctx.restore();
   }
 
-  /** The tank's swim-area silhouette as a canvas path, for the draw-time clip - see TankShape and
-   *  clampCenterToShape (which must agree with this on where the shape's edge actually is). */
+  /** The tank's swim-area silhouette as a canvas path, for the draw-time clip - built from
+   *  geometry.ts's pure ovalFlatTopGeometry/roundedCornerRadius (see docs/PIXI_MIGRATION_PLAN.md P3),
+   *  the same functions clampCenterToShape (above) and tankScene.ts's Pixi renderer use, so all three
+   *  are guaranteed to agree on where the shape's edge actually is - not just "kept in sync by eye"
+   *  the way this and the Pixi version used to be before they shared one source of the math. */
   private shapePath(w: number, h: number): Path2D {
     const p = new Path2D();
     if (this.tankShape === 'oval') {
-      const cx = w / 2;
-      const cy = h / 2;
-      const rx = Math.max(0, w / 2);
-      const ry = Math.max(0, h / 2);
-      const t = Math.max(OVAL_TOP_CUT_MIN, Math.min(OVAL_TOP_CUT_MAX, this.tankOvalTopCutFrac));
-      if (t <= 0.001 || ry <= 0) {
-        p.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      const geo = ovalFlatTopGeometry(w, h, this.tankOvalTopCutFrac);
+      if (!geo.hasCut) {
+        p.ellipse(geo.cx, geo.cy, geo.rx, geo.ry, 0, 0, Math.PI * 2);
       } else {
-        // Slices the top off the ellipse at y = h*t with a flat line, keeping the rest of the
-        // boundary as-is - see clampCenterToShape's oval branch for the (approximate) physics
-        // counterpart. `s` is the cut line's height expressed as sin(theta) on the ellipse
-        // parametrization, i.e. where y = cy + ry*sin(theta); solving for the two x/theta values
-        // where that horizontal line crosses the ellipse gives the flat edge's endpoints.
-        const s = Math.max(-0.999, Math.min(0.999, 2 * t - 1));
-        const thetaRight = Math.asin(s);
-        const thetaLeft = Math.PI - thetaRight;
-        const topCutY = cy + ry * s;
-        const xRight = cx + rx * Math.cos(thetaRight);
-        const xLeft = cx - rx * Math.cos(thetaRight);
-        p.moveTo(xLeft, topCutY);
-        p.lineTo(xRight, topCutY);
-        p.ellipse(cx, cy, rx, ry, 0, thetaRight, thetaLeft, false);
+        p.moveTo(geo.xLeft, geo.topCutY);
+        p.lineTo(geo.xRight, geo.topCutY);
+        p.ellipse(geo.cx, geo.cy, geo.rx, geo.ry, 0, geo.thetaRight, geo.thetaLeft, false);
         p.closePath();
       }
     } else if (this.tankShape === 'rounded') {
-      const r = Math.max(0, Math.min(this.shapeCornerRadius(w, h), w / 2, h / 2));
+      const r = Math.max(0, Math.min(roundedCornerRadius(w, h, this.tankCornerRadiusFrac), w / 2, h / 2));
       p.moveTo(r, 0);
       p.arcTo(w, 0, w, h, r);
       p.arcTo(w, h, 0, h, r);
