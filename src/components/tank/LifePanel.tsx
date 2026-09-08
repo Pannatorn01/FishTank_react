@@ -27,9 +27,10 @@ import { invalidateAll, invalidateSprite } from '@/tank/render/textureCache';
  * Uses `autoDensity: true` (unlike TankPixiLayer) since this canvas fills its own container directly
  * rather than being stretched by external CSS math tied to the tank's logical pixel size.
  */
-export function LifePanel({ engine }: { engine: TankEngine }) {
+export function LifePanel({ engine, active }: { engine: TankEngine; active: boolean }) {
   const { t } = useLanguage();
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const appRef = useRef<Application | null>(null);
   const sceneRef = useRef<RoomSceneHandle | null>(null);
   const [armedTool, setArmedTool] = useState<ArmedTool>(null);
 
@@ -52,7 +53,17 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
         return;
       }
       app = createdApp;
+      appRef.current = createdApp;
       app.canvas.classList.add('life-pixi-canvas');
+      // Pixi's own `resizeTo` (see pixiApp.ts) measures `host` once at init and again via a
+      // ResizeObserver on every size change after that - almost always correct, but a mount that
+      // happens while this panel's `.tank-mode-panel` ancestor is still `hidden` (host at 0×0, e.g.
+      // visiting Build Tank before ever opening Life) can leave the very first measurement stale in a
+      // way the observer doesn't always seem to correct once the tab actually becomes visible (root
+      // cause not fully pinned down - this is a defensive re-measurement, not a fix to `resizeTo`
+      // itself). One resize now, using whatever size `host` actually has right now, costs nothing when
+      // it was already correct.
+      app.renderer.resize(host.clientWidth, host.clientHeight);
       scene = createRoomScene(app.stage);
       sceneRef.current = scene;
 
@@ -71,9 +82,20 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
       if (rafId) cancelAnimationFrame(rafId);
       scene?.destroy();
       if (app) destroyPixiApp(app);
+      appRef.current = null;
       sceneRef.current = null;
     };
   }, [engine]);
+
+  // Same defensive re-measurement as the one right after app creation above, but for every later
+  // Build->Life switch, not just the very first mount - see that comment for the full explanation.
+  useEffect(() => {
+    if (!active) return;
+    const app = appRef.current;
+    const host = hostRef.current;
+    if (!app || !host) return;
+    app.renderer.resize(host.clientWidth, host.clientHeight);
+  }, [active]);
 
   /** Toggles a tool on/off (clicking the already-armed one disarms it) rather than only ever arming -
    *  the same "click again to deselect" a selected editor tool doesn't offer, but a room decor/palette
