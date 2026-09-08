@@ -154,6 +154,26 @@ export interface Instance {
   /** Show/hide toggle from the Layers panel - hidden instances keep swimming/simulating, they just
    *  don't get painted (same "visibility doesn't touch data" convention as sprite Layer.visible). */
   visible: boolean;
+  /** Epoch ms this instance was created. Only meaningful for kind 'fish' (see `lifespanMs`/`dead`) -
+   *  set on every instance regardless of kind purely so the type has one shape, but decor never reads
+   *  it. Real wall-clock time, not a simulation tick count, so a fish's age (and thus whether it's
+   *  outlived `lifespanMs`) is correct even after the app was closed and reopened - see the P5 care
+   *  loop design in docs/PIXI_MIGRATION_PLAN.md §9 Q1/§9.1 (real-time aging, no offline catch-up logic
+   *  needed since age is always just `Date.now() - bornAt`). */
+  bornAt: number;
+  /** How long (ms) this fish lives before dying of old age - rolled once at birth (see
+   *  `randomFishLifespanMs` in storage.ts) from the 18-30 real day range in docs/PIXI_MIGRATION_PLAN.md
+   *  §9.1. Only meaningful for kind 'fish'. */
+  lifespanMs: number;
+  /** True once this fish has died (old age for now - P5 §6 item 1; sickness from starvation/dirty
+   *  water is a later item in that same list). A dead fish stops swimming/animating and instead floats
+   *  up toward the water's surface (see the `dead` branch in useTank.ts's update()), renders desaturated,
+   *  and is removed by the user clicking it (see onCanvasPointerDown) rather than by any timer - per
+   *  docs/PIXI_MIGRATION_PLAN.md §9 Q5, the "floats for 7 days" the user described is flavor for how
+   *  long it lingers before the user is expected to notice and clean it up, not an auto-deletion rule. */
+  dead: boolean;
+  /** Epoch ms this fish died - 0 while alive. Only meaningful once `dead` is true. */
+  diedAt: number;
 }
 
 /** A decoration placed in the area around the tank (kind 'room' sprites) rather than inside its

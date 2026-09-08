@@ -149,10 +149,41 @@ export function saveSprites(sprites: Sprite[]): void {
   localStorage.setItem(KEY_SPRITES, JSON.stringify(sprites));
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Natural-lifespan range from docs/PIXI_MIGRATION_PLAN.md §9.1 - long enough that a fish born from
+ *  breeding (3-day maturation, once that's built in a later P5 item) has time to grow up, short
+ *  enough a birth-to-death cycle is visible within a month rather than requiring a year of real time. */
+const FISH_LIFESPAN_MIN_DAYS = 18;
+const FISH_LIFESPAN_MAX_DAYS = 30;
+
+/** Rolled once per fish at birth (see `addInstance` in useTank.ts) and stored on the instance itself,
+ *  not recomputed later - a fish's lifespan is fixed at how long it happened to roll, not re-randomized
+ *  on every load. */
+export function randomFishLifespanMs(): number {
+  const days = FISH_LIFESPAN_MIN_DAYS + Math.random() * (FISH_LIFESPAN_MAX_DAYS - FISH_LIFESPAN_MIN_DAYS);
+  return days * DAY_MS;
+}
+
+/** Backfills the P5 lifecycle fields (`bornAt`/`lifespanMs`/`dead`/`diedAt`, added after this record
+ *  shape shipped) onto an instance saved by an older build that predates them - same "migrate on load,
+ *  never write until the next real save" convention as normalizeRoomInstances. A pre-existing fish that
+ *  never had a birth time recorded starts its clock now (treated as newly "born" on first load under
+ *  the new build) rather than being treated as already dead or requiring guesswork about its true age. */
+function normalizeInstance(raw: Instance): Instance {
+  return {
+    ...raw,
+    bornAt: typeof raw.bornAt === 'number' ? raw.bornAt : Date.now(),
+    lifespanMs: typeof raw.lifespanMs === 'number' ? raw.lifespanMs : randomFishLifespanMs(),
+    dead: typeof raw.dead === 'boolean' ? raw.dead : false,
+    diedAt: typeof raw.diedAt === 'number' ? raw.diedAt : 0,
+  };
+}
+
 export function loadInstances(): Instance[] {
   try {
     const raw = localStorage.getItem(KEY_INSTANCES);
-    return raw ? JSON.parse(raw) : [];
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.map(normalizeInstance) : [];
   } catch (e) {
     console.warn('loadInstances failed', e);
     return [];

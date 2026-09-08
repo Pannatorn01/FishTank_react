@@ -1,4 +1,4 @@
-import { Container, FillGradient, Graphics, Sprite } from 'pixi.js';
+import { ColorMatrixFilter, Container, FillGradient, Graphics, Sprite } from 'pixi.js';
 import type { TankEngine } from '@/hooks/useTank';
 import { roomSceneMargin } from '@/lib/storage';
 import type { Instance, RoomInstance, SelectionBox, Sprite as SpriteData, TankShape } from '@/lib/types';
@@ -22,6 +22,11 @@ const ZONE_DRAFT_COLOR = 0x4ade80;
 const ZONE_DRAFT_FILL_ALPHA = 0.15;
 const DISPLAY_SCALE = 4;
 const OVAL_ARC_SEGMENTS = 64;
+/** Shared, stateless - Pixi filters can be assigned to any number of sprites' `.filters` at once, so
+ *  one instance covers every dead fish rather than allocating a fresh one per instance view. Mirrors
+ *  the Canvas2D renderer's `ctx.filter = 'grayscale(1)'` (see the `dead` doc comment in types.ts). */
+const DEAD_FISH_FILTER = new ColorMatrixFilter();
+DEAD_FISH_FILTER.grayscale(1, false);
 
 function spriteDims(sprite: SpriteData): { width: number; height: number } {
   return { width: sprite.width || 16, height: sprite.height || 16 };
@@ -281,6 +286,7 @@ export function createTankScene(stage: Container): TankSceneHandle {
     v.sprite.width = pw;
     v.sprite.height = ph;
     v.sprite.scale.x = Math.abs(v.sprite.scale.x) * flipSign;
+    v.sprite.filters = inst.dead ? [DEAD_FISH_FILTER] : null;
 
     v.outline.clear();
     if (selected) {

@@ -788,6 +788,10 @@ class TankEngine {
       schoolOffsetY: (Math.random() - 0.5) * 40,
       zone: null,
       visible: true,
+      bornAt: Date.now(),
+      lifespanMs: sprite.type === 'fish' ? storage.randomFishLifespanMs() : 0,
+      dead: false,
+      diedAt: 0,
     };
     this.instances.push(inst);
     this.persist();
@@ -1444,6 +1448,12 @@ class TankEngine {
       this.reactNotify();
       return;
     }
+    // A dead fish (P5 §6 item 1) is collected by clicking it, not selected/dragged - see the `dead`
+    // doc comment in types.ts.
+    if (inst.dead) {
+      this.removeInstance(inst.id);
+      return;
+    }
     // Dragging a member of the current multi-selection moves the whole selection together, so keep
     // it intact instead of collapsing to just this one instance - clicking anything else (or just
     // tapping without dragging - see onCanvasPointerUp) still clears it as before.
@@ -1673,6 +1683,30 @@ class TankEngine {
     this.instances.forEach((inst) => {
       const sprite = this.spriteFor(inst);
       if (!sprite) return;
+
+      // Old-age death (P5 §6 item 1, docs/PIXI_MIGRATION_PLAN.md) - a real wall-clock comparison, not
+      // a dt-accumulated timer, so a fish that aged past its lifespan while the app was closed is
+      // caught the moment it's next simulated rather than needing any offline catch-up logic (see the
+      // `bornAt` doc comment in types.ts).
+      if (inst.kind === 'fish' && !inst.dead && Date.now() - inst.bornAt >= inst.lifespanMs) {
+        inst.dead = true;
+        inst.diedAt = Date.now();
+        inst.groupId = null;
+        this.persist();
+      }
+      if (inst.kind === 'fish' && inst.dead) {
+        // Floats straight up to the surface and stays there - no swimming, no frame animation, no
+        // bobbing (frozen pose reads as "dead", not "resting"). Left in place horizontally rather than
+        // drifting, since there's no current in this tank to drift on. Removed entirely by the user
+        // clicking it (see onCanvasPointerDown), not by any timer here.
+        if (!inst.isDragging) {
+          const bounds = this.swimBoundsFor(inst);
+          const dy = bounds.yMin - inst.y;
+          if (Math.abs(dy) > 0.5) inst.y += Math.sign(dy) * Math.min(Math.abs(dy), 20 * dt);
+        }
+        return;
+      }
+
       inst.frameTimer += dt;
       const frameInterval = (sprite.frameMs || storage.DEFAULT_FRAME_MS) / 1000;
       if (inst.frameTimer >= frameInterval) {
@@ -1818,6 +1852,9 @@ class TankEngine {
     const renderY = inst.y + (inst.kind === 'fish' && !inst.isDragging ? Math.sin(inst.bobPhase) * 3 : 0);
 
     this.ctx.save();
+    // Dead (P5 §6 item 1) reads visually as "no longer alive" via desaturation - see the `dead` doc
+    // comment in types.ts for why removal is click-driven rather than timed.
+    this.ctx.filter = inst.dead ? 'grayscale(1)' : 'none';
     this.ctx.translate(inst.x + pw / 2, renderY + ph / 2);
     if (inst.kind === 'fish' && inst.dir < 0) this.ctx.scale(-1, 1);
     this.ctx.translate(-pw / 2, -ph / 2);

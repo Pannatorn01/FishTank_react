@@ -744,3 +744,37 @@ code-split bundle ของ tank engine ออกจาก editor เหมื�
 - Life mode **ดูอย่างเดียว** - ไม่มี drag/click ใด ๆ ในตู้ (ตาม §9 Q10) - ของจริงมาใน P5
 - ห้องเป็น placeholder สีล้วน ไม่ใช่ภาพจริง (ตาม §9.2 - รอผู้ใช้อัปโหลด asset)
 - ตู้ใน Life mode สเกลลงตายตัวตามสัดส่วนห้อง (`TANK_FIT_FRAC`) - ยังไม่มี parallax/depth ตาม §6 เดิม (ของแต่งเสริม ไม่ block P5)
+
+---
+
+## 16. P5 กลไกการเลี้ยง — ข้อ 1: อายุ + ตาย (2026-09-08)
+
+**สรุป: กลไกแรกของ P5 (ตามลำดับ "ง่าย → ยาก" ใน §6) เสร็จและ verify แล้วด้วย Playwright จริง (จำลองอายุ
+ปลาผ่าน localStorage เพราะอายุขัยจริง 18-30 วัน รอไม่ได้ในเทสต์)**
+
+### สิ่งที่ทำจริง
+
+| ไฟล์ | เปลี่ยนอะไร |
+|---|---|
+| `src/lib/types.ts` | `Instance` เพิ่ม `bornAt`/`lifespanMs`/`dead`/`diedAt` |
+| `src/lib/storage.ts` | `randomFishLifespanMs()` (สุ่ม 18-30 วันจริงตาม §9.1) + `normalizeInstance()` migration (backfill ให้ปลาที่บันทึกไว้ก่อนมีฟีเจอร์นี้ - ตอนโหลด ไม่ใช่ตอนเซฟ ตามธรรมเนียม `normalizeRoomInstances` เดิม) |
+| `src/hooks/useTank.ts` | `addInstance()` สุ่ม lifespan ตอนเกิด (เฉพาะ kind fish) · `update()` เช็ค `Date.now() - bornAt >= lifespanMs` แบบ wall-clock ตรง ๆ ทุกเฟรม (ไม่ต้องมี offline catch-up - อายุคำนวณจากนาฬิกาจริงเสมอ ตรง Q1 ที่ต้องนับต่อแม้ปิดแอป) ปลาตายแล้วลอยขึ้นผิวน้ำ (`swimBoundsFor().yMin`) หยุดว่าย/หยุด animate · `drawInstance()` desaturate ด้วย `ctx.filter = 'grayscale(1)'` · `onCanvasPointerDown()` คลิกปลาตาย = `removeInstance()` แทนการเลือก |
+| `src/tank/render/tankScene.ts` | `ColorMatrixFilter` (grayscale) instance เดียวใช้ร่วมกันทุกปลาตาย ให้ตรงกับ Canvas2D |
+
+### ผลตรวจ (Playwright จำลองด้วย localStorage: ตั้ง `bornAt` ย้อนไปไกลมาก + `lifespanMs` สั้น แล้ว reload)
+
+| เกณฑ์ | ผล |
+|---|---|
+| ปลาตายตรงเวลา (wall-clock, ไม่ใช่ tick) | ✅ เจอ dead ทันทีหลัง reload |
+| render desaturate | ✅ pixel scan ยืนยัน R≈G≈B บนตัวปลาที่ตาย (ทั้ง canvas2d - ยังไม่ทดสอบ pixi renderer ด้วย pixel-diff จริง แค่โค้ดรีวิว) |
+| ลอยขึ้นผิวน้ำ หยุดว่าย | ✅ centroid ปลาไล่จาก y≈517 → y≈35 (จาก 600) ภายใน ~45s ด้วยอัตรา 20px/s ตามโค้ด แล้วหยุดนิ่งที่ผิวน้ำ |
+| คลิกเก็บออก | ✅ Layers 2→1 แถว, pixel scan ยืนยันปลาตายหายจาก canvas |
+| ปลาปกติไม่ถูกกระทบ | ✅ ยังว่ายเคลื่อนที่ปกติ, ไม่ desaturate, คลิกแล้ว **เลือก** (ไม่ลบ) เหมือนเดิม |
+| build/lint/test สะอาด | ✅ `tsc -b` เงียบ, build ผ่าน (bundle Life+Build ยังแยก lazy chunk, +3.75kB gzip จาก ColorMatrixFilter), `oxlint` warning เดิม 4 ตัว, `npm test` 89/89 |
+
+### ข้อจำกัด/ของค้างที่ตั้งใจ (ยังไม่ทำ เก็บไว้ข้อถัดไปของ P5)
+
+- ยังไม่ verify pixel-diff จริงของ Pixi renderer's grayscale (แค่ตรวจ Canvas2D ด้วย pixel scan) - ความเสี่ยงต่ำเพราะ `ColorMatrixFilter.grayscale()` เป็น API มาตรฐานของ Pixi
+- ปลาที่ตายจากความหิว/น้ำเสีย (ข้อ 2-3 ของ §6 P5) ยังไม่ทำ - ตอนนี้ตายจากอายุขัยอย่างเดียว
+- "ลอย 7 วัน" ตาม §9 Q5 ยังไม่มีความหมายเชิงกลไก (ไม่ auto-ลบหลัง 7 วัน) - ตีความว่าเป็น flavor ไม่ใช่กติกาที่ต้อง enforce เว้นแต่ผู้ใช้อยากได้ auto-cleanup จริง ๆ ทีหลัง
+- ลูกปลาที่คลอดใหม่ (ข้อ 6) ยังไม่มี - เมื่อทำแล้วต้องเรียก `randomFishLifespanMs()` เดียวกันนี้ตอนสร้างลูกปลาด้วย
