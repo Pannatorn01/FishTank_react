@@ -31,6 +31,9 @@ const HUNGER_BAR_HEIGHT = 4;
 const HUNGER_BAR_GAP = 4;
 const FOOD_COLOR = 0xf5a623;
 const FOOD_RADIUS = 4;
+const WASTE_COLOR = 0x6b4a2f;
+const WASTE_RADIUS_X = 3;
+const WASTE_RADIUS_Y = 5;
 
 function spriteDims(sprite: SpriteData): { width: number; height: number } {
   return { width: sprite.width || 16, height: sprite.height || 16 };
@@ -144,6 +147,7 @@ export function createTankScene(stage: Container): TankSceneHandle {
   const backgroundSprite = new Sprite();
   const waterline = new Graphics();
   const zoneBelowLayer = new Container();
+  const wasteLayer = new Graphics();
   const foodLayer = new Graphics();
   const instanceLayer = new Container();
   const overlayLayer = new Container();
@@ -153,7 +157,7 @@ export function createTankScene(stage: Container): TankSceneHandle {
   backgroundSprite.visible = false;
   backgroundSprite.anchor.set(0.5);
 
-  root.addChild(water, backgroundSprite, waterline, zoneBelowLayer, foodLayer, instanceLayer, overlayLayer);
+  root.addChild(water, backgroundSprite, waterline, zoneBelowLayer, wasteLayer, foodLayer, instanceLayer, overlayLayer);
   // `mask` is added as root's own child (not left floating outside the scene graph) specifically so
   // it inherits root's transform - a mask that's never actually parented anywhere keeps Pixi's
   // default identity transform regardless of where the container using it as a mask ends up moving.
@@ -366,6 +370,11 @@ export function createTankScene(stage: Container): TankSceneHandle {
     if (engine.selectedZone) {
       drawZoneRect(zoneBelowLayer, engine.selectedZone, ZONE_SELECTED_COLOR, ZONE_SELECTED_ALPHA);
     }
+
+    wasteLayer.clear();
+    engine.wasteItems.forEach((w) => {
+      wasteLayer.ellipse(w.x, w.y, WASTE_RADIUS_X, WASTE_RADIUS_Y).fill(WASTE_COLOR);
+    });
 
     foodLayer.clear();
     engine.foodItems.forEach((food) => {

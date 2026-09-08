@@ -13,7 +13,7 @@ import {
   ROUNDED_RADIUS_MIN,
   roundedCornerRadius,
 } from '@/tank/sim/geometry';
-import type { BackgroundTransform, FoodItem, Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape } from '@/lib/types';
+import type { BackgroundTransform, FoodItem, Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape, WasteItem } from '@/lib/types';
 
 /** Re-exported from geometry.ts (their canonical home as of P3 - see docs/PIXI_MIGRATION_PLAN.md) so
  *  existing `from '@/hooks/useTank'` import sites (TankCanvas.tsx's shape sliders) didn't need to
@@ -67,6 +67,15 @@ const FOOD_EAT_RADIUS = 28;
  *  see the food-seeking hysteresis comment in update(). Deliberately larger than FOOD_EAT_RADIUS so a
  *  fish that's already within eating distance never re-triggers a direction flip on its way in. */
 const FOOD_SEEK_DEADZONE = 36;
+
+/** P5 §6 item 3 (waste + collect, docs/PIXI_MIGRATION_PLAN.md) balance constants. */
+const POOP_DELAY_MIN_MS = 5_000;
+const POOP_DELAY_MAX_MS = 15_000;
+const WASTE_FALL_SPEED = 16;
+const WASTE_COLLECT_RADIUS = 26;
+/** tankCleanliness reaches 0 once this many waste items are sitting uncollected - not a hard cap on
+ *  how much waste can actually exist, just where the readout bottoms out. */
+const WASTE_MAX_FOR_ZERO_QUALITY = 8;
 /** Matches tankScene.ts's Pixi version exactly - see the hunger-bar comment in drawInstance(). */
 const HUNGER_BAR_HEIGHT = 4;
 const HUNGER_BAR_GAP = 4;
@@ -112,6 +121,16 @@ export class TankEngine {
    *  reload always starts with an empty tank of food regardless of what was falling when the tab was
    *  last open. */
   foodItems: FoodItem[] = [];
+
+  /** Fish waste (P5 §6 item 3) - appears a short delay after a fish eats (see poopDueAt below), settles
+   *  near the tank floor, and dirties the water (see tankCleanliness) until collected by clicking it.
+   *  Transient like foodItems - never written to localStorage. */
+  wasteItems: WasteItem[] = [];
+  /** Fish id -> epoch ms it's due to poop, scheduled by eatFood() - checked once per frame in update().
+   *  Not persisted (in-memory only, like foodItems/wasteItems) - a reload simply cancels any pending
+   *  poop rather than trying to resume it, which is harmless since it's just flavor timing, not
+   *  anything the 4-day-starvation-style correctness guarantees apply to. */
+  private poopDueAt = new Map<string, number>();
 
   /** Wall-clock timestamp (epoch ms) hunger/starvation was last resolved up to - see tickHunger(). Set
    *  from storage on init() (falling back to "now", i.e. no catch-up, the first time this ever runs)
@@ -1787,6 +1806,44 @@ export class TankEngine {
     this.foodItems = this.foodItems.filter((f) => f.id !== foodId);
     inst.hunger = Math.min(1, inst.hunger + FOOD_HUNGER_GAIN);
     inst.starvingSince = 0;
+    // Digestion (P5 §6 item 3) - a real delay rather than pooping instantly on the same spot it just
+    // ate, so waste shows up as its own later event instead of looking tied to the pellet. Overwrites
+    // any still-pending poop from an earlier meal rather than stacking multiple - one fish only ever
+    // has one poop "in flight" at a time.
+    this.poopDueAt.set(inst.id, Date.now() + POOP_DELAY_MIN_MS + Math.random() * (POOP_DELAY_MAX_MS - POOP_DELAY_MIN_MS));
+  }
+
+  /** 1 (spotless) down to 0 - a live readout of how much uncollected waste is sitting in the tank right
+   *  now, not a persisted/decaying meter like hunger. Purely `wasteItems.length` today; once water
+   *  level and algae (P5 §6 items 4-5) exist, this is where they'll fold in too, per the single
+   *  "tank cleanliness" status §9 Q3 asked for - the per-fish hunger bar and this are the two bars Q3
+   *  described. */
+  get tankCleanliness(): number {
+    return Math.max(0, 1 - this.wasteItems.length / WASTE_MAX_FOR_ZERO_QUALITY);
+  }
+
+  private collectWasteAt(x: number, y: number): boolean {
+    let nearest: WasteItem | null = null;
+    let bestDist = Infinity;
+    for (const w of this.wasteItems) {
+      const dist = Math.hypot(w.x - x, w.y - y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        nearest = w;
+      }
+    }
+    if (!nearest || bestDist > WASTE_COLLECT_RADIUS) return false;
+    this.wasteItems = this.wasteItems.filter((w) => w.id !== nearest!.id);
+    return true;
+  }
+
+  /** The single Life-mode tank-tap handler (see LifePanel.tsx / roomScene.ts's feedHitArea) - collects
+   *  a piece of waste under the tap if there is one, otherwise drops food there. One combined handler
+   *  rather than two separate click targets so the interaction stays "tap the thing you want to act
+   *  on" instead of the user needing to know which mode they're in. */
+  handleTankTap(x: number, y: number): void {
+    if (this.collectWasteAt(x, y)) return;
+    this.feedAt(x, y);
   }
 
   private update(dt: number): void {
@@ -1803,6 +1860,29 @@ export class TankEngine {
       const floorY = this.canvas.height - sandH - 16;
       this.foodItems.forEach((food) => {
         food.y = Math.min(floorY, food.y + food.vy * dt);
+      });
+    }
+
+    if (this.poopDueAt.size) {
+      const now = Date.now();
+      this.poopDueAt.forEach((dueAt, id) => {
+        if (now < dueAt) return;
+        this.poopDueAt.delete(id);
+        const inst = this.instances.find((i) => i.id === id);
+        // A fish that died or was removed between eating and pooping just quietly never poops -
+        // there's no fish left for the waste to have come from.
+        if (!inst || inst.dead) return;
+        const { pw, ph } = this.spritePx(this.spriteFor(inst));
+        this.wasteItems.push({ id: storage.uid('waste'), x: inst.x + pw / 2, y: inst.y + ph / 2, createdAt: now });
+      });
+    }
+
+    if (this.wasteItems.length) {
+      // Unlike food, nothing needs to reach waste, so it just settles at the tank's own floor rather
+      // than the fish-reachable band food is kept within.
+      const floorY = this.canvas.height - 10;
+      this.wasteItems.forEach((w) => {
+        w.y = Math.min(floorY, w.y + WASTE_FALL_SPEED * dt);
       });
     }
 
@@ -2043,6 +2123,22 @@ export class TankEngine {
     ctx.restore();
   }
 
+  /** Small brown clumps (P5 §6 item 3) - visually distinct from food's orange so the two never get
+   *  confused, since they now share very similar behavior (settle near the bottom) but opposite
+   *  purpose (eaten vs. collected). */
+  private drawWasteItems(): void {
+    if (!this.ctx || !this.wasteItems.length) return;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = '#6b4a2f';
+    this.wasteItems.forEach((w) => {
+      ctx.beginPath();
+      ctx.ellipse(w.x, w.y, 3, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    ctx.restore();
+  }
+
   private drawInstance(inst: Instance): void {
     if (!inst.visible) return;
     const sprite = this.spriteFor(inst);
@@ -2166,6 +2262,7 @@ export class TankEngine {
 
     if (this.selectedZone) this.strokeZoneRect(this.selectedZone, 'rgba(120, 255, 160, 0.9)');
 
+    this.drawWasteItems();
     this.drawFoodItems();
     this.computeDrawOrder().forEach((inst) => this.drawInstance(inst));
 

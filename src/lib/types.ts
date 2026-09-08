@@ -197,6 +197,17 @@ export interface FoodItem {
   vy: number;
 }
 
+/** A piece of fish waste (P5 §6 item 3) - appears a short random delay after a fish eats (see
+ *  poopDueAt in useTank.ts), settles near the tank floor, and sits there dirtying the water
+ *  (TankEngine.tankCleanliness) until the user clicks it to collect it (see handleTankTap). Unlike
+ *  FoodItem, nothing in the tank consumes this on its own - it only ever leaves via collection. */
+export interface WasteItem {
+  id: string;
+  x: number;
+  y: number;
+  createdAt: number;
+}
+
 /** A decoration placed in the area around the tank (kind 'room' sprites) rather than inside its
  *  swim space - can be dragged anywhere in that area, always renders above the tank frame (so it
  *  can overlap the tank), and never swims/animates/groups the way an in-tank Instance does. See

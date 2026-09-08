@@ -6,8 +6,9 @@ import { createRoomScene, type RoomSceneHandle } from '@/tank/render/roomScene';
 import { invalidateAll, invalidateSprite } from '@/tank/render/textureCache';
 
 /**
- * Life mode (P4, docs/PIXI_MIGRATION_PLAN.md §6/§14) - the tank placed in a room, view-only for now
- * (per §9 Q10: "Life mode = ดูอย่างเดียวไปก่อน" - the care mechanics themselves are P5, not built yet).
+ * Life mode (P4, docs/PIXI_MIGRATION_PLAN.md §6/§14) - the tank placed in a room. Started as a
+ * view-only preview (per §9 Q10) with the care mechanics (P5) layered in afterward - tapping the tank
+ * now feeds fish or collects waste (see engine.handleTankTap).
  *
  * Owns its own Pixi Application, separate from Build mode's TankPixiLayer - the two are different
  * scenes (a full room vs. just the tank+margin) shown one at a time, not two views of one canvas.
@@ -37,11 +38,12 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
       }
       app = createdApp;
       app.canvas.classList.add('life-pixi-canvas');
-      // Feeding (P5 §6 item 2, docs/PIXI_MIGRATION_PLAN.md) - the first Life-mode interaction: tap
-      // anywhere on the tank to drop a food pellet at that spot. `engine.feedAt` clamps whatever
-      // coordinates it's given into the tank's own bounds, so this doesn't need its own precise
-      // hit-testing against the tank's shape (see feedHitArea's doc comment in roomScene.ts).
-      scene = createRoomScene(app.stage, (x, y) => engine.feedAt(x, y));
+      // Tank tap (P5 §6 items 2-3, docs/PIXI_MIGRATION_PLAN.md) - tapping waste collects it, tapping
+      // open water drops a food pellet there. `engine.handleTankTap` clamps whatever coordinates it's
+      // given into the tank's own bounds when it falls through to feeding, so this doesn't need its
+      // own precise hit-testing against the tank's shape (see tapHitArea's doc comment in
+      // roomScene.ts).
+      scene = createRoomScene(app.stage, (x, y) => engine.handleTankTap(x, y));
 
       const tick = () => {
         if (cancelled || !app || !scene) return;

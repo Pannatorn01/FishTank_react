@@ -16,6 +16,11 @@ const FLOOR_FRAC = 0.22;
 /** The tank never fills the whole room - it's an object placed inside one, so it's kept to a fraction
  *  of the available floor space (both axes) no matter how big the room viewport or the tank itself. */
 const TANK_FIT_FRAC = 0.62;
+/** Tank cleanliness readout (P5 §6 item 3, §9 Q3 - "สถานะความสะอาดตู้") - a small fixed bar in the
+ *  room's top-left corner, not tied to any one fish the way the hunger bars are. */
+const CLEANLINESS_BAR_WIDTH = 90;
+const CLEANLINESS_BAR_HEIGHT = 8;
+const CLEANLINESS_BAR_MARGIN = 14;
 
 export interface RoomSceneHandle {
   /** Repaints the room + the embedded tank from the engine's current state - call once per animation
@@ -24,9 +29,10 @@ export interface RoomSceneHandle {
   destroy(): void;
 }
 
-export function createRoomScene(stage: Container, onFeed?: (tankX: number, tankY: number) => void): RoomSceneHandle {
+export function createRoomScene(stage: Container, onTap?: (tankX: number, tankY: number) => void): RoomSceneHandle {
   const background = new Graphics();
   const floor = new Graphics();
+  const cleanlinessBar = new Graphics();
   // The tank is rendered into its own sub-container rather than directly into `stage` so it can be
   // scaled/positioned as one unit to fit the room (see fitTankSlot below) without that transform
   // fighting createTankScene's own internal margin offset (see tankScene.ts's sceneRoot comment) -
@@ -34,15 +40,17 @@ export function createRoomScene(stage: Container, onFeed?: (tankX: number, tankY
   const tankSlot = new Container();
   // Invisible - just a click target the size of the whole margin-inclusive tank scene (see
   // tankScene.ts's sceneRoot doc comment for what that margin is), sitting behind everything else in
-  // tankSlot so a click anywhere on the tank (including its room-decor margin) reports a position
-  // without needing its own hit-test against the actual water shape - feedAt() already clamps
-  // whatever it's given into the tank's bounds, so an approximate hit area costs nothing but a pellet
-  // occasionally landing right at the glass instead of exactly where clicked.
-  const feedHitArea = new Graphics();
-  feedHitArea.eventMode = onFeed ? 'static' : 'none';
-  feedHitArea.cursor = 'pointer';
-  tankSlot.addChild(feedHitArea);
-  stage.addChild(background, floor, tankSlot);
+  // tankSlot so a tap anywhere on the tank (including its room-decor margin) reports a position
+  // without needing its own hit-test against the actual water shape - handleTankTap() already clamps
+  // whatever it's given into the tank's bounds when it falls through to feedAt(), so an approximate
+  // hit area costs nothing but an occasional pellet landing right at the glass instead of exactly
+  // where tapped (collecting waste, the other half of handleTankTap, already needs to be reasonably
+  // close to the waste item itself regardless).
+  const tapHitArea = new Graphics();
+  tapHitArea.eventMode = onTap ? 'static' : 'none';
+  tapHitArea.cursor = 'pointer';
+  tankSlot.addChild(tapHitArea);
+  stage.addChild(background, floor, tankSlot, cleanlinessBar);
 
   const tankScene: TankSceneHandle = createTankScene(tankSlot);
 
@@ -52,10 +60,10 @@ export function createRoomScene(stage: Container, onFeed?: (tankX: number, tankY
   // stale one captured at mount time.
   let tankMargin = { x: 0, y: 0 };
 
-  if (onFeed) {
-    feedHitArea.on('pointertap', (e: FederatedPointerEvent) => {
+  if (onTap) {
+    tapHitArea.on('pointertap', (e: FederatedPointerEvent) => {
       const local = e.getLocalPosition(tankSlot);
-      onFeed(local.x - tankMargin.x, local.y - tankMargin.y);
+      onTap(local.x - tankMargin.x, local.y - tankMargin.y);
     });
   }
 
@@ -97,8 +105,19 @@ export function createRoomScene(stage: Container, onFeed?: (tankX: number, tankY
       lastHitAreaSizeKey = hitAreaSizeKey;
       const { marginX, marginY, sceneWidth, sceneHeight } = roomSceneMargin(w, h);
       tankMargin = { x: marginX, y: marginY };
-      feedHitArea.clear().rect(0, 0, sceneWidth, sceneHeight).fill({ color: 0x000000, alpha: 0 });
+      tapHitArea.clear().rect(0, 0, sceneWidth, sceneHeight).fill({ color: 0x000000, alpha: 0 });
     }
+  }
+
+  function drawCleanlinessBar(engine: TankEngine): void {
+    const cleanliness = engine.tankCleanliness;
+    cleanlinessBar.clear();
+    cleanlinessBar
+      .rect(0, 0, CLEANLINESS_BAR_WIDTH, CLEANLINESS_BAR_HEIGHT)
+      .fill({ color: 0x000000, alpha: 0.4 });
+    const fillColor = cleanliness > 0.5 ? 0x4ade80 : cleanliness > 0.2 ? 0xfacc15 : 0xef4444;
+    cleanlinessBar.rect(0, 0, CLEANLINESS_BAR_WIDTH * Math.max(0, cleanliness), CLEANLINESS_BAR_HEIGHT).fill(fillColor);
+    cleanlinessBar.position.set(CLEANLINESS_BAR_MARGIN, CLEANLINESS_BAR_MARGIN);
   }
 
   function render(engine: TankEngine, roomWidth: number, roomHeight: number): void {
@@ -110,6 +129,7 @@ export function createRoomScene(stage: Container, onFeed?: (tankX: number, tankY
     }
     fitTankSlot(engine, roomWidth, roomHeight);
     tankScene.render(engine);
+    drawCleanlinessBar(engine);
   }
 
   function destroy(): void {
@@ -117,6 +137,7 @@ export function createRoomScene(stage: Container, onFeed?: (tankX: number, tankY
     stage.removeChildren();
     background.destroy();
     floor.destroy();
+    cleanlinessBar.destroy();
   }
 
   return { render, destroy };
