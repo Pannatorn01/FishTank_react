@@ -1,16 +1,26 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Application } from 'pixi.js';
 import { Button } from '@/components/ui/button';
 import type { TankEngine } from '@/hooks/useTank';
 import { useLanguage } from '@/lib/i18n';
 import { createPixiApp, destroyPixiApp } from '@/tank/render/pixiApp';
-import { createRoomScene, type RoomSceneHandle } from '@/tank/render/roomScene';
+import { createRoomScene, type ArmedTool, type RoomSceneHandle } from '@/tank/render/roomScene';
 import { invalidateAll, invalidateSprite } from '@/tank/render/textureCache';
 
 /**
  * Life mode (P4, docs/PIXI_MIGRATION_PLAN.md §6/§14) - the tank placed in a room. Started as a
- * view-only preview (per §9 Q10) with the care mechanics (P5) layered in afterward - tapping the tank
- * now feeds fish or collects waste (see engine.handleTankTap).
+ * view-only preview (per §9 Q10) with the care mechanics (P5) layered in afterward.
+ *
+ * Feeding and scrubbing are both "select a tool, then use it on the tank" - not a plain tap/drag
+ * anywhere on the tank, which is what the first version of this did and which the user reported two
+ * problems with: a plain tap could feed wherever it landed, including just outside the tank in its
+ * room-decor margin (a pellet stuck "beside" the tank no fish could ever reach); and there was no way
+ * to tell dragging-to-scrub apart from just moving the mouse across the tank. Clicking "Feed" or
+ * "Scrub" below the tank arms that tool (see armedTool state); with Feed armed, a tap on the tank drops
+ * a pellet there (gated to the tank's real bounds - see roomScene.ts's tapHitArea); with Scrub armed,
+ * dragging back and forth across the tank wipes algae along the way. A plain tap directly on a piece of
+ * waste still collects it regardless of which tool (if any) is armed - that's not a placement action,
+ * so it doesn't need the same gating.
  *
  * Owns its own Pixi Application, separate from Build mode's TankPixiLayer - the two are different
  * scenes (a full room vs. just the tank+margin) shown one at a time, not two views of one canvas.
@@ -20,6 +30,8 @@ import { invalidateAll, invalidateSprite } from '@/tank/render/textureCache';
 export function LifePanel({ engine }: { engine: TankEngine }) {
   const { t } = useLanguage();
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const sceneRef = useRef<RoomSceneHandle | null>(null);
+  const [armedTool, setArmedTool] = useState<ArmedTool>(null);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -41,17 +53,8 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
       }
       app = createdApp;
       app.canvas.classList.add('life-pixi-canvas');
-      // Tank tap (P5 §6 items 2-3, docs/PIXI_MIGRATION_PLAN.md) - tapping waste collects it, tapping
-      // open water drops a food pellet there. `engine.handleTankTap` clamps whatever coordinates it's
-      // given into the tank's own bounds when it falls through to feeding, so this doesn't need its
-      // own precise hit-testing against the tank's shape (see tapHitArea's doc comment in
-      // roomScene.ts). Dragging instead of tapping scrubs algae (P5 §6 item 5) - roomScene.ts tells
-      // the two apart by total drag distance, so onTap only ever fires for an actual short tap.
-      scene = createRoomScene(
-        app.stage,
-        (x, y) => engine.handleTankTap(x, y),
-        (dist) => engine.scrubAlgae(dist),
-      );
+      scene = createRoomScene(app.stage);
+      sceneRef.current = scene;
 
       const tick = () => {
         if (cancelled || !app || !scene) return;
@@ -68,8 +71,19 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
       if (rafId) cancelAnimationFrame(rafId);
       scene?.destroy();
       if (app) destroyPixiApp(app);
+      sceneRef.current = null;
     };
   }, [engine]);
+
+  /** Toggles a tool on/off (clicking the already-armed one disarms it) rather than only ever arming -
+   *  the same "click again to deselect" a selected editor tool doesn't offer, but a room decor/palette
+   *  selection does, and this is closer in spirit to the latter (a temporary mode, not a persistent
+   *  drawing tool). */
+  function toggleTool(tool: NonNullable<ArmedTool>): void {
+    const next = armedTool === tool ? null : tool;
+    setArmedTool(next);
+    sceneRef.current?.setArmedTool(next);
+  }
 
   return (
     <div className="life-layout">
@@ -88,10 +102,28 @@ export function LifePanel({ engine }: { engine: TankEngine }) {
       >
         <i className="fa-solid fa-faucet-drip" /> {t('life.refillWater')}
       </Button>
-      {/* Nothing about the tank itself hints that tapping vs. dragging do two different things (see
-       *  roomScene.ts's tap-vs-drag state machine) - especially before any algae has actually grown in
-       *  yet, at which point there's nothing visible to even suspect is scrubbable. A plain caption
-       *  under the tank spells it out once instead of leaving it to be discovered by accident. */}
+      {/* Feed/Scrub tools (P5 §6 items 2/5) - click to arm, then use directly on the tank (tap to feed,
+       *  drag to scrub - see this file's own doc comment for why). */}
+      <div className="life-tools">
+        <button
+          type="button"
+          className={`life-tool-item${armedTool === 'feed' ? ' life-tool-item-active' : ''}`}
+          title={t('life.feedToolTitle')}
+          onClick={() => toggleTool('feed')}
+        >
+          <i className="fa-solid fa-bowl-food" />
+          <span>{t('life.feedTool')}</span>
+        </button>
+        <button
+          type="button"
+          className={`life-tool-item${armedTool === 'scrub' ? ' life-tool-item-active' : ''}`}
+          title={t('life.scrubToolTitle')}
+          onClick={() => toggleTool('scrub')}
+        >
+          <i className="fa-solid fa-broom" />
+          <span>{t('life.scrubTool')}</span>
+        </button>
+      </div>
       <p className="life-hint">{t('life.hint')}</p>
     </div>
   );

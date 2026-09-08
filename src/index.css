@@ -1862,20 +1862,56 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 /* Top-right so it never collides with the Pixi-drawn cleanliness bar in the top-left corner of the
  * same scene (see roomScene.ts's cleanlinessBar). */
 .life-refill-button { position: absolute; top: 10px; right: 10px; }
+/* Top-center, clear of the cleanliness bar (top-left, Pixi-drawn) and the refill button (top-right) -
+ * moved up here (was bottom-center) once the tools row below needed the bottom edge for itself. */
 .life-hint {
   position: absolute;
   left: 50%;
-  bottom: 10px;
+  top: 10px;
   transform: translateX(-50%);
   margin: 0;
   padding: 4px 10px;
-  max-width: min(90%, 480px);
+  max-width: min(80%, 420px);
   background: rgba(0, 0, 0, 0.45);
   color: #fff;
   font-size: 0.68rem;
   text-align: center;
   border-radius: 4px;
   pointer-events: none;
+}
+/* Feed/Scrub tool select (P5 §6 items 2/5) - bottom-left, out of the way of everything else in the
+ * scene. Click to arm one (see LifePanel.tsx's toggleTool), then tap/drag directly on the tank - the
+ * armed item stays highlighted (.life-tool-item-active) so it's clear which mode, if any, is active. */
+.life-tools {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  display: flex;
+  gap: 6px;
+}
+.life-tool-item {
+  appearance: none;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 56px;
+  padding: 6px 4px;
+  background: rgba(20, 16, 28, 0.85);
+  border: 1px solid var(--bevel-light);
+  border-radius: 6px;
+  color: #fff;
+  font: inherit;
+  font-size: 0.6rem;
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+}
+.life-tool-item i { font-size: 1.05rem; }
+.life-tool-item-active {
+  background: color-mix(in srgb, var(--pixel-accent) 55%, rgba(20, 16, 28, 0.85));
+  border-color: var(--pixel-accent);
 }
 
 /* A fixed strip below the canvas (not floating over it) that hosts every contextual action -

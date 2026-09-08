@@ -21,32 +21,37 @@ const TANK_FIT_FRAC = 0.62;
 const CLEANLINESS_BAR_WIDTH = 90;
 const CLEANLINESS_BAR_HEIGHT = 8;
 const CLEANLINESS_BAR_MARGIN = 14;
-/** Below this total drag distance (px), a pointerdown->pointerup is treated as a tap (feed/collect)
- *  rather than a scrub - matches the TAP_MOVE_THRESHOLD useTank.ts's own marquee/drag code uses for
- *  the same tap-vs-drag distinction. */
+/** Below this total drag distance (px), a pointerdown->pointerup is treated as a tap (collect waste,
+ *  or feed if the Feed tool is armed) rather than a scrub - matches TAP_MOVE_THRESHOLD useTank.ts's
+ *  own marquee/drag code uses for the same tap-vs-drag distinction. */
 const TAP_VS_DRAG_THRESHOLD = 6;
-/** Scrub brush (P5 §6 item 5) - a small sponge that follows the pointer while actively scrubbing, so
- *  the gesture reads as "wiping something off the glass" instead of an invisible drag. Sized relative
- *  to a typical fish sprite (see DISPLAY_SCALE in tankScene.ts - a 16-cell fish is ~64px) rather than
- *  the room/screen scale, since it's drawn in the tank's own local coordinate space (a child of
- *  tankSlot) and shrinks along with everything else in the tank when the room scales it down to fit. */
+/** Scrub brush (P5 §6 item 5) - a small sponge shown at the current drag point while the Scrub tool is
+ *  armed and the user is actively dragging across the tank (see setArmedTool/the pointer state machine
+ *  below), so the gesture reads as "wiping something off the glass" rather than an invisible drag.
+ *  Sized relative to a typical fish sprite (see DISPLAY_SCALE in tankScene.ts - a 16-cell fish is
+ *  ~64px) rather than the room/screen scale, since it's drawn in the tank's own local coordinate space
+ *  (a child of tankSlot) and shrinks along with everything else in the tank when the room scales it
+ *  down to fit. */
 const SCRUB_BRUSH_WIDTH = 34;
 const SCRUB_BRUSH_HEIGHT = 22;
 const SCRUB_BRUSH_COLOR = 0xf4d35e;
 const SCRUB_BRUSH_OUTLINE = 0x8a6d1f;
 
+export type ArmedTool = 'feed' | 'scrub' | null;
+
 export interface RoomSceneHandle {
   /** Repaints the room + the embedded tank from the engine's current state - call once per animation
-   *  frame with the room viewport's current pixel size (i.e. the Pixi app's own renderer size). */
+   *  frame with the room viewport's current pixel size (i.e. the Pixi app's own renderer size). Also
+   *  the only place `engine` reaches this scene, so the tap/drag handlers below (registered once, not
+   *  per-frame) always act on whichever engine the *last* render() call was given - see currentEngine. */
   render(engine: TankEngine, roomWidth: number, roomHeight: number): void;
+  /** Which tool (if any) is currently selected in the Life-mode toolbar (see LifePanel.tsx) - null
+   *  means a tap only ever tries to collect waste, same as before P5's Feed/Scrub tools existed. */
+  setArmedTool(tool: ArmedTool): void;
   destroy(): void;
 }
 
-export function createRoomScene(
-  stage: Container,
-  onTap?: (tankX: number, tankY: number) => void,
-  onScrub?: (dragDistancePx: number) => void,
-): RoomSceneHandle {
+export function createRoomScene(stage: Container): RoomSceneHandle {
   const background = new Graphics();
   const floor = new Graphics();
   const cleanlinessBar = new Graphics();
@@ -55,20 +60,21 @@ export function createRoomScene(
   // fighting createTankScene's own internal margin offset (see tankScene.ts's sceneRoot comment) -
   // that offset stays entirely inside tankSlot's local space either way.
   const tankSlot = new Container();
-  // Invisible - just a click target the size of the whole margin-inclusive tank scene (see
-  // tankScene.ts's sceneRoot doc comment for what that margin is), sitting behind everything else in
-  // tankSlot so a tap anywhere on the tank (including its room-decor margin) reports a position
-  // without needing its own hit-test against the actual water shape - handleTankTap() already clamps
-  // whatever it's given into the tank's bounds when it falls through to feedAt(), so an approximate
-  // hit area costs nothing but an occasional pellet landing right at the glass instead of exactly
-  // where tapped (collecting waste, the other half of handleTankTap, already needs to be reasonably
-  // close to the waste item itself regardless).
+  // Invisible - a click/drag target sized to the *actual* tank rectangle only (not the room-decor
+  // margin around it - see fitTankSlot), so an action never lands just outside the glass in the
+  // surrounding room (previously reported by the user: a food pellet stuck "beside" the tank that no
+  // fish could ever reach, from a tap that was really in that margin).
   const tapHitArea = new Graphics();
-  tapHitArea.eventMode = onTap || onScrub ? 'static' : 'none';
+  tapHitArea.eventMode = 'static';
   tapHitArea.cursor = 'pointer';
-  // A little sponge that tracks the pointer for as long as an active scrub gesture lasts (see the
-  // pointer state machine below) - purely decorative, never itself a hit target, so it's not
-  // interactive and sits above tapHitArea in paint order without shadowing it.
+  tankSlot.addChild(tapHitArea);
+  stage.addChild(background, floor, tankSlot, cleanlinessBar);
+
+  const tankScene: TankSceneHandle = createTankScene(tankSlot);
+
+  // Added *after* createTankScene() populates tankSlot with the actual tank (water/fish/etc, itself
+  // opaque) - Pixi paints children in insertion order, so a marker added any earlier would render
+  // first and then sit hidden underneath the water on every frame.
   const scrubBrush = new Graphics()
     .roundRect(-SCRUB_BRUSH_WIDTH / 2, -SCRUB_BRUSH_HEIGHT / 2, SCRUB_BRUSH_WIDTH, SCRUB_BRUSH_HEIGHT, 5)
     .fill(SCRUB_BRUSH_COLOR)
@@ -82,60 +88,65 @@ export function createRoomScene(
   }
   scrubBrush.eventMode = 'none';
   scrubBrush.visible = false;
-  tankSlot.addChild(tapHitArea, scrubBrush);
-  stage.addChild(background, floor, tankSlot, cleanlinessBar);
-
-  const tankScene: TankSceneHandle = createTankScene(tankSlot);
+  tankSlot.addChild(scrubBrush);
 
   let lastRoomSizeKey = '';
+  let lastHitAreaSizeKey = '';
   // Kept in sync every render() call (see fitTankSlot) so the pointer handlers below - registered
-  // once, not per-frame - always convert a tap against the tank's *current* margin offset rather than
-  // a stale one captured at mount time.
+  // once, not per-frame - always convert against the tank's *current* margin offset rather than a
+  // stale one captured at mount time.
   let tankMargin = { x: 0, y: 0 };
+  let armedTool: ArmedTool = null;
+  let currentEngine: TankEngine | null = null;
 
-  // One pointerdown/move/up state machine covers both gestures (tap to feed/collect, drag to scrub
-  // algae - P5 §6 items 2/3/5) rather than a plain 'pointertap' listener, since telling them apart
-  // needs the total distance traveled: short movement is a tap (fires onTap once, at the down
-  // position), anything past TAP_VS_DRAG_THRESHOLD is a scrub instead (fires onScrub continuously as
-  // it moves, never also fires onTap for the same gesture).
-  if (onTap || onScrub) {
-    let dragStart: { x: number; y: number } | null = null;
-    let lastDragPoint: { x: number; y: number } | null = null;
-    let dragTotalDist = 0;
-
-    const localPoint = (e: FederatedPointerEvent) => e.getLocalPosition(tankSlot);
-
-    tapHitArea.on('pointerdown', (e: FederatedPointerEvent) => {
-      const p = localPoint(e);
-      dragStart = p;
-      lastDragPoint = p;
-      dragTotalDist = 0;
-    });
-    tapHitArea.on('globalpointermove', (e: FederatedPointerEvent) => {
-      if (!lastDragPoint) return;
-      const p = localPoint(e);
-      const dist = Math.hypot(p.x - lastDragPoint.x, p.y - lastDragPoint.y);
-      if (dist <= 0) return;
-      dragTotalDist += dist;
-      lastDragPoint = p;
-      if (dragTotalDist > TAP_VS_DRAG_THRESHOLD) {
-        onScrub?.(dist);
-        scrubBrush.visible = true;
-        scrubBrush.position.set(p.x, p.y);
-      }
-    });
-    const endDrag = () => {
-      if (dragStart && dragTotalDist <= TAP_VS_DRAG_THRESHOLD) {
-        onTap?.(dragStart.x - tankMargin.x, dragStart.y - tankMargin.y);
-      }
-      dragStart = null;
-      lastDragPoint = null;
-      dragTotalDist = 0;
-      scrubBrush.visible = false;
-    };
-    tapHitArea.on('pointerup', endDrag);
-    tapHitArea.on('pointerupoutside', endDrag);
+  function setArmedTool(tool: ArmedTool): void {
+    armedTool = tool;
   }
+
+  // One pointerdown/move/up state machine covers both gestures a tap on the tank can mean: a short tap
+  // collects waste under it (or feeds there instead, if nothing was collected and the Feed tool is
+  // armed - see endDrag), while an actual drag scrubs algae along the way, but *only* while the Scrub
+  // tool is armed (an unarmed drag does nothing at all, on purpose - see the user's own framing this
+  // was built from: pick a tool first, then use it on the tank).
+  let dragStart: { x: number; y: number } | null = null;
+  let lastDragPoint: { x: number; y: number } | null = null;
+  let dragTotalDist = 0;
+
+  const localPoint = (e: FederatedPointerEvent) => e.getLocalPosition(tankSlot);
+
+  tapHitArea.on('pointerdown', (e: FederatedPointerEvent) => {
+    const p = localPoint(e);
+    dragStart = p;
+    lastDragPoint = p;
+    dragTotalDist = 0;
+  });
+  tapHitArea.on('globalpointermove', (e: FederatedPointerEvent) => {
+    if (!lastDragPoint) return;
+    const p = localPoint(e);
+    const dist = Math.hypot(p.x - lastDragPoint.x, p.y - lastDragPoint.y);
+    if (dist <= 0) return;
+    dragTotalDist += dist;
+    lastDragPoint = p;
+    if (armedTool === 'scrub' && dragTotalDist > TAP_VS_DRAG_THRESHOLD) {
+      currentEngine?.scrubAlgae(dist);
+      scrubBrush.visible = true;
+      scrubBrush.position.set(p.x, p.y);
+    }
+  });
+  const endDrag = () => {
+    if (dragStart && dragTotalDist <= TAP_VS_DRAG_THRESHOLD && currentEngine) {
+      const tankX = dragStart.x - tankMargin.x;
+      const tankY = dragStart.y - tankMargin.y;
+      const collected = currentEngine.collectWasteAt(tankX, tankY);
+      if (!collected && armedTool === 'feed') currentEngine.feedAt(tankX, tankY);
+    }
+    dragStart = null;
+    lastDragPoint = null;
+    dragTotalDist = 0;
+    scrubBrush.visible = false;
+  };
+  tapHitArea.on('pointerup', endDrag);
+  tapHitArea.on('pointerupoutside', endDrag);
 
   function paintRoom(roomWidth: number, roomHeight: number): void {
     const wallGradient = new FillGradient({
@@ -151,8 +162,6 @@ export function createRoomScene(
     background.clear().rect(0, 0, roomWidth, roomHeight - floorHeight).fill(wallGradient);
     floor.clear().rect(0, roomHeight - floorHeight, roomWidth, floorHeight).fill(FLOOR_COLOR);
   }
-
-  let lastHitAreaSizeKey = '';
 
   function fitTankSlot(engine: TankEngine, roomWidth: number, roomHeight: number): void {
     const w = engine.canvas?.width ?? 0;
@@ -173,9 +182,12 @@ export function createRoomScene(
     const hitAreaSizeKey = `${w}:${h}`;
     if (hitAreaSizeKey !== lastHitAreaSizeKey) {
       lastHitAreaSizeKey = hitAreaSizeKey;
-      const { marginX, marginY, sceneWidth, sceneHeight } = roomSceneMargin(w, h);
+      const { marginX, marginY } = roomSceneMargin(w, h);
       tankMargin = { x: marginX, y: marginY };
-      tapHitArea.clear().rect(0, 0, sceneWidth, sceneHeight).fill({ color: 0x000000, alpha: 0 });
+      // Offset by the margin - the tank's own scene (createTankScene's sceneRoot) sits at exactly this
+      // offset inside tankSlot's local space (see tankScene.ts's sceneRoot doc comment), so this rect
+      // has to match it to actually cover the real glass rather than the room-decor margin beside it.
+      tapHitArea.clear().rect(marginX, marginY, w, h).fill({ color: 0x000000, alpha: 0 });
     }
   }
 
@@ -191,6 +203,7 @@ export function createRoomScene(
   }
 
   function render(engine: TankEngine, roomWidth: number, roomHeight: number): void {
+    currentEngine = engine;
     if (roomWidth <= 0 || roomHeight <= 0) return;
     const roomSizeKey = `${roomWidth}:${roomHeight}`;
     if (roomSizeKey !== lastRoomSizeKey) {
@@ -213,5 +226,5 @@ export function createRoomScene(
     cleanlinessBar.destroy();
   }
 
-  return { render, destroy };
+  return { render, setArmedTool, destroy };
 }

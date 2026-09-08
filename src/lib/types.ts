@@ -220,8 +220,8 @@ export interface FoodItem {
 
 /** A piece of fish waste (P5 §6 item 3) - appears a short random delay after a fish eats (see
  *  poopDueAt in useTank.ts), settles near the tank floor, and sits there dirtying the water
- *  (TankEngine.tankCleanliness) until the user clicks it to collect it (see handleTankTap). Unlike
- *  FoodItem, nothing in the tank consumes this on its own - it only ever leaves via collection. */
+ *  (TankEngine.tankCleanliness) until the user taps it to collect it (see TankEngine.collectWasteAt).
+ *  Unlike FoodItem, nothing in the tank consumes this on its own - it only ever leaves via collection. */
 export interface WasteItem {
   id: string;
   x: number;
