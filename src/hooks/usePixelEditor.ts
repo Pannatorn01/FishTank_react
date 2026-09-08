@@ -7,7 +7,6 @@ import {
   flipFrameH,
   flipFrameV,
   hexToRgb,
-  inEllipseLocal,
   layersDiffRegion,
   paintLayers,
   rgbToHex,
@@ -24,6 +23,11 @@ import { createMagicWandTool, resolveWandCombine } from '@/lib/tools/tools/magic
 import { createMoveTool } from '@/lib/tools/tools/moveTool';
 import { createSelectTool } from '@/lib/tools/tools/selectTool';
 import { createLassoTool } from '@/lib/tools/tools/lassoTool';
+import { createEyedropperTool } from '@/lib/tools/tools/eyedropperTool';
+import { createFillTool } from '@/lib/tools/tools/fillTool';
+import { createGradientTool } from '@/lib/tools/tools/gradientTool';
+import { createSprayTool } from '@/lib/tools/tools/sprayTool';
+import { createCurveTool } from '@/lib/tools/tools/curveTool';
 import { resolveMarqueeMode } from '@/lib/tools/selectionMask';
 import type { Gesture, GestureResult, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '@/lib/tools/types';
 import type {
@@ -108,10 +112,10 @@ function undoLimitFor(width: number, height: number): number {
 export const MAX_BRUSH_SIZE = 20;
 /** Tools that share the brush-size stepper (see CanvasStatusBar's `showBrushOptions` / PixelCanvas's
  *  brush-footprint preview) and one shared size (see brushSizes/brushSizeToolKey), so switching between
- *  them keeps the same size. Line/rect/ellipse read the same `brushSize` to thicken their outline (see
- *  computeShapeCells), and curve thickens its own path the same way (see
- *  quadraticBezierCells/thickenPath) - gradient and the selection tools have no comparable "stroke
- *  width" concept, so they're deliberately left out. */
+ *  them keeps the same size. Line/rect/ellipse/curve all read the same `brushSize` to thicken their
+ *  outline (see each tool's own `shapeCells`/`quadraticBezierCells` in `src/lib/tools/tools/`) -
+ *  gradient and the selection tools have no comparable "stroke width" concept, so they're deliberately
+ *  left out. */
 export const BRUSH_SIZE_TOOLS = new Set<ToolName>(['pen', 'eraser', 'spray', 'line', 'rect', 'ellipse', 'curve']);
 const SPRAY_INTERVAL_MS = 55;
 export const MIN_SPRAY_DENSITY = 0.25;
@@ -142,15 +146,21 @@ const TOOL_REGISTRY: Partial<Record<ToolName, Tool>> = {
   eraser: createPenTool(true),
   rect: createShapeTool('rect'),
   ellipse: createShapeTool('ellipse'),
+  line: createShapeTool('line'),
   magicWand: createMagicWandTool(),
   move: createMoveTool(),
   select: createSelectTool(),
   lasso: createLassoTool(),
+  eyedropper: createEyedropperTool(),
+  fill: createFillTool(),
+  gradient: createGradientTool(),
+  spray: createSprayTool(),
+  curve: createCurveTool(),
 };
 /** Tools whose gestures never touch a pixel - adjusting a selection isn't an edit, so
  *  `beginToolGesture` skips `pushGestureUndo()` for these entirely (matches `applyMagicWandAt`'s own
  *  doc comment, which the same reasoning always applied to Select/Lasso's marquee/lasso drags too). */
-const NO_UNDO_TOOLS = new Set<ToolName>(['magicWand', 'select', 'lasso']);
+const NO_UNDO_TOOLS = new Set<ToolName>(['magicWand', 'select', 'lasso', 'eyedropper']);
 
 export type HandleName = 'nw' | 'ne' | 'sw' | 'se' | 'n' | 's' | 'w' | 'e';
 /** Size (px) of a resize handle's square - exported for PixelSelectionOverlay.tsx, which draws the
@@ -240,7 +250,6 @@ class PixelEditorEngine {
    *  sampled a color on click, but nothing said so until the click had already happened; this drives the
    *  eyedropper cursor on .pixel-canvas-wrap so the mode is visible while the key is down. */
   altPickActive = false;
-  shapeStart: Cell | null = null;
   shapePreviewCells: Cell[] | null = null;
   shapeFilled = false;
   selection: SelectionBox | null = null;
@@ -293,7 +302,8 @@ class PixelEditorEngine {
    *  Shift (add) and Alt (subtract) still override it for a single click or drag. */
   selectionMode: SelectionMode = 'new';
   /** Spray: dots laid down per tick, as a multiple of the default (which scales with brush size - see
-   *  sprayTick). Under 1 it stipples slowly enough to build up an edge; over 1 it fills fast. */
+   *  sprayTool.ts's `scatterOps`). Under 1 it stipples slowly enough to build up an edge; over 1 it
+   *  fills fast. */
   sprayDensity = 1;
   /** Ordered (Bayer 4x4) dither between `color` and `gradientColor` instead of a flat fill - for the
    *  gradient tool (see gradientCellsPreview) and as a "dither brush" texture for pen/spray/shapes
@@ -355,14 +365,19 @@ class PixelEditorEngine {
    *  it. Ports `redrawShapePreview(null)`'s role for the legacy shape/curve preview, which this
    *  bypasses for migrated tools since they no longer write to `shapePreviewCells`. */
   private lastGesturePreviewRects: SelectionBox[] | null = null;
-  sprayTimer: ReturnType<typeof setInterval> | null = null;
-  sprayPointerCell: Cell | null = null;
-  /** Curve tool: null = idle, 'drag-end' = dragging the initial line, 'bend' = adjusting the control-point handle. */
+  /** Any migrated tool whose Gesture implements `onTick` (currently only Spray) - ticks it on a fixed
+   *  interval while its gesture is active, independent of pointer movement. Generic replacement for
+   *  the old spray-only `sprayTimer`/`sprayPointerCell`/`sprayTick` trio - see `startGestureTimer`. */
+  private gestureTimer: ReturnType<typeof setInterval> | null = null;
+  /** Curve tool: null = idle, 'drag-end' = dragging the initial line, 'bend' = adjusting the
+   *  control-point handle (idle or being dragged - PixelSelectionOverlay.tsx only distinguishes 'bend'
+   *  from not). Mirrored from the active CurveGesture's own internal phase (see
+   *  ToolPreview.curvePreview/GestureResult.curvePreview) - CurveGesture itself is the source of truth,
+   *  these two fields exist only because PixelSelectionOverlay.tsx (a DOM layer) reads them directly to
+   *  place the draggable bend handle, the same reason `selectionDraft`/`moveDelta` are mirrored fields
+   *  too. */
   curvePhase: 'drag-end' | 'bend' | null = null;
-  curveStart: Cell | null = null;
-  curveEnd: Cell | null = null;
   curveControl: Cell | null = null;
-  curveDraggingControl = false;
   gradientColor = '#ffffff';
   gradientStart: Cell | null = null;
   gradientEnd: Cell | null = null;
@@ -525,7 +540,7 @@ class PixelEditorEngine {
       cancelAnimationFrame(this.previewRepaintRafId);
       this.previewRepaintRafId = null;
     }
-    if (this.sprayTimer) clearInterval(this.sprayTimer);
+    if (this.gestureTimer) clearInterval(this.gestureTimer);
     // Reset to null, not just cancelled - React 18 StrictMode's dev-mode double-invoke (mount →
     // cleanup → mount again) means a fresh init() can follow this destroy() in the same tick. Its
     // new reactNotify closure still reads this same instance field, so leaving a stale (cancelled,
@@ -649,8 +664,15 @@ class PixelEditorEngine {
     // against the tool that started it rather than leaving half-finished state (a shape start cell, a
     // lifted move buffer) for the incoming tool's handlers to interpret as their own.
     if (this.painting) this.resetGestureState();
-    if (this.tool === 'curve' && this.curvePhase) this.commitCurve();
-    if (this.tool === 'spray') this.stopSprayTimer();
+    // Curve only: a pending bezier survives resetGestureState() above (see its own doc comment - only
+    // painting=true gestures get reset there) whenever the switch happens mid-bend with no button held.
+    // Auto-commits it, matching the original's own commitCurve() call here exactly - switching tools
+    // away always commits a pending curve, never silently discards it.
+    if (this.activeGesture) {
+      const r = this.activeGesture.onKeyDown?.('Enter', this.buildToolContext());
+      if (r) this.commitGestureResult(r);
+    }
+    if (this.activeGesture) this.stopGestureTimer();
     this.tool = tool;
     if (this.canvas && !SELECTION_AWARE_TOOLS.has(tool)) this.canvas.style.cursor = '';
     // Re-evaluated against the new tool: Alt means nothing on e.g. the Select tool, so the eyedropper
@@ -1648,16 +1670,28 @@ class PixelEditorEngine {
       return;
     }
     if (key === 'escape') {
-      if (this.curvePhase) {
-        this.cancelCurve();
+      // Curve only: reachable here (not painting) during bend-idle - `activeGesture` stays set across
+      // the drag-end -> bend transition (see GestureResult.keepActive's own doc comment), so the
+      // ordinary cancelGesture() path (generalized to check activeGesture, not a curve-specific flag)
+      // now handles this uniformly instead of a bespoke cancelCurve().
+      if (this.activeGesture) {
+        this.cancelGesture();
         return;
       }
       this.deselect();
       return;
     }
-    if (key === 'enter' && this.curvePhase === 'bend') {
-      this.commitCurve();
-      return;
+    // Curve only: a key pressed during bend-idle outside of an actual drag (e.g. Enter to commit) -
+    // `activeGesture` stays set (see above), and only Curve implements `onKeyDown` at all, so this is a
+    // no-op for every other tool. Returns null to let the key fall through to the checks below (e.g.
+    // arrow-nudge, bracket brush-size) - matches the original's own narrow `key === 'enter'` gate.
+    if (this.activeGesture?.onKeyDown) {
+      const result = this.activeGesture.onKeyDown(e.key, this.buildToolContext());
+      if (result) {
+        e.preventDefault();
+        this.commitGestureResult(result);
+        return;
+      }
     }
     if (this.selection && (key === 'arrowup' || key === 'arrowdown' || key === 'arrowleft' || key === 'arrowright')) {
       e.preventDefault();
@@ -1769,6 +1803,11 @@ class PixelEditorEngine {
       this.activeGesture.onCancel(this.buildToolContext());
       this.activeGesture = null;
       this.lastToolPointerEvent = null;
+      // Curve only: mirrored fields (see ToolPreview.curvePreview/GestureResult.curvePreview's own doc
+      // comments) - a null'd-out activeGesture always means curve is fully idle too now, harmless to
+      // reset unconditionally for every other tool since they're already null.
+      this.curvePhase = null;
+      this.curveControl = null;
     }
     // A pending move/resize already cleared its source cells from the frame data
     // at gesture start, so an interrupted gesture must be committed back (at its
@@ -1780,7 +1819,6 @@ class PixelEditorEngine {
     this.painting = false;
     this.gestureButtons = 0;
     this.lastPaintCell = null;
-    this.shapeStart = null;
     // redrawShapePreview(null), not a bare field assignment - an interrupted shape/curve drag can
     // leave a preview actually painted on the canvas (see redrawShapePreview's dirty-rect repaint),
     // and unlike the old full-canvas drawGrid() (which erased it as a side effect of repainting
@@ -1804,13 +1842,6 @@ class PixelEditorEngine {
     this.eraseOverride = false;
     this.strokeSnapshot = null;
     this.strokePoints = [];
-    if (this.curvePhase === 'drag-end' || this.curveDraggingControl) {
-      this.curveStart = null;
-      this.curveEnd = null;
-      this.curveControl = null;
-      this.curvePhase = null;
-      this.curveDraggingControl = false;
-    }
     if (this.gradientStart) {
       // Same reasoning as redrawShapePreview(null) above: drawGradientPreviewOverlay() paints straight
       // onto the canvas bitmap without a preceding clear (see its own doc comment), so an interrupted
@@ -1821,7 +1852,7 @@ class PixelEditorEngine {
     this.gradientStart = null;
     this.gradientEnd = null;
     this.gradientPreview = null;
-    this.stopSprayTimer();
+    this.stopGestureTimer();
   }
 
   /** pushUndo, plus enough bookkeeping to take the entry back off the stack again - see
@@ -1856,7 +1887,7 @@ class PixelEditorEngine {
    * nothing in flight to cancel.
    */
   cancelGesture(): boolean {
-    if (!this.painting && !this.curvePhase) return false;
+    if (!this.painting && !this.activeGesture) return false;
     const snap = this.rollbackGestureUndo();
     // Read before resetGestureState, which commits a floating move back into the frame: the snapshot
     // below then replaces those frames wholesale, so both paths land on the pre-gesture pixels.
@@ -2425,7 +2456,7 @@ class PixelEditorEngine {
   endResizeDrag(): void {
     if (!this.resizeHandle) return;
     this.painting = false;
-    this.stopSprayTimer();
+    this.stopGestureTimer();
     this.commitResize();
     this.refresh();
   }
@@ -2478,7 +2509,7 @@ class PixelEditorEngine {
   endRotateDrag(): void {
     if (!this.rotateOrigin) return;
     this.painting = false;
-    this.stopSprayTimer();
+    this.stopGestureTimer();
     this.commitRotate();
     this.refresh();
   }
@@ -2508,6 +2539,17 @@ class PixelEditorEngine {
       fillTolerance: this.fillTolerance,
       wandContiguous: this.wandContiguous,
       selectionMode: this.selectionMode,
+      getVisibleColor: (x, y) => {
+        if (x < 0 || y < 0 || x >= width || y >= height) return null;
+        const layers = this.layers();
+        for (let i = layers.length - 1; i >= 0; i--) {
+          if (!layers[i].visible) continue;
+          const sampled = layers[i].cells[y * width + x];
+          if (sampled) return sampled;
+        }
+        return null;
+      },
+      sprayDensity: this.sprayDensity,
     };
   }
 
@@ -2539,6 +2581,7 @@ class PixelEditorEngine {
     }
     this.activeGesture = gesture;
     this.lastToolPointerEvent = tpe;
+    if (gesture.onTick) this.startGestureTimer();
     this.applyToolPreview(gesture.onPointerMove(tpe, ctx));
   }
 
@@ -2548,6 +2591,10 @@ class PixelEditorEngine {
    *  floating-buffer state feeds the existing `gestureBaseBitmap` fast path unchanged. */
   private applyToolPreview(preview: ToolPreview | null): void {
     if (!preview) return;
+    if (preview.curvePreview) {
+      this.curvePhase = preview.curvePreview.phase;
+      this.curveControl = preview.curvePreview.control;
+    }
     if (preview.ops && preview.ops.length) {
       const { width, height } = this.current;
       const frame = this.activeCells();
@@ -2578,6 +2625,17 @@ class PixelEditorEngine {
       this.refresh();
       return;
     }
+    if (preview.gradientPreview) {
+      // Mirror into the legacy engine fields so the existing, unchanged drawGradientPreviewOverlay()
+      // keeps rendering the live drag with the canvas's own native ctx.createLinearGradient - same
+      // "mirror data into legacy fields for legacy rendering" trick as movePreview above.
+      const { start, end, eraseOverride } = preview.gradientPreview;
+      this.gradientStart = start;
+      this.gradientEnd = end;
+      this.eraseOverride = eraseOverride;
+      this.drawGradientPreviewOverlay();
+      return;
+    }
     if (preview.dirtyRects.length) {
       this.redrawRegions(preview.dirtyRects, preview.overlay ?? undefined);
       this.lastGesturePreviewRects = preview.overlay ? preview.dirtyRects : null;
@@ -2596,11 +2654,36 @@ class PixelEditorEngine {
     result.ops.forEach((op) => {
       if (op.x >= 0 && op.y >= 0 && op.x < width && op.y < height) frame[op.y * width + op.x] = op.color;
     });
+    if (result.keepActive) {
+      // Curve only: a PHASE TRANSITION (drag-end -> bend), not the gesture's real end - apply any ops
+      // (curve has none at this point, but stay generic) and show the new phase's overlay immediately,
+      // without touching the undo stack or clearing activeGesture/lastToolPointerEvent. A later
+      // onResumeDown/onKeyDown result that omits `keepActive` is what actually finishes the gesture.
+      if (result.curvePreview) {
+        this.curvePhase = result.curvePreview.phase;
+        this.curveControl = result.curvePreview.control;
+      }
+      if (result.overlay !== undefined) {
+        this.redrawRegions(result.dirtyRects, result.overlay ?? undefined);
+        this.lastGesturePreviewRects = result.overlay ? result.dirtyRects : null;
+      } else {
+        // No canvas repaint needed (e.g. releasing after a control-handle drag reuses the bezier
+        // already drawn by the last onPointerMove) - still need a React render so the DOM-drawn control
+        // handle (PixelSelectionOverlay.tsx) picks up curvePhase/curveControl's new values above.
+        this.reactNotify();
+      }
+      return;
+    }
     if (result.selection) {
       this.selection = result.selection.box;
       this.selectionMask = result.selection.mask ? new Set(result.selection.mask) : null;
       this.lassoPoints = result.selection.outline;
     }
+    if (result.pickedColor !== undefined) {
+      this.color = result.pickedColor;
+      if (result.switchToPen) this.tool = 'pen';
+    }
+    if (result.alsoSaveColor !== undefined) this.addSavedColor(result.alsoSaveColor);
     const wasMove = result.moveSelectionBy !== undefined;
     if (result.moveSelectionBy) {
       const { dx, dy } = result.moveSelectionBy;
@@ -2623,12 +2706,21 @@ class PixelEditorEngine {
     this.strokeSnapshot = null;
     this.strokePoints = [];
     this.eraseOverride = false;
+    this.curvePhase = null;
+    this.curveControl = null;
     this.activeGesture = null;
     this.lastToolPointerEvent = null;
 
     if (!result.changed) {
       this.rollbackGestureUndo();
-      this.reactNotify();
+      // Still repaint any dirty rects even though nothing "counts" as a change - a tool whose live
+      // preview draws unclipped (every shape tool's overlay ignores the selection, only the commit
+      // filters by it) can end a drag with zero real ops (e.g. dragged entirely outside the active
+      // selection) while its overlay is still sitting on the canvas bitmap; skipping this repaint would
+      // leave that overlay stranded on screen. Harmless when there's nothing to erase (dirtyRects empty)
+      // or the repainted cells are unchanged (e.g. Fill's same-color no-op).
+      if (result.dirtyRects.length) this.redrawRegions(result.dirtyRects);
+      else this.reactNotify();
       return;
     }
     if (hadColor && !wasMove) this.addSavedColor(this.color);
@@ -2666,13 +2758,26 @@ class PixelEditorEngine {
     if (this.painting) this.resetGestureState();
     this.canvas?.setPointerCapture(e.pointerId);
 
-    if (this.tool === 'eyedropper') {
-      this.pickColor(cell.x, cell.y);
+    if (e.altKey && ALT_PICK_TOOLS.has(this.tool)) {
+      this.pickColor(cell.x, cell.y, false);
       return;
     }
 
-    if (e.altKey && ALT_PICK_TOOLS.has(this.tool)) {
-      this.pickColor(cell.x, cell.y, false);
+    // Curve only: a further pointerdown while its gesture is still active (`keepActive` kept it alive
+    // across the drag-end -> bend transition, so `this.painting` is false but `activeGesture` isn't
+    // null) - either resumes dragging the control handle or commits, depending on where this click
+    // landed. Must run before TOOL_REGISTRY dispatch below, or this would start a brand new curve
+    // gesture instead of resuming the pending one.
+    if (this.activeGesture?.onResumeDown) {
+      const tpe = this.toolPointerEvent(e);
+      const outcome = this.activeGesture.onResumeDown(tpe, this.buildToolContext(), this.isNearCurveControl(e));
+      if ('preview' in outcome) {
+        this.painting = true;
+        this.lastToolPointerEvent = tpe;
+        this.applyToolPreview(outcome.preview);
+      } else {
+        this.commitGestureResult(outcome.result);
+      }
       return;
     }
 
@@ -2709,76 +2814,10 @@ class PixelEditorEngine {
       this.beginToolGesture(registryTool, this.toolPointerEvent(e));
       return;
     }
-
-    if (this.tool === 'curve') {
-      this.eraseOverride = e.button === 2;
-      if (this.curvePhase === 'bend') {
-        if (!this.isNearCurveControl(e)) {
-          this.commitCurve();
-          return;
-        }
-        this.painting = true;
-        this.curveDraggingControl = true;
-        this.curveControl = cell;
-        this.redrawShapePreview(this.mirroredExpand(this.quadraticBezierCells(this.curveStart!, this.curveControl, this.curveEnd!)));
-        return;
-      }
-      this.pushGestureUndo();
-      this.painting = true;
-      this.curveStart = cell;
-      this.curveEnd = cell;
-      this.curveControl = null;
-      this.curvePhase = 'drag-end';
-      this.redrawShapePreview(this.mirroredExpand([cell]));
-      return;
-    }
-
-    this.pushGestureUndo();
-    this.painting = true;
-    this.eraseOverride = e.button === 2;
-
-    if (this.tool === 'line') {
-      this.shapeStart = cell;
-      const end = e.shiftKey ? this.constrainShapeEnd(cell, cell) : cell;
-      this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(cell, end)));
-    } else if (this.tool === 'fill') {
-      const frame = this.activeCells();
-      const { width, height } = this.current;
-      const fillColor = this.eraseOverride ? null : this.color;
-      let changed = 0;
-      if (e.shiftKey) {
-        // Shift+click = global replace: every pixel in the layer matching the clicked color (within
-        // tolerance), not just the contiguous region a plain click would flood-fill.
-        const target = frame[cell.y * width + cell.x];
-        changed = this.globalReplace(frame, width, target, fillColor, this.fillTolerance);
-      } else {
-        this.mirrorCells(cell.x, cell.y).forEach((m) => {
-          changed += this.floodFill(frame, width, height, m.x, m.y, frame[m.y * width + m.x], fillColor, this.fillTolerance);
-        });
-      }
-      if (changed === 0) {
-        // Clicking a pixel that is already the fill color - or one outside the selection, where nothing
-        // may be painted at all - repaints nothing, so the undo entry pushed a moment ago would be a
-        // history step that undoes nothing. Taking it back is the difference between Ctrl+Z reversing
-        // the last thing actually drawn and it reversing a stray click first.
-        this.rollbackGestureUndo();
-        this.reactNotify();
-      } else {
-        if (fillColor) this.addSavedColor(fillColor);
-        this.refresh();
-      }
-    } else if (this.tool === 'spray') {
-      this.sprayPointerCell = cell;
-      this.sprayTick();
-      this.startSprayTimer();
-    } else if (this.tool === 'gradient') {
-      this.gradientStart = cell;
-      this.gradientEnd = cell;
-      this.drawGradientPreviewOverlay();
-    }
-    // No trailing `else`: every other ToolName is either handled above this shared block (eyedropper,
-    // select, lasso, curve) or dispatched through TOOL_REGISTRY before it's ever reached (pen, eraser,
-    // rect, ellipse, magicWand, move).
+    // Every ToolName reaches a `return` above this point: select/lasso are handled inline, and every
+    // other tool (pen, eraser, rect, ellipse, line, magicWand, move, eyedropper, fill, gradient, spray,
+    // curve) is dispatched through TOOL_REGISTRY (curve's resumed-gesture case is intercepted earlier,
+    // above, before this dispatch). Nothing falls through to here.
   }
 
   /** lastStrokeEndCell, but only when it still points at a cell this canvas actually has - a resize,
@@ -2850,36 +2889,6 @@ class PixelEditorEngine {
       return;
     }
 
-    const cell = this.cellFromEvent(e);
-
-    if (this.tool === 'curve') {
-      if (!cell) return;
-      if (this.curvePhase === 'drag-end') {
-        this.curveEnd = cell;
-        this.redrawShapePreview(this.mirroredExpand(bresenhamLine(this.curveStart!.x, this.curveStart!.y, cell.x, cell.y)));
-      } else if (this.curveDraggingControl) {
-        this.curveControl = cell;
-        this.redrawShapePreview(this.mirroredExpand(this.quadraticBezierCells(this.curveStart!, this.curveControl, this.curveEnd!)));
-        // redrawShapePreview() always reactNotify()s, which the curve control handle - a DOM element
-        // (PixelSelectionOverlay.tsx reads curveControl directly) - needs to track this drag live.
-      }
-      return;
-    }
-
-    if (this.tool === 'spray') {
-      if (!cell) return;
-      this.sprayPointerCell = cell;
-      this.sprayTick();
-      return;
-    }
-
-    if (this.tool === 'gradient') {
-      if (!cell || !this.gradientStart) return;
-      this.gradientEnd = e.shiftKey ? this.constrainShapeEnd(this.gradientStart, cell) : cell;
-      this.drawGradientPreviewOverlay();
-      return;
-    }
-
     if (this.tool === 'pen' || this.tool === 'eraser') {
       // Coalesced events are the positions the OS actually sampled between two browser frames, which a
       // fast flick can spread over a lot of distance. paintCell already Bresenhams between consecutive
@@ -2906,12 +2915,6 @@ class PixelEditorEngine {
       }
       return;
     }
-
-    if (!cell) return;
-    if (this.shapeStart) {
-      const end = e.shiftKey ? this.constrainShapeEnd(this.shapeStart, cell) : cell;
-      this.redrawShapePreview(this.mirroredExpand(this.computeShapeCells(this.shapeStart, end)));
-    }
   }
 
   onPointerUp(): void {
@@ -2924,7 +2927,7 @@ class PixelEditorEngine {
     if (!this.painting) return;
     this.painting = false;
     this.gestureButtons = 0;
-    this.stopSprayTimer();
+    this.stopGestureTimer();
 
     if (this.activeGesture) {
       // The real DOM pointerup carries no position (see this method's own empty signature) - finalize
@@ -2935,77 +2938,6 @@ class PixelEditorEngine {
       return;
     }
 
-    if (this.tool === 'curve') {
-      if (this.curvePhase === 'drag-end') {
-        if (this.curveStart && this.curveEnd && (this.curveStart.x !== this.curveEnd.x || this.curveStart.y !== this.curveEnd.y)) {
-          this.curveControl = {
-            x: Math.round((this.curveStart.x + this.curveEnd.x) / 2),
-            y: Math.round((this.curveStart.y + this.curveEnd.y) / 2),
-          };
-          this.curvePhase = 'bend';
-          this.redrawShapePreview(this.mirroredExpand(this.quadraticBezierCells(this.curveStart, this.curveControl, this.curveEnd)));
-          // The curve control handle (a DOM element - see PixelSelectionOverlay.tsx) first appears
-          // right here, on the drag-end→bend transition - redrawShapePreview()'s reactNotify() is
-          // what makes it actually show up.
-        } else {
-          this.cancelCurve();
-        }
-      } else if (this.curveDraggingControl) {
-        this.curveDraggingControl = false;
-        this.refresh();
-      }
-      return;
-    }
-
-
-    if (this.tool === 'gradient') {
-      // The exact per-cell color array (gradientCellsPreview) is only computed here, once, on commit -
-      // the live drag preview draws with the canvas's own native gradient instead (see
-      // drawGradientPreviewOverlay) and never needs the per-cell array at all. Baking it into the
-      // actual layer here, then - like the shape commit just below - what's left is a proper (z-order/
-      // opacity-respecting) repaint of just the cells it covered, not the whole canvas.
-      const preview = this.gradientStart && this.gradientEnd ? this.gradientCellsPreview(this.gradientStart, this.gradientEnd) : null;
-      const rects = preview ? this.cellsDirtyRects(preview, null) : [];
-      if (preview) {
-        const frame = this.activeCells();
-        const { width, height } = this.current;
-        preview.forEach((c) => {
-          if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height && this.paintAllowed(c.x, c.y)) frame[c.y * width + c.x] = c.color;
-        });
-        this.addSavedColor(this.color);
-        this.addSavedColor(this.gradientColor);
-      }
-      this.gradientStart = null;
-      this.gradientEnd = null;
-      this.gradientPreview = null;
-      this.eraseOverride = false;
-      if (rects.length) this.redrawRegions(rects);
-      else this.reactNotify();
-      return;
-    }
-
-    if (this.shapeStart && this.shapePreviewCells) {
-      const frame = this.activeCells();
-      const { width, height } = this.current;
-      const shapeColor = this.eraseOverride ? null : this.color;
-      // Bounding box of the outgoing preview cells only ("erase old, draw nothing new") - by the time
-      // this repaints, `frame` already has the committed colors, so there's no separate overlay left
-      // to draw on top (unlike redrawShapePreview mid-drag); this just needs a proper, z-order/opacity-
-      // respecting repaint of the region the (fillRect-approximated) live preview covered.
-      const rects = this.cellsDirtyRects(this.shapePreviewCells, null);
-      this.shapePreviewCells.forEach((c) => {
-        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height && this.paintAllowed(c.x, c.y)) frame[c.y * width + c.x] = shapeColor;
-      });
-      if (shapeColor) this.addSavedColor(shapeColor);
-      this.shapeStart = null;
-      this.shapePreviewCells = null;
-      this.lastPaintCell = null;
-      this.strokeSnapshot = null;
-      this.strokePoints = [];
-      this.eraseOverride = false;
-      this.redrawRegions(rects);
-      return;
-    }
     // Pen/eraser/spray/fill all already left the canvas correctly painted (their own dirty-rect or
     // full-repaint redraw already ran on the last stroke step / on mousedown) - nothing here changes a
     // pixel, so this only needs a React re-render (e.g. for canUndo()/dirty-flag-driven UI), not another
@@ -3025,155 +2957,18 @@ class PixelEditorEngine {
     this.reactNotify();
   }
 
-  /** Shift-constrain: line snaps to 0/45/90° increments, rect/ellipse snaps to a square/circle bounding box. */
-  private constrainShapeEnd(start: Cell, end: Cell): Cell {
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    if (dx === 0 && dy === 0) return end;
-    if (this.tool === 'line' || this.tool === 'gradient') {
-      const step = Math.PI / 4;
-      const angle = Math.round(Math.atan2(dy, dx) / step) * step;
-      const dist = Math.round(Math.hypot(dx, dy));
-      return {
-        x: start.x + Math.round(Math.cos(angle) * dist),
-        y: start.y + Math.round(Math.sin(angle) * dist),
-      };
-    }
-    const side = Math.max(Math.abs(dx), Math.abs(dy));
-    return {
-      x: start.x + (dx < 0 ? -side : side),
-      y: start.y + (dy < 0 ? -side : side),
-    };
-  }
-
-  /** Thickens a 1px path (e.g. a Bresenham line) to `brushSize` by stamping brushCellsAt at every
-   *  point and deduping - the same footprint a pencil stroke along that path would leave. Dedup isn't
-   *  just tidiness: without it, a long path at a large brush size would emit path-length x brushSize^2
-   *  cells (mostly overlapping squares), which is exactly the kind of unbounded-with-drag-distance cost
-   *  redrawShapePreview's dirty-rect fix was meant to avoid. */
-  private thickenPath(points: Cell[]): Cell[] {
-    if (this.brushSize <= 1) return points;
-    const seen = new Set<string>();
-    const cells: Cell[] = [];
-    points.forEach((p) => {
-      this.brushCellsAt(p.x, p.y).forEach((c) => {
-        const key = `${c.x},${c.y}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          cells.push(c);
-        }
-      });
-    });
-    return cells;
-  }
-
-  private computeShapeCells(start: Cell, end: Cell): Cell[] {
-    if (this.tool === 'line') {
-      return this.thickenPath(bresenhamLine(start.x, start.y, end.x, end.y));
-    }
-    if (this.tool === 'rect') {
-      const x0 = Math.min(start.x, end.x);
-      const x1 = Math.max(start.x, end.x);
-      const y0 = Math.min(start.y, end.y);
-      const y1 = Math.max(start.y, end.y);
-      const thickness = this.brushSize;
-      const cells: Cell[] = [];
-      for (let y = y0; y <= y1; y++) {
-        for (let x = x0; x <= x1; x++) {
-          const nearEdge = x - x0 < thickness || x1 - x < thickness || y - y0 < thickness || y1 - y < thickness;
-          if (this.shapeFilled || nearEdge) cells.push({ x, y });
-        }
-      }
-      return cells;
-    }
-    // ellipse
-    const x0 = Math.min(start.x, end.x);
-    const x1 = Math.max(start.x, end.x);
-    const y0 = Math.min(start.y, end.y);
-    const y1 = Math.max(start.y, end.y);
-    const cx = (x0 + x1) / 2 + 0.5;
-    const cy = (y0 + y1) / 2 + 0.5;
-    const rx = Math.max(0.5, (x1 - x0 + 1) / 2);
-    const ry = Math.max(0.5, (y1 - y0 + 1) / 2);
-    const cells: Cell[] = [];
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) {
-        if (!inEllipseLocal(x + 0.5, y + 0.5, cx, cy, rx, ry)) continue;
-        if (this.shapeFilled) {
-          cells.push({ x, y });
-          continue;
-        }
-        if (!inEllipseLocal(x + 0.5, y + 0.5, cx, cy, Math.max(0.5, rx - this.brushSize), Math.max(0.5, ry - this.brushSize))) cells.push({ x, y });
-      }
-    }
-    return cells;
-  }
-
-  /** Samples a quadratic bezier through p0/p1/p2 and connects the samples with bresenham lines so the
-   *  curve has no gaps, then thickens the result to `brushSize` the same way a line does (see
-   *  thickenPath) - curve is its own code path from computeShapeCells (line/rect/ellipse), so it needed
-   *  the same treatment applied separately rather than automatically inheriting it. */
-  private quadraticBezierCells(p0: Cell, p1: Cell, p2: Cell): Cell[] {
-    const approxLen = Math.hypot(p1.x - p0.x, p1.y - p0.y) + Math.hypot(p2.x - p1.x, p2.y - p1.y);
-    const steps = Math.max(8, Math.ceil(approxLen * 2));
-    const cells: Cell[] = [];
-    let prev: Cell | null = null;
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      const mt = 1 - t;
-      const cell = {
-        x: Math.round(mt * mt * p0.x + 2 * mt * t * p1.x + t * t * p2.x),
-        y: Math.round(mt * mt * p0.y + 2 * mt * t * p1.y + t * t * p2.y),
-      };
-      if (prev) bresenhamLine(prev.x, prev.y, cell.x, cell.y).forEach((c) => cells.push(c));
-      else cells.push(cell);
-      prev = cell;
-    }
-    const seen = new Set<string>();
-    const path = cells.filter((c) => {
-      const key = `${c.x},${c.y}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-    return this.thickenPath(path);
-  }
-
   /**
    * Blends startColor -> endColor across the selection (or the whole canvas with none) along the
    * start/end axis: each cell's position is projected onto that axis and clamped to [0,1]. A
    * right-click reverses which color sits at which end, reusing eraseOverride as a swap flag.
    */
-  private gradientCellsPreview(start: Cell, end: Cell): MoveBufferCell[] {
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    const lenSq = dx * dx + dy * dy;
-    const box = this.selection ?? { x0: 0, y0: 0, x1: this.current.width - 1, y1: this.current.height - 1 };
-    const startColor = this.eraseOverride ? this.gradientColor : this.color;
-    const endColor = this.eraseOverride ? this.color : this.gradientColor;
-    const [sr, sg, sb] = hexToRgb(startColor);
-    const [er, eg, eb] = hexToRgb(endColor);
-    const out: MoveBufferCell[] = [];
-    for (let y = box.y0; y <= box.y1; y++) {
-      for (let x = box.x0; x <= box.x1; x++) {
-        let t = 0.5;
-        if (lenSq > 0) {
-          t = ((x + 0.5 - start.x) * dx + (y + 0.5 - start.y) * dy) / lenSq;
-          t = Math.min(1, Math.max(0, t));
-        }
-        const color = this.ditherEnabled
-          ? ditherColorAt(x, y, startColor, endColor, ditherGradientMix(t))
-          : rgbToHex(sr + (er - sr) * t, sg + (eg - sg) * t, sb + (eb - sb) * t);
-        out.push({ x, y, color });
-      }
-    }
-    return out;
-  }
-
   /**
    * Live drag preview for the gradient tool: paints the box directly with the canvas's own native
    * (GPU-composited) linear gradient instead of computing a per-cell color array and painting it cell by
-   * cell every frame (see gradientCellsPreview, still used - but only once, on commit, see onPointerUp).
+   * cell every frame (see gradientTool.ts's `gradientCellsPreviewOps`, still used for the commit - but
+   * only once, on release, see GradientGesture.onPointerUp). Called from applyToolPreview's
+   * `gradientPreview` branch, which mirrors the live drag's start/end/eraseOverride into this class's own
+   * fields first (same "mirror into legacy fields for legacy rendering" trick as Move's moveBuffer).
    * Profiling a drag on a 1400x900, 3-layer canvas found the old per-move path cost ~2440ms in drawGrid's
    * full repaint plus ~170ms recomputing the per-cell array - the worst of any tool in this file, and for
    * a reason specific to gradients: unlike a shape outline, a gradient fills its *entire* box every
@@ -3186,15 +2981,16 @@ class PixelEditorEngine {
    * re-clearing or repainting the layers underneath - those only need painting once, whenever the drag
    * *starts* (already true: the canvas already shows the correct base picture at that point, so
    * onPointerDown doesn't need an extra repaint either, just this call). ctx.createLinearGradient handles
-   * the same clamp-to-end-stop behavior as gradientCellsPreview's `Math.min(1, Math.max(0, t))` for
+   * the same clamp-to-end-stop behavior as gradientCellsPreviewOps's `Math.min(1, Math.max(0, t))` for
    * points beyond the start/end axis natively - the one case it doesn't match is a zero-length axis
    * (start === end, e.g. right on mousedown before any drag), which paints nothing at all rather than a
-   * solid color, so that case is special-cased to match gradientCellsPreview's own `t = 0.5` default.
+   * solid color, so that case is special-cased to match gradientCellsPreviewOps's own `t = 0.5` default.
    *
    * When dither mode is on, the smooth native gradient above would be a lie - the actual commit (see
-   * gradientCellsPreview, called from onPointerUp) is a per-cell Bayer-dithered stipple, not a blend, so
-   * this falls back to painting per-cell with the same ditherColorAt() call instead, trading the native
-   * gradient's speed for a preview that matches what dragging actually produces.
+   * gradientCellsPreviewOps, called from GradientGesture.onPointerUp) is a per-cell Bayer-dithered
+   * stipple, not a blend, so this falls back to painting per-cell with the same ditherColorAt() call
+   * instead, trading the native gradient's speed for a preview that matches what dragging actually
+   * produces.
    */
   private drawGradientPreviewOverlay(): void {
     if (!this.ctx || !this.gradientStart || !this.gradientEnd) return;
@@ -3245,70 +3041,41 @@ class PixelEditorEngine {
     this.reactNotify();
   }
 
-  /** Silently drops any pending curve without a refresh - for use inside other state-resetting methods that will refresh themselves. */
+  /** Drops any pending curve gesture without a refresh - for use inside other state-resetting methods
+   *  (switching frames, pushing a new undo step, sprite load/resize/reset) that will refresh themselves.
+   *  Curve is the only tool that can be "active but not painting" (bend-idle, kept alive via
+   *  `GestureResult.keepActive`) at a point where one of these unrelated actions might fire, so this is
+   *  a no-op for every other tool. Also rolls back the undo entry curve's drag-end start pushed - the
+   *  original left that orphaned on the stack instead (a latent bug: an abandoned curve draft never
+   *  wrote real pixels, so restoring it would be a no-op anyway, but it still wasted an undo slot and
+   *  falsely marked the sprite dirty / cleared the redo stack) - fixed for free here by routing through
+   *  the same `rollbackGestureUndo()` every other cancelled gesture already uses. */
   private clearCurveState(): void {
-    this.curveStart = null;
-    this.curveEnd = null;
-    this.curveControl = null;
+    if (!this.activeGesture) return;
+    this.activeGesture.onCancel(this.buildToolContext());
+    this.activeGesture = null;
+    this.lastToolPointerEvent = null;
     this.curvePhase = null;
-    this.curveDraggingControl = false;
-    this.shapePreviewCells = null;
+    this.curveControl = null;
+    this.rollbackGestureUndo();
   }
 
-  private cancelCurve(): void {
-    this.clearCurveState();
-    this.eraseOverride = false;
-    this.refresh();
+  /** Starts ticking the active migrated tool's `Gesture.onTick` (currently only Spray) on a fixed
+   *  interval, independent of pointer movement - ports `startSprayTimer`/`sprayTick`'s wall-clock-timer
+   *  role generically, so any future timer-driven tool needs no engine changes, just `onTick`. */
+  private startGestureTimer(): void {
+    if (this.gestureTimer) clearInterval(this.gestureTimer);
+    this.gestureTimer = setInterval(() => {
+      if (!this.activeGesture?.onTick) return;
+      this.applyToolPreview(this.activeGesture.onTick(this.buildToolContext()));
+    }, SPRAY_INTERVAL_MS);
   }
 
-  private commitCurve(): void {
-    if (this.curveStart && this.curveEnd && this.curveControl && this.shapePreviewCells) {
-      const frame = this.activeCells();
-      const { width, height } = this.current;
-      const color = this.eraseOverride ? null : this.color;
-      this.shapePreviewCells.forEach((c) => {
-        if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height && this.paintAllowed(c.x, c.y)) frame[c.y * width + c.x] = color;
-      });
-      if (color) this.addSavedColor(color);
+  private stopGestureTimer(): void {
+    if (this.gestureTimer) {
+      clearInterval(this.gestureTimer);
+      this.gestureTimer = null;
     }
-    this.painting = false;
-    this.cancelCurve();
-  }
-
-  private startSprayTimer(): void {
-    if (this.sprayTimer) clearInterval(this.sprayTimer);
-    this.sprayTimer = setInterval(() => this.sprayTick(), SPRAY_INTERVAL_MS);
-  }
-
-  private stopSprayTimer(): void {
-    if (this.sprayTimer) {
-      clearInterval(this.sprayTimer);
-      this.sprayTimer = null;
-    }
-    this.sprayPointerCell = null;
-  }
-
-  /** Scatters a handful of random dots within the brush-size radius around the last known pointer cell. */
-  private sprayTick(): void {
-    if (!this.sprayPointerCell) return;
-    const { width, height } = this.current;
-    const frame = this.activeCells();
-    const color = this.currentPaintColor();
-    const radius = this.brushSize + 1;
-    const dots = Math.max(1, Math.round(radius * this.sprayDensity));
-    for (let i = 0; i < dots; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const r = Math.sqrt(Math.random()) * radius;
-      const x = Math.round(this.sprayPointerCell.x + Math.cos(angle) * r);
-      const y = Math.round(this.sprayPointerCell.y + Math.sin(angle) * r);
-      this.mirrorCells(x, y).forEach((m) => {
-        if (m.x >= 0 && m.y >= 0 && m.x < width && m.y < height && this.paintAllowed(m.x, m.y)) {
-          frame[m.y * width + m.x] = this.ditherEnabled && color ? ditherColorAt(m.x, m.y, color, this.gradientColor, 0.5) : color;
-        }
-      });
-    }
-    if (color) this.addSavedColor(color);
-    this.refresh();
   }
 
   /**
@@ -3366,22 +3133,6 @@ class PixelEditorEngine {
       pts.push({ x: Math.round(ax + rx - 0.5), y: Math.round(ay + ry - 0.5) });
     });
     return pts;
-  }
-
-  private mirroredExpand(cells: Cell[]): Cell[] {
-    if (this.symmetry === 'none') return cells;
-    const seen = new Set<string>();
-    const out: Cell[] = [];
-    cells.forEach((c) => {
-      this.mirrorCells(c.x, c.y).forEach((m) => {
-        const key = `${m.x},${m.y}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          out.push(m);
-        }
-      });
-    });
-    return out;
   }
 
   private currentPaintColor(): string | null {
@@ -3675,95 +3426,11 @@ class PixelEditorEngine {
     }
   }
 
-  /** Whether two cell colors are "the same" for fill purposes: exact match always counts (including
-   *  null===null, i.e. both transparent), and above 0 tolerance, an RGB-distance-based fuzzy match also
-   *  counts (only between two actual colors - transparent never fuzzy-matches a real color, or a fill
-   *  could leak across a fully-transparent gap). `tolerance` is 0-100, scaled against the maximum
-   *  possible RGB distance so it reads as a percentage regardless of which two colors are compared. */
-  private colorsMatch(a: string | null, b: string | null, tolerance: number): boolean {
-    if (a === b) return true;
-    if (tolerance <= 0 || a === null || b === null) return false;
-    const [ar, ag, ab] = hexToRgb(a);
-    const [br, bg, bb] = hexToRgb(b);
-    const dist = Math.sqrt((ar - br) ** 2 + (ag - bg) ** 2 + (ab - bb) ** 2);
-    const maxDist = Math.sqrt(255 * 255 * 3);
-    return (dist / maxDist) * 100 <= tolerance;
-  }
+  // colorsMatch (the fuzzy tolerance-aware color comparison Fill/Magic Wand both need) now lives as a
+  // pure function duplicated in fillTool.ts and magicWandTool.ts, ported alongside those tools.
 
-  /**
-   * Flood fill with an optional color-distance tolerance (see colorsMatch) - a fuzzy match still needs
-   * a `reference` snapshot taken once up front, not the live (being-mutated) `frame`: once a cell is
-   * repainted to `fillColor`, a live re-check against `target` could keep matching indefinitely if
-   * `fillColor` itself happens to sit within tolerance of `target` (fillColor never changes across the
-   * scan), which would loop forever re-queueing already-filled neighbors. Snapshotting up front and
-   * tracking `visited` separately sidesteps that entirely, and is pixel-identical to the old exact-match
-   * algorithm when tolerance is 0.
-   */
-  private floodFill(
-    frame: Frame,
-    width: number,
-    height: number,
-    x: number,
-    y: number,
-    target: string | null,
-    fillColor: string | null,
-    tolerance = 0
-  ): number {
-    if (this.colorsMatch(target, fillColor, tolerance)) return 0;
-    const reference = tolerance > 0 ? frame.slice() : frame;
-    const visited = tolerance > 0 ? new Uint8Array(width * height) : null;
-    // Packed 1D indices on a plain number[] stack, not [number, number] tuples - avoids allocating
-    // a small array object per visited cell (up to width*height of them on a large canvas), which
-    // mattered once a background-sized fill made this the dominant cost of the fill tool. Bounds are
-    // checked before pushing (not after popping), so an out-of-range neighbor never round-trips
-    // through the stack at all.
-    const stack: number[] = [y * width + x];
-    // How many cells this actually repainted, so a click that changes nothing (an already-filled
-    // region, or one wholly outside the selection) can have its undo entry rolled back - see the fill
-    // branch of onPointerDown.
-    let changed = 0;
-    if (visited) visited[y * width + x] = 1;
-    while (stack.length) {
-      const idx = stack.pop()!;
-      if (!this.colorsMatch(reference[idx], target, tolerance)) continue;
-      const cx = idx % width;
-      const cy = (idx - cx) / width;
-      // A selection boundary blocks the flood the same way a color mismatch does - it stops the fill
-      // from crossing into (or painting) protected pixels outside it, instead of leaking through.
-      if (!this.paintAllowed(cx, cy)) continue;
-      if (frame[idx] !== fillColor) changed++;
-      frame[idx] = fillColor;
-      const tryPush = (idx2: number) => {
-        if (!visited) {
-          stack.push(idx2);
-        } else if (!visited[idx2]) {
-          visited[idx2] = 1;
-          stack.push(idx2);
-        }
-      };
-      if (cx + 1 < width) tryPush(idx + 1);
-      if (cx - 1 >= 0) tryPush(idx - 1);
-      if (idx + width < width * height) tryPush(idx + width);
-      if (idx - width >= 0) tryPush(idx - width);
-    }
-    return changed;
-  }
-
-  /** Shift+click on the fill tool: replaces every pixel in the layer matching `target` (within
-   *  tolerance), not just the contiguous region floodFill would reach - a global find-and-replace. */
-  private globalReplace(frame: Frame, width: number, target: string | null, fillColor: string | null, tolerance: number): number {
-    const reference = frame.slice();
-    let changed = 0;
-    for (let i = 0; i < reference.length; i++) {
-      if (!this.colorsMatch(reference[i], target, tolerance)) continue;
-      const cx = i % width;
-      const cy = (i - cx) / width;
-      if (!this.paintAllowed(cx, cy)) continue;
-      if (frame[i] !== fillColor) changed++;
-      frame[i] = fillColor;
-    }
-    return changed;
-  }
+  // floodFill/globalReplace (the Fill tool's own flood/global-replace algorithms) now live as pure
+  // functions in src/lib/tools/tools/fillTool.ts, ported alongside the rest of that tool.
 
   // floodSelectMask/globalSelectMask (Magic Wand's own tolerance-aware region walk) now live as pure
   // functions in src/lib/tools/tools/magicWandTool.ts, ported alongside the rest of that tool.

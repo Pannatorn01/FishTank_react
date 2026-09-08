@@ -13,12 +13,13 @@
 อ่าน docs/PIXI_MIGRATION_PLAN.md แล้วทำ Phase ต่อไปที่ยังไม่เสร็จตาม §10 Progress Log
 ห้ามข้าม checkpoint — แต่ละ Phase ต้องผ่าน "Done when" ครบก่อนไป Phase ถัดไป
 ห้ามแตะ src/hooks/usePixelEditor.ts และเครื่องมือวาดใน editor เพื่องานนี้ (เหตุผลใน §5)
-> **อัปเดต 2026-09-07:** ระหว่างนี้มีงานแยกต่างหาก refactor เครื่องมือวาดบางส่วน (pen, eraser, rect,
-> ellipse, magicWand, move) ไปสถาปัตยกรรมใหม่ที่ `src/lib/tools/` แล้ว — ดู
-> `src/lib/tools/ARCHITECTURE.md` และ `docs/EDITOR_IMPROVEMENTS.md` กฎ "ห้ามแตะ" ข้อนี้ยังใช้ได้
-> สำหรับงาน Pixi migration นี้เหมือนเดิม (แยก scope กัน) แต่ **"ทำงานถูกแล้วไม่ต้องแก้" ใน §5.D
-> ไม่ตรงกับความจริงอีกต่อไปทั้งหมด** — ก่อนอ้างว่า editor ส่วนไหน "เดิมและนิ่งแล้ว" ให้เช็ค
-> ARCHITECTURE.md ก่อนว่าตัวนั้น migrate ไปหรือยัง
+> **อัปเดต 2026-09-08:** ระหว่างนี้มีงานแยกต่างหาก refactor เครื่องมือวาดไปสถาปัตยกรรมใหม่ที่
+> `src/lib/tools/` **ครบทุกตัวแล้ว (14/14)**: pen, eraser, rect, ellipse, line, magicWand, move, select,
+> lasso, eyedropper, fill, gradient, spray, curve — ไม่มี tool ไหนเหลือ if-chain เดิมใน
+> `usePixelEditor.ts` อีกต่อไป ดู `src/lib/tools/ARCHITECTURE.md` และ `docs/EDITOR_IMPROVEMENTS.md`
+> กฎ "ห้ามแตะ" ข้อนี้ยังใช้ได้สำหรับงาน Pixi migration นี้เหมือนเดิม (แยก scope กัน) แต่
+> **"ทำงานถูกแล้วไม่ต้องแก้" ใน §5.D ไม่ตรงกับความจริงอีกต่อไปทั้งหมด** — ก่อนอ้างว่า editor ส่วนไหน
+> "เดิมและนิ่งแล้ว" ให้เช็ค ARCHITECTURE.md ก่อน
 ```
 
 ---

@@ -45,6 +45,13 @@ export interface ToolContext {
   /** What a new selection-producing click/drag does to the existing selection when no modifier key
    *  overrides it (see SelectionMode's own doc comment in ../types.ts). */
   selectionMode: SelectionMode;
+  /** Eyedropper only: the topmost visible layer's color at (x, y) across the *whole* layer stack, not
+   *  just the active layer `getCell` reads - ports `pickColor`'s own layer walk
+   *  (usePixelEditor.ts:3587-3600). */
+  getVisibleColor(x: number, y: number): string | null;
+  /** Spray only: dots laid down per tick, as a multiple of the default (see `sprayDensity`,
+   *  usePixelEditor.ts). */
+  sprayDensity: number;
 }
 
 /** One cell write. `color: null` erases. */
@@ -86,6 +93,37 @@ export interface GestureResult {
   /** Pen/Eraser only: where the stroke ended, so the engine can update `lastStrokeEndCell` for the
    *  next stroke's Shift-chain (see ToolPointerEvent.chainFrom and usePixelEditor.ts:2898-2900). */
   finalCell?: Cell;
+  /** Eyedropper only: the color sampled from the topmost visible layer at the clicked cell - the
+   *  engine sets `color` to this. */
+  pickedColor?: string;
+  /** Eyedropper only: true = switch the active tool to Pen after picking (matches `pickColor`'s own
+   *  default `switchToPen = true` - the separate Alt-temporary-pick path never goes through this Tool
+   *  at all, so it never sets this). */
+  switchToPen?: boolean;
+  /** Gradient only: an additional color to remember as a recently-used color, alongside the primary
+   *  `ctx.color` the engine already saves generically (see `hadColor` in commitGestureResult) - ports
+   *  the original's own extra `addSavedColor(this.gradientColor)` call (usePixelEditor.ts:2952), which
+   *  saved both ends of the gradient, not just the primary color. Applied unconditionally, even when
+   *  `changed` is false, matching the original's placement inside its unconditional `if (preview)`
+   *  block rather than after any "did this actually change a pixel" check. */
+  alsoSaveColor?: string;
+  /** Curve only: true when this result is a PHASE TRANSITION, not the gesture's real end (e.g. the
+   *  drag that draws the initial line finishing and handing off to bending the control point) - the
+   *  engine must NOT clear `activeGesture`/`lastToolPointerEvent` and must NOT resolve the pushed undo
+   *  entry (no rollback, no "kept" decision) yet. A later onResumeDown/onKeyDown result that omits
+   *  this (or sets it false) is what actually finishes the gesture. */
+  keepActive?: boolean;
+  /** Curve only, paired with keepActive: the overlay to show for the new phase (e.g. the bezier
+   *  through the freshly computed control point) - same shape as ToolPreview.overlay, needed here
+   *  because a phase transition must show its preview immediately, without waiting for a move event. */
+  overlay?: { cells: Cell[]; color: string } | null;
+  /** Curve only, paired with keepActive: mirrors the gesture's new phase/control-point into the
+   *  engine's own `curvePhase`/`curveControl` fields, same "mirror into legacy fields" trick as
+   *  ToolPreview.gradientPreview - PixelSelectionOverlay.tsx reads `engine.curvePhase`/
+   *  `engine.curveControl` directly to place the draggable bend handle. Not needed on a non-keepActive
+   *  (real end) result - the engine unconditionally nulls both fields out whenever it finishes a
+   *  gesture for good, regardless of which tool it was. */
+  curvePreview?: { phase: 'drag-end' | 'bend'; control: Cell | null };
 }
 
 /** What a gesture wants drawn while it's still in progress. Exactly one of `ops`/`overlay` is set:
@@ -114,6 +152,20 @@ export interface ToolPreview {
   selectionDraft?: SelectionBox | null;
   /** Lasso only: live freeform path while dragging - mirrored into `lassoDraftPoints` the same way. */
   lassoDraftPoints?: Cell[] | null;
+  /** Gradient only: live-drag state, mirrored into the engine's own `gradientStart`/`gradientEnd`/
+   *  `eraseOverride` fields so its existing, unchanged `drawGradientPreviewOverlay()` keeps rendering
+   *  it via the canvas's own native `ctx.createLinearGradient` - a deliberate, measured optimization
+   *  (usePixelEditor.ts:3097-3122's own doc comment) that the generic per-cell `overlay` mechanism
+   *  can't reproduce (only ever one flat color) without reintroducing the regression it was written to
+   *  fix. Same "mirror data into legacy fields for legacy rendering" pattern as `movePreview`. */
+  gradientPreview?: { start: Cell; end: Cell; eraseOverride: boolean };
+  /** Curve only: mirrors the gesture's current phase/control-point into the engine's own `curvePhase`/
+   *  `curveControl` fields on every preview, not just at phase transitions - `curveControl` needs to
+   *  track live while the user drags the bend handle, the same way `moveDelta` tracks a live Move drag.
+   *  Applied unconditionally alongside whatever `overlay` is also present (unlike `gradientPreview`,
+   *  this doesn't replace the normal overlay path - curve still needs its bezier/line pixels drawn the
+   *  ordinary way, it just *also* needs these two fields kept in sync for the DOM-drawn handle). */
+  curvePreview?: { phase: 'drag-end' | 'bend'; control: Cell | null };
 }
 
 export interface Gesture {
@@ -124,6 +176,29 @@ export interface Gesture {
    *  committed progressively (via ToolPreview.ops) are rolled back by the engine re-restoring its
    *  pre-gesture undo snapshot, not by this method. */
   onCancel(ctx: ToolContext): GestureResult;
+  /** Timer-driven tools only (Spray): called on a fixed interval by the engine while this gesture is
+   *  active, independent of pointer movement - ports the `sprayTimer`/`sprayTick` mechanism
+   *  (usePixelEditor.ts:3202-3236). Returns a preview (ops, applied immediately, same as Pen/Eraser)
+   *  or null if there's nothing to paint yet (e.g. before the first pointer move). */
+  onTick?(ctx: ToolContext): ToolPreview | null;
+  /** Curve only: a further pointerdown while this gesture is still active (a previous result had
+   *  `keepActive: true`) - e.g. the click that starts dragging the bend handle, or the click elsewhere
+   *  that commits. `nearControlPoint` is resolved by the engine beforehand (screen-space, zoom-aware
+   *  hit-testing - see `isNearCurveControl`, which stays engine-side since only it has the canvas's
+   *  on-screen geometry). Returns `{ preview }` when the click continues the gesture (engine applies
+   *  it like any other live preview and keeps the gesture active) or `{ result }` when it finalizes
+   *  the gesture (engine commits/cleans up exactly like a normal onPointerUp result). Exactly one of
+   *  the two is set. */
+  onResumeDown?(
+    e: ToolPointerEvent,
+    ctx: ToolContext,
+    nearControlPoint: boolean
+  ): { preview: ToolPreview | null } | { result: GestureResult };
+  /** Curve only: a key pressed while this gesture is active outside of an actual drag (`painting` is
+   *  false between phases) - e.g. Enter to commit. Return null to let the engine's normal key handling
+   *  continue (only ever called when `activeGesture` exists at all, which nothing but Curve leaves set
+   *  while not painting). */
+  onKeyDown?(key: string, ctx: ToolContext): GestureResult | null;
 }
 
 export interface Tool {
