@@ -1,6 +1,6 @@
 # แผนย้ายชั้นเก็บข้อมูล: localStorage → Storage Adapter → Database
 
-> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0 + P1 + P2 เสร็จแล้ว · P3 (async adapter) เป็นงานถัดไป — เฟสใหญ่สุด** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
+> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0–P4 เสร็จ · P5 เขียนโค้ดครบแล้วแต่ยังไม่ได้ทดสอบกับ Supabase จริง (P5-5) · P6 (auth) เป็นงานถัดไป** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
 > ที่มา: audit โค้ดจริง ไม่ใช่การเดา
 > ทุกข้ออ้างอิง `ไฟล์:บรรทัด` ณ commit `86efa06` — ถ้าบรรทัดเลื่อน ให้ grep ชื่อฟังก์ชันที่ระบุไว้แทน
 >
@@ -49,8 +49,12 @@
 > ผลลัพธ์ที่ตามมาโดยตรง: **ห้ามใช้ Supabase client อ่าน/เขียนตรงจาก component เด็ดขาด**
 > ทุกอย่างต้องผ่าน repository (§3) ไม่งั้น offline-first จะพังทันทีที่เน็ตหลุด
 
-**ความคืบหน้า: P0, P1, P2 เสร็จแล้ว** (ดู checklist §7) · ทดสอบในเบราว์เซอร์จริงด้วย
-[`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — 19/19 ผ่าน (รันคู่กับ `npm run dev`) · งานถัดไปคือ **P3 — เฟสที่ใหญ่และเสี่ยงที่สุด**
+**ความคืบหน้า: P0–P4 เสร็จ · P5 เขียนครบแล้ว** (ดู checklist §7) · ทดสอบในเบราว์เซอร์จริงด้วย
+[`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — **25/25 ผ่าน** (รันคู่กับ `npm run dev`)
+
+> ⚠️ **สิ่งที่ยังไม่ได้พิสูจน์:** โค้ด sync ทั้งหมดยังไม่เคยคุยกับ Supabase จริงสักครั้ง (ยังไม่มีโปรเจกต์/credential)
+> · logic ที่ทดสอบได้แบบ pure — merge, outbox, การ map record↔row — มี unit test 13 เคสครบ
+> · **ขั้นตอนถัดไปฝั่งคุณ:** สร้างโปรเจกต์ Supabase → รัน `supabase/schema.sql` → ใส่ค่าใน `.env` → แล้วค่อยไล่ P5-5 · งานถัดไปคือ **P3 — เฟสที่ใหญ่และเสี่ยงที่สุด**
 
 ---
 
@@ -327,6 +331,11 @@ export interface StorageAdapter {
 5. **beforeunload** — ตอนนี้เตือนเมื่อ `dirty` ([`useTank.ts:280`](../src/hooks/useTank.ts#L280)) ยังใช้ได้เหมือนเดิม
    แต่ **ห้าม await การเซฟใน `beforeunload`** (เบราว์เซอร์ไม่รอ) — เตือนอย่างเดียวพอ
 
+**ข้อยกเว้นที่ตัดสินใจตอนลงมือ (P3):** ค่า preference ที่เป็นของ *เครื่องนี้* เท่านั้น — dock layout,
+UI scale, panel collapsed, theme — **ไม่ผ่าน data layer** แต่เรียก `loadRawPref()`/`saveRawPref()` ใน
+storage.ts แบบ sync ต่อไป เพราะมันจะไม่มีวันขึ้น database (ดู §5) และถ้าทำเป็น async จะได้ผลข้างเคียง
+คือ layout กระพริบผิดทุกครั้งที่โหลด · ที่ยังต้องประกาศ key ไว้ใน storage.ts คือเพื่อให้ backup/reset เห็น
+
 **กฎเหล็กของเฟสนี้:** ห้ามเปลี่ยน backend พร้อมกับเปลี่ยน API
 P3 ต้องจบด้วย **พฤติกรรมเหมือนเดิม 100%** โดยข้างในยังเป็น localStorage ทุกประการ
 จะได้แยกออกว่าถ้าพัง คือพังเพราะ async ไม่ใช่เพราะ backend
@@ -359,7 +368,15 @@ Playwright: เปิดแอป → วาด → เซฟ → reload → ข
 **เตรียม id ล่วงหน้า:** ตอน migrate ให้สร้าง `tankId = uid('tank')` และ
 `localUserId = uid('local')` เก็บไว้เลย — จะได้ไม่ต้องมาเติม id ทีหลังตอนที่ผู้ใช้มีข้อมูลจริงแล้ว (§5, §4 P6.1)
 
-**เสร็จเมื่อ:** เปิดแอปที่มีข้อมูลเก่า → ข้อมูลครบ · เปิดซ้ำ → ไม่ migrate ซ้ำ · ล้าง IndexedDB → bootstrap จาก localStorage ได้อีกครั้ง
+**สิ่งที่ต้องแก้ตามมา (เจอตอนลงมือ — อย่าลืมถ้าเปลี่ยน backend อีก):**
+- `downloadDataBackup()` / `resetAllData()` เดิมรู้จักแค่ localStorage → **ถ้าไม่แก้ ปุ่มกู้ภัยใน ErrorBoundary
+  จะได้ไฟล์ backup ที่ไม่มี sprite เลย และ reset จะล้างไม่หมด** · ย้ายไป [`src/lib/data/backup.ts`](../src/lib/data/backup.ts) ที่อ่าน/ล้างทั้งสองที่
+- `StorageBanner` เดิมวัดจาก localStorage → เปลี่ยนไปใช้ `navigator.storage.estimate()` ซึ่งครอบคลุม IndexedDB
+  (โควตาจริงเป็น GB → banner แทบไม่ขึ้นอีกเลย ซึ่งถูกต้อง)
+- `hydrate()` ของทั้งสอง engine ต้อง try/catch → storage ที่อ่านไม่ได้ต้องได้แอปว่าง ๆ ที่ยังใช้ได้ **ไม่ใช่หน้า Loading ค้างตลอดกาล**
+
+**เสร็จแล้ว:** เปิดแอปที่มีข้อมูลเก่า → migrate ครบและ localStorage ยังอยู่ · เปิดซ้ำ → ไม่ migrate ซ้ำ ·
+เปิด IndexedDB ไม่ได้ → fallback ไป localStorage เงียบ ๆ · backup มีข้อมูลจาก IndexedDB จริง (มีเทสต์คุมทุกข้อ)
 
 ---
 
@@ -601,19 +618,19 @@ create policy read_used_in_shared on sprites for select using (
 - [x] **P1-2** ลบแบบ tombstone — `saveSprites()` เทียบกับของเดิมในสตอเรจแล้วเขียน tombstone ให้ตัวที่หายไป (ตัด `frames` ทิ้งเพื่อคืนพื้นที่จริง) · `loadSprites()` กรอง tombstone ออกให้ UI ไม่ต้องรู้เรื่อง
 - [x] **P2-1** [`src/lib/pixelCodec.ts`](../src/lib/pixelCodec.ts) (`rle1`) + round-trip test 10 เคส (รวม worst case ทุกช่องสีต่างกัน และข้อมูลเสียหาย)
 - [x] **P2-2** อ่านได้ทั้งเก่า/ใหม่ เขียนแบบใหม่อย่างเดียว + ตัวเลขจริงบันทึกไว้ใน §4 P2 แล้ว
-- [ ] **P3-1** `StorageAdapter` + `LocalStorageAdapter` + repos
-- [ ] **P3-2** `hydrate()` แยกจาก constructor ทั้งสอง engine + สถานะ `ready`
-- [ ] **P3-3** sprite cache ในหน่วยความจำ แทนการอ่าน storage ตอนรับ `ft:sprites-updated`
-- [ ] **P3-4** ไม่มี `localStorage` เหลือนอก `src/lib/data/`
-- [ ] **P4** `IndexedDbAdapter` + migration ครั้งเดียว + ธง
-- [ ] **P4-2** สร้าง `tankId` ฝั่ง client ตั้งแต่ตอนนี้ (เตรียมตาราง `tanks` ใน P5)
-- [ ] **P4-3** `TankEngine` รับ `tankId` เป็นพารามิเตอร์ + IndexedDB store `tank` ใช้ `tankId` เป็น key
-- [ ] **P4-4** (ทำทีหลังได้) UI สลับ/สร้าง/ลบตู้
-- [ ] **P5-1** ตั้งโปรเจกต์ Supabase + `.env` (anon key เท่านั้น) + `src/lib/supabase.ts`
-- [ ] **P5-2** รัน schema §5 + เปิด RLS ครบทุกตาราง + เทสต์ policy ด้วยบัญชีทดสอบ 2 คน
-- [ ] **P5-3** `outbox.ts` (คิวใน IndexedDB + backoff + บีบให้เหลือรายการเดียวต่อ id)
-- [ ] **P5-4** `supabaseAdapter.ts` (upsert แบบ idempotent) + `syncEngine.ts` (delta pull + merge)
-- [ ] **P5-5** ทดสอบตัดเน็ต → ทำงาน → ต่อเน็ต → ข้อมูลครบไม่ซ้ำ · 2 เครื่องบัญชีเดียวกัน
+- [x] **P3-1** [`src/lib/data/`](../src/lib/data/) — `StorageAdapter` (async ทั้งหมด) + `LocalStorageAdapter` + `SpriteRepo`/`TankRepo`/`EditorPrefsRepo` + `getRepos()`
+- [x] **P3-2** `hydrate()` แยกออกจาก constructor/`init()` ทั้งสอง engine + ธง `ready` + หน้าจอ loading ใน `App.tsx` และ `TankSection.tsx`
+- [x] **P3-3** `SpriteRepo` ถือ cache ในหน่วยความจำ · `refreshPalette()` อ่านจาก cache แบบ sync (render loop ไม่ต้อง await) · ผู้ฟัง event ทั้ง 3 จุดไม่ต้องแก้เลย
+- [x] **P3-4** ไม่มีการเรียก `localStorage` เหลือนอก `src/lib/storage.ts` (ตัว backend) และ `src/lib/data/` — ค่า per-device (layout / uiScale / panel collapsed) ใช้ `loadRawPref`/`saveRawPref` แบบ sync โดยตั้งใจ ดูเหตุผลใน §4 P3
+- [x] **P4-1** [`IndexedDbAdapter`](../src/lib/data/indexedDbAdapter.ts) + migration ครั้งเดียว + ธง `migratedFrom.localStorage` (ไม่ลบข้อมูลเดิม) + fallback กลับไป localStorage เมื่อเปิด IndexedDB ไม่ได้
+- [x] **P4-2** `currentTankId` + `localUserId` ถูกสร้างตั้งแต่รันครั้งแรก (แม้ไม่มีอะไรให้ migrate)
+- [x] **P4-3** `TankEngine.tankId` + ทุก load/save ระบุตู้ · store `tanks` ใช้ `id` เป็น keyPath · `listTanks()` พร้อมใช้
+- [ ] **P4-4** (ยังไม่ทำ — ตั้งใจ) UI สลับ/สร้าง/ลบตู้ · โครงข้อมูลรองรับแล้ว เหลือแค่งาน UI
+- [x] **P5-1** `src/lib/supabase.ts` + [`.env.example`](../.env.example) (anon key เท่านั้น · `.env` เข้า .gitignore แล้ว) — **เหลือฝั่งคุณ: สร้างโปรเจกต์จริงแล้วเติมค่า**
+- [x] **P5-2** [`supabase/schema.sql`](../supabase/schema.sql) พร้อมรัน (ตาราง + RLS + trigger `bump_rev` · re-runnable) — **เหลือฝั่งคุณ: รันจริง + เทสต์ policy ด้วยบัญชีทดสอบ 2 คน**
+- [x] **P5-3** [`outbox.ts`](../src/lib/data/outbox.ts) — คิวใน IndexedDB store `outbox` + exponential backoff (cap 5 นาที) + coalesce เหลือรายการเดียวต่อ record
+- [x] **P5-4** [`syncEngine.ts`](../src/lib/data/syncEngine.ts) (flush + delta pull + merge) · [`rows.ts`](../src/lib/data/rows.ts) (map record ↔ row) · [`merge.ts`](../src/lib/data/merge.ts) (last-write-wins + tiebreak ด้วย `rev`)
+- [ ] **P5-5** ⚠️ **ยังทดสอบกับ Supabase จริงไม่ได้** (ไม่มี credential) — logic ทั้งหมดมี unit test 13 เคส แต่ยังไม่เคยยิงขึ้น server จริงสักครั้ง · ต้องทำเมื่อมีโปรเจกต์: ตัดเน็ต → ทำงาน → ต่อเน็ต → ข้อมูลครบไม่ซ้ำ · 2 เครื่องบัญชีเดียวกัน
 - [ ] **P5-6** ตัดสินใจว่า sprite ต้องย้ายไป Supabase Storage ไหม (ใช้ตัวเลขจริงจาก P2)
 - [ ] **P6-1** guest mode: `localUserId` + ปุ่มล็อกอินแบบไม่บังคับ
 - [ ] **P6-2** magic link + Google + flow อัปโหลดงานเดิมตอนล็อกอินครั้งแรก (พร้อม progress)

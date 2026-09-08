@@ -56,11 +56,11 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const lastWheelZoom = useRef(0);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     // Only show the "saved" tick when it actually saved - the failure case has to say so out loud
     // (alert, matching how the editor reports its own save failures in PixelEditorPanel), because the
     // tank keeps its unsaved edits in memory and the user would otherwise close the tab on them.
-    const result = engine.save();
+    const result = await engine.save();
     if (!result.ok) {
       alert(result.error instanceof StorageQuotaError ? t('error.storageFull') : t('error.tankSaveFailed'));
       return;
@@ -70,7 +70,7 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
   };
 
   const handleRefresh = () => {
-    engine.refresh(() => confirm(t('tank.refreshConfirm')));
+    void engine.refresh(() => confirm(t('tank.refreshConfirm')));
   };
 
   const [widthInput, setWidthInput] = useState(String(engine.tankWidth ?? ''));

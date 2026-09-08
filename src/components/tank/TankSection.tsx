@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useTank } from '@/hooks/useTank';
+import { useLanguage } from '@/lib/i18n';
 import { LifePanel } from './LifePanel';
 import { TankPanel } from './TankPanel';
 
@@ -20,6 +21,7 @@ export type TankMode = 'build' | 'life';
  */
 export function TankSection({ mode, active }: { mode: TankMode; active: boolean }) {
   const engine = useTank();
+  const { t } = useLanguage();
 
   useEffect(() => {
     const onSpritesUpdated = () => engine.refreshPalette();
@@ -44,6 +46,10 @@ export function TankSection({ mode, active }: { mode: TankMode; active: boolean 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
+
+  // Same reason as the editor's gate in App.tsx: an un-hydrated engine has an empty tank, and an empty
+  // tank on screen is indistinguishable from one the user just lost.
+  if (!engine.ready) return <p className="tab-panel-loading">{t('app.loading')}</p>;
 
   return (
     <>

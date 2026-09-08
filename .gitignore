@@ -27,3 +27,7 @@ font-licenses/
 *.njsproj
 *.sln
 *.sw?
+
+# Local Supabase credentials - never committed (see .env.example)
+.env
+.env.local

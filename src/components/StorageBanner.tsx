@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { useLanguage } from '@/lib/i18n';
-import { downloadDataBackup, estimateUsage } from '@/lib/storage';
+import { downloadDataBackup } from '@/lib/data/backup';
+import { estimateUsage } from '@/lib/storage';
 
 /** Below this the banner stays hidden - a warning that is always on screen stops being a warning, and
  *  the app is perfectly healthy at half-full. Chosen so there is still room for a couple of large
@@ -14,14 +15,33 @@ const WARN_AT_PERCENT = 70;
  * first sign of a full store is a save that fails, which is the one moment the user cannot afford it.
  * See docs/STORAGE_DB_MIGRATION_PLAN.md P0-2/P0-5.
  */
+/**
+ * How full this browser's storage is, whichever backend the data actually lives in. The Storage API
+ * covers IndexedDB (where sprites live now) as well as localStorage and is what browsers themselves
+ * enforce quotas against; the localStorage-only estimate is the fallback for browsers that do not
+ * expose it, and for the localStorage backend.
+ */
+async function measureUsage(): Promise<number> {
+  try {
+    const estimate = await navigator.storage?.estimate?.();
+    if (estimate?.usage != null && estimate.quota) return (estimate.usage / estimate.quota) * 100;
+  } catch (e) {
+    console.warn('storage estimate unavailable', e);
+  }
+  return estimateUsage().percent;
+}
+
 export function StorageBanner({ readOnly }: { readOnly: boolean }) {
   const { t } = useLanguage();
-  const [percent, setPercent] = useState(() => estimateUsage().percent);
+  const [percent, setPercent] = useState(0);
 
   useEffect(() => {
     // Re-measure when the library actually changes rather than on a timer: sprites are the only thing
     // big enough to move the number, and both events already fire on every save/delete.
-    const remeasure = () => setPercent(estimateUsage().percent);
+    const remeasure = () => {
+      void measureUsage().then(setPercent);
+    };
+    remeasure();
     window.addEventListener('ft:sprites-updated', remeasure);
     window.addEventListener('ft:sprite-deleted', remeasure);
     return () => {
@@ -36,7 +56,7 @@ export function StorageBanner({ readOnly }: { readOnly: boolean }) {
     <div className={`storage-banner${readOnly ? ' storage-banner-error' : ''}`} role="status">
       <i className="fa-solid fa-triangle-exclamation" aria-hidden="true" />
       <span>{readOnly ? t('error.readOnly') : t('storage.nearlyFull', { percent: Math.round(percent) })}</span>
-      <Button type="button" size="sm" variant="secondary" onClick={() => downloadDataBackup()}>
+      <Button type="button" size="sm" variant="secondary" onClick={() => void downloadDataBackup()}>
         <i className="fa-solid fa-download" /> {t('storage.exportBackup')}
       </Button>
     </div>

@@ -21,6 +21,25 @@ const killer = setTimeout(() => {
 }, HARD_TIMEOUT_MS);
 killer.unref?.();
 
+
+/** Reads an object store out of the app's IndexedDB database, from inside the page. */
+async function readStore(page, store) {
+  return page.evaluate(
+    (name) =>
+      new Promise((resolve, reject) => {
+        const req = indexedDB.open('fishtank');
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => {
+          const db = req.result;
+          const all = db.transaction(name, 'readonly').objectStore(name).getAll();
+          all.onsuccess = () => resolve(all.result);
+          all.onerror = () => reject(all.error);
+        };
+      }),
+    store
+  );
+}
+
 const results = [];
 function check(name, ok, detail) {
   results.push({ name, ok, detail });
@@ -44,10 +63,16 @@ function check(name, ok, detail) {
   const libCards = await page.locator('.library-card').count();
   check('cold start shows the two default sprites', libCards === 2, `cards=${libCards}`);
 
-  const encodedOnBootstrap = await page.evaluate(() =>
-    (localStorage.getItem('fishtank.sprites.v1') || '').includes('"enc":"rle1"')
+  const bootstrapRows = await readStore(page, 'sprites');
+  check(
+    'bootstrap wrote frames run-length encoded into IndexedDB',
+    bootstrapRows.length === 2 && bootstrapRows.every((s) => s.frames.every((f) => f.every((l) => l.cells.enc === 'rle1'))),
+    `rows=${bootstrapRows.length}`
   );
-  check('bootstrap wrote frames run-length encoded', encodedOnBootstrap);
+
+  const metaRows = await readStore(page, 'meta');
+  const meta = Object.fromEntries(metaRows.map((m) => [m.key, m.value]));
+  check('a tank id and a local user id exist from the first run', !!meta.currentTankId && !!meta.localUserId, JSON.stringify(meta));
 
   const bannerCount = await page.locator('.storage-banner').count();
   check('no storage warning banner on a nearly empty store', bannerCount === 0);
@@ -65,17 +90,15 @@ function check(name, ok, detail) {
   await page.getByRole('button', { name: 'Save to library' }).click();
   await page.waitForTimeout(300);
 
-  const afterSave = await page.evaluate(() => {
-    const raw = JSON.parse(localStorage.getItem('fishtank.sprites.v1'));
-    return {
-      count: raw.length,
-      names: raw.map((s) => s.name),
-      hasMeta: raw.every((s) => typeof s.updatedAt === 'number' && s.deletedAt === 0 && s.rev === 0),
-      allHaveIds: raw.every((s) => typeof s.id === 'string' && s.id.length > 0),
-      encoded: raw.every((s) => s.frames.every((f) => f.every((l) => l.cells && l.cells.enc === 'rle1'))),
-      bytes: localStorage.getItem('fishtank.sprites.v1').length,
-    };
-  });
+  const rows = await readStore(page, 'sprites');
+  const afterSave = {
+    count: rows.length,
+    names: rows.map((s) => s.name),
+    hasMeta: rows.every((s) => typeof s.updatedAt === 'number' && s.deletedAt === 0 && s.rev === 0),
+    allHaveIds: rows.every((s) => typeof s.id === 'string' && s.id.length > 0),
+    encoded: rows.every((s) => s.frames.every((f) => f.every((l) => l.cells && l.cells.enc === 'rle1'))),
+    bytes: JSON.stringify(rows).length,
+  };
   check('saving adds the sprite to the library', afterSave.count === 3 && afterSave.names.includes('Smoke Fish'), JSON.stringify(afterSave.names));
   check('every saved record carries RecordMeta', afterSave.hasMeta);
   check('every saved record has an id', afterSave.allHaveIds);
@@ -93,14 +116,11 @@ function check(name, ok, detail) {
   const cardWithSmoke = page.locator('.library-card', { hasText: 'Smoke Fish' });
   await cardWithSmoke.locator('button').last().click();
   await page.waitForTimeout(300);
-  const afterDelete = await page.evaluate(() => {
-    const raw = JSON.parse(localStorage.getItem('fishtank.sprites.v1'));
-    const dead = raw.filter((s) => s.deletedAt > 0);
-    return {
-      live: raw.filter((s) => s.deletedAt === 0).map((s) => s.name),
-      tombstones: dead.map((s) => ({ name: s.name, frames: s.frames.length })),
-    };
-  });
+  const deleteRows = await readStore(page, 'sprites');
+  const afterDelete = {
+    live: deleteRows.filter((s) => s.deletedAt === 0).map((s) => s.name),
+    tombstones: deleteRows.filter((s) => s.deletedAt > 0).map((s) => ({ name: s.name, frames: s.frames.length })),
+  };
   check('deleted sprite leaves a tombstone with no frames',
     afterDelete.tombstones.length === 1 && afterDelete.tombstones[0].frames === 0,
     JSON.stringify(afterDelete.tombstones));
@@ -109,6 +129,9 @@ function check(name, ok, detail) {
 
   // ---- 5. a library saved in the OLD uncompressed format still loads -----------------
   await page.evaluate(() => {
+    // Wiping the database puts this browser back in the state a returning user is in: data in
+    // localStorage, nothing in IndexedDB yet. Reloading must migrate it across.
+    indexedDB.deleteDatabase('fishtank');
     const legacy = [
       {
         id: 'legacy_1',
@@ -125,7 +148,17 @@ function check(name, ok, detail) {
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForSelector('canvas.pixel-canvas');
   const legacyNames = await page.locator('.library-card').allInnerTexts();
-  check('a pre-RLE library still loads', legacyNames.join(' ').includes('Legacy Fish'), legacyNames.join(' | '));
+  check('a pre-RLE localStorage library is migrated into IndexedDB', legacyNames.join(' ').includes('Legacy Fish'), legacyNames.join(' | '));
+
+  const migratedRows = await readStore(page, 'sprites');
+  check('the migrated sprite is in IndexedDB, encoded', migratedRows.length === 1 && migratedRows[0].frames[0][0].cells.enc === 'rle1', `rows=${migratedRows.length}`);
+  const localStorageKept = await page.evaluate(() => !!localStorage.getItem('fishtank.sprites.v1'));
+  check('migration leaves the localStorage copy in place (the way back)', localStorageKept);
+
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('canvas.pixel-canvas');
+  const afterSecondLoad = await readStore(page, 'sprites');
+  check('a second load does not migrate again', afterSecondLoad.length === 1, `rows=${afterSecondLoad.length}`);
 
   // ---- 6. tank: place a fish, save, reload ------------------------------------------
   await page.getByRole('button', { name: 'Build Tank' }).first().click();
@@ -146,12 +179,16 @@ function check(name, ok, detail) {
     await page.waitForTimeout(200);
     await page.locator('[title="Save tank"]').first().click();
     await page.waitForTimeout(300);
-    const tankSaved = await page.evaluate(() => {
-      const raw = JSON.parse(localStorage.getItem('fishtank.instances.v1') || '[]');
-      return { n: raw.length, meta: raw.every((i) => typeof i.updatedAt === 'number' && i.deletedAt === 0) };
-    });
+    const tanks = await readStore(page, 'tanks');
+    const instances = tanks.flatMap((t) => t.instances);
+    const tankSaved = {
+      n: instances.length,
+      meta: instances.every((i) => typeof i.updatedAt === 'number' && i.deletedAt === 0),
+      named: tanks.every((t) => typeof t.id === 'string' && t.id.length > 0),
+    };
     check('tank save writes an instance', tankSaved.n >= 1, `instances=${tankSaved.n}`);
     check('tank instances carry RecordMeta', tankSaved.meta);
+    check('the tank is stored under its own id', tankSaved.named);
   } else {
     check('tank palette reachable', false, 'no .tank-palette-item found');
   }
@@ -167,6 +204,11 @@ function check(name, ok, detail) {
     d.accept();
   });
   await page2.addInitScript(() => {
+    // Both backends refuse to write: IndexedDB will not open (so the adapter falls back), and the
+    // localStorage it falls back to reports itself full. That is the genuinely unwritable browser.
+    indexedDB.open = () => {
+      throw new DOMException('blocked', 'SecurityError');
+    };
     const realSet = Storage.prototype.setItem;
     Storage.prototype.setItem = function (k, v) {
       if (String(k).startsWith('fishtank.sprites')) throw new DOMException('full', 'QuotaExceededError');
@@ -184,17 +226,32 @@ function check(name, ok, detail) {
   const readOnlyBanner = await page2.locator('.storage-banner.storage-banner-error').count();
   check('read-only session shows the red banner', readOnlyBanner === 1, `banners=${readOnlyBanner}`);
 
-  // ---- 8. the warning banner appears as the store fills ------------------------------
+  // ---- 8. the warning banner appears as storage fills --------------------------------
+  // Reported rather than actually filled: with the data in IndexedDB the real quota is gigabytes, and
+  // what is being checked here is that the banner reacts to the browser's own estimate at all.
   const page3 = await ctx.newPage();
-  await page3.goto(URL, { waitUntil: 'domcontentloaded' });
-  await page3.evaluate(() => {
-    // ~4MB of junk under a key the app owns, i.e. ~80% of the assumed 5MB budget.
-    localStorage.setItem('fishtank.paletteColors.v1', JSON.stringify('x'.repeat(2_000_000)));
+  await page3.addInitScript(() => {
+    Object.defineProperty(navigator, 'storage', {
+      configurable: true,
+      value: { estimate: async () => ({ usage: 85, quota: 100 }) },
+    });
   });
-  await page3.reload({ waitUntil: 'domcontentloaded' });
+  await page3.goto(URL, { waitUntil: 'domcontentloaded' });
   await page3.waitForSelector('canvas.pixel-canvas');
+  await page3.waitForTimeout(500);
   const warnBanner = await page3.locator('.storage-banner').first().innerText().catch(() => '');
-  check('warning banner appears when the store is ~80% full', warnBanner.includes('% full'), JSON.stringify(warnBanner));
+  check('warning banner appears when the browser reports storage nearly full', warnBanner.includes('% full'), JSON.stringify(warnBanner));
+
+  // ---- 9. the escape hatch still sees the data now that it lives in IndexedDB -------
+  const page4 = await ctx.newPage();
+  await page4.goto(URL, { waitUntil: 'domcontentloaded' });
+  await page4.waitForSelector('canvas.pixel-canvas');
+  const backup = await page4.evaluate(async () => {
+    const mod = await import('/src/lib/data/backup.ts');
+    const dump = await mod.collectBackup();
+    return { stores: Object.keys(dump), sprites: (dump.sprites || []).length };
+  });
+  check('a backup includes the IndexedDB sprite library', backup.sprites > 0, JSON.stringify(backup));
 
   const realErrors = errors.filter((e) => !/favicon|font|Failed to load resource/i.test(e));
   check('no unexpected console errors', realErrors.length === 0, realErrors.slice(0, 3).join(' // '));

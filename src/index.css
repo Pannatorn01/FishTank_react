@@ -521,6 +521,20 @@ body, #root { height: 100%; margin: 0; }
   border-bottom-color: #5e1a1a;
 }
 .storage-banner span { flex: 1; }
+
+/* Sync state, in the title bar next to the scale/theme pickers (SyncStatusChip.tsx). Deliberately
+   quiet: it is reassurance, not a control. */
+.sync-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  font-size: 0.68rem;
+  opacity: 0.75;
+  white-space: nowrap;
+}
+.sync-chip-error,
+.sync-chip-offline { opacity: 1; color: #f2c14e; }
 .tab-panel-loading { padding: 24px; opacity: 0.7; }
 
 .error-boundary {

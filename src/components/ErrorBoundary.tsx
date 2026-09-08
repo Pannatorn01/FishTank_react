@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { downloadDataBackup, resetAllData } from '@/lib/storage';
+import { downloadDataBackup, resetAllData } from '@/lib/data/backup';
 
 interface Props {
   children: ReactNode;
@@ -14,7 +14,7 @@ interface State {
  * component throwing during render - a malformed sprite loaded from localStorage, an edge case in a
  * hook - took down the whole app with a blank white screen and no way back except opening DevTools and
  * clearing storage manually. This can't fix the error, but it can stop the user from losing unsaved
- * work over it: offers a one-click backup of everything in localStorage (see downloadDataBackup),
+ * work over it: offers a one-click backup of everything stored in this browser (see downloadDataBackup),
  * separate from the reload/reset actions so a backup always happens *before* anything destructive.
  */
 export class ErrorBoundary extends Component<Props, State> {
@@ -29,8 +29,9 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   private handleReset = (): void => {
-    resetAllData();
-    window.location.reload();
+    // The reload is what actually releases this browser's handle on the database, so it happens
+    // whether or not the delete could complete (see resetAllData).
+    void resetAllData().then(() => window.location.reload());
   };
 
   render() {
@@ -41,7 +42,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <h2>เกิดข้อผิดพลาดที่ไม่คาดคิด</h2>
           <p>หน้านี้แสดงผลต่อไม่ได้ แต่ข้อมูลที่บันทึกไว้ในเบราว์เซอร์ยังอยู่ - ดาวน์โหลดสำรองไว้ก่อนได้เลย</p>
           <div className="error-boundary-actions">
-            <button type="button" className="error-boundary-btn error-boundary-btn-primary" onClick={() => downloadDataBackup()}>
+            <button type="button" className="error-boundary-btn error-boundary-btn-primary" onClick={() => void downloadDataBackup()}>
               ดาวน์โหลดข้อมูลสำรอง
             </button>
             <button type="button" className="error-boundary-btn" onClick={() => window.location.reload()}>

@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { KEY_EDITOR_LAYOUT } from '@/lib/storage';
+import { KEY_EDITOR_LAYOUT, loadRawPref, saveRawPref } from '@/lib/storage';
 
 /**
  * Which of the three docks around the canvas a panel currently lives in. The canvas itself is always
@@ -244,7 +244,7 @@ function normalize(raw: unknown): EditorLayout {
 
 function load(): EditorLayout {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = loadRawPref(STORAGE_KEY);
     return normalize(raw ? JSON.parse(raw) : null);
   } catch {
     // Unreadable or blocked storage just means "the default layout", never a failure to render.
@@ -253,11 +253,7 @@ function load(): EditorLayout {
 }
 
 function save(layout: EditorLayout): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(layout));
-  } catch {
-    // Not being able to remember the arrangement is no reason to refuse to make it.
-  }
+  saveRawPref(STORAGE_KEY, JSON.stringify(layout));
 }
 
 export type EditorLayoutApi = {
