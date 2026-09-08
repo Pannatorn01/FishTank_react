@@ -41,19 +41,22 @@ canvas ใหญ่" ไม่ใช่ "แต่ละ step กินน้อ
 
 ## P1 — หนี้ทางสถาปัตยกรรม
 
-### 4. `usePixelEditor.ts` ยังใหญ่ (กำลังเล็กลงเรื่อยๆ)
-migrate เครื่องมือไปสถาปัตยกรรมใหม่แล้ว 13 จาก 14 ตัว (pen, eraser, rect, ellipse, line, magicWand,
-move, select, lasso, eyedropper, fill, gradient, spray) เหลือแค่ **curve** ตัวเดียว
-(2-phase drag ต้องขยาย interface รองรับ gesture ข้ามหลาย pointerdown-cycle — ดูรายละเอียดใน
-ARCHITECTURE.md §Migration plan; type ที่ต้องใช้ (`keepActive`/`overlay`/`onResumeDown`/`onKeyDown`)
-เพิ่มไว้ใน `types.ts` แล้วแต่ยังไม่ได้ wire เข้า engine จริง)
+### 4. `usePixelEditor.ts` ยังใหญ่ (migrate เครื่องมือครบทุกตัวแล้ว)
+**สถานะ:** เสร็จแล้ว — migrate เครื่องมือไปสถาปัตยกรรมใหม่ครบทั้ง 14 ตัว (pen, eraser, rect, ellipse,
+line, magicWand, move, select, lasso, eyedropper, fill, gradient, spray, curve) ไม่มี tool ไหนเหลือ
+if-chain เดิมแล้ว curve (ตัวสุดท้าย ใหญ่ที่สุด) ต้องเพิ่ม interface จริง 4 อย่าง
+(`keepActive`/`overlay`/`onResumeDown`/`onKeyDown`) เพราะเป็น gesture เดียวที่ข้ามหลาย
+pointerdown-cycle (ลาก line เริ่มต้น → ปล่อย → โผล่ preview เบซิเยร์รอ handle → คลิกครั้งที่สองแยก
+ต่างหากถึงจะ commit) — รายละเอียดเต็มอยู่ใน `src/lib/tools/ARCHITECTURE.md`
 การ migrate select/lasso ลบโค้ดตายจริง (`startMoveGesture`, `moveStartCell`, legacy `moveBuffer`
-branch, `draftSelectionMode`) ออกไปด้วย หลังยืนยัน caller ครบทุกจุด — migrate line รอบถัดมาลบ
-`computeShapeCells()` เต็มตัว + `shapeStart` field ออกไปด้วยเหตุผลเดียวกัน (branch rect/ellipse ใน
-`computeShapeCells` ตายมาตั้งแต่ migrate rect/ellipse แล้วแต่ไม่เคยเก็บกวาด จนกระทั่ง line เข้าไปด้วย
-ทำให้ทั้งฟังก์ชันตายสนิท)
-**แผนละเอียด + ลำดับที่แนะนำ + จุดเสี่ยง:** อยู่ใน `src/lib/tools/ARCHITECTURE.md` §Migration plan แล้ว
-(ไม่ต้องเขียนซ้ำที่นี่)
+branch, `draftSelectionMode`) ออกไปด้วย หลังยืนยัน caller ครบทุกจุด — migrate line ลบ
+`computeShapeCells()` เต็มตัว + `shapeStart` field — migrate curve ลบมากที่สุดรอบเดียว: `commitCurve`/
+`cancelCurve` เต็มตัว, `curveStart`/`curveEnd`/`curveDraggingControl` fields, engine's เอง
+`quadraticBezierCells`/`mirroredExpand`/`thickenPath`
+**ของแถมที่เจอระหว่าง migrate curve (แก้แล้ว ไม่ใช่แค่ preserve เฉย ๆ):** 2 บั๊กจริง ดูรายละเอียดที่
+ARCHITECTURE.md §Deviations — (1) `commitGestureResult`'s "ไม่มีอะไรเปลี่ยน" ไม่เคย repaint dirtyRects
+เลย ทำให้ rect/line/curve ที่ลากออกนอก selection ทั้งหมดค้าง overlay ไว้บนจอ (2) Escape ระหว่าง curve
+bend-idle ไม่เคย rollback undo entry ที่ push ไว้ตอนเริ่มลาก ทำให้ค้าง entry เปล่าไว้ใน undo stack
 
 ### 5. โค้ดเดิมที่ตายแล้ว — ล่าสุด: ลบไปแล้วจริง (หลังพลาดไปหนึ่งรอบ)
 รอบก่อน: เข้าใจผิดว่า branch `if (this.moveBuffer)` ใน `onPointerMove` เข้าไม่ถึงแล้ว ลองลบดูจริงแล้วพบว่า
@@ -64,18 +67,29 @@ branch, `draftSelectionMode`) ออกไปด้วย หลังยืน�
 `draftSelectionMode` **กลายเป็น dead code จริง** แล้ว — ลบออกไปแล้วรอบนี้ หลังจาก grep หา caller
 ทุกจุดยืนยันซ้ำก่อนลบทุกครั้ง (ไม่ใช่แค่เชื่อว่า "น่าจะ" unreachable เหมือนรอบก่อน)
 **บทเรียนที่ยังใช้ได้เสมอ:** ก่อนสรุปว่าอะไร "unreachable" ต้องไล่ caller ทุกจุดจริง ๆ ไม่ใช่แค่ grep
-ชื่อ tool ส่วน tail ของ pen/shape ที่เหลือใน `onPointerMove`/`onPointerUp` (สำหรับ tool ที่ยังไม่ migrate)
-**ยังไม่ได้ตรวจซ้ำ** — ห้ามสมมติว่าลบได้จนกว่าจะไล่ทุก caller แบบเดียวกัน
+ชื่อ
+
+**เจอเพิ่มระหว่าง migrate curve (ตัวสุดท้าย) — ยังไม่ได้ลบ ทิ้งไว้เป็น follow-up แยก:**
+1. `shapePreviewCells` field + `redrawShapePreview()` method + `drawGrid(this.shapePreviewCells ??
+   undefined)` สองจุดใน `refresh()`/`attachCanvas()` — curve เป็น writer ตัวสุดท้ายของ field นี้ พอ
+   migrate แล้วไม่มีใครเขียนเข้าอีกเลย กลายเป็น dead code จริง แต่ไม่ได้ลบรอบนี้เพราะต้องแตะ
+   `refresh()`/`attachCanvas()` (จุดที่ทุก tool เดินผ่าน) ซึ่งเสี่ยงเกินความคุ้มค่าเมื่อรวมอยู่ใน diff
+   ที่ใหญ่อยู่แล้ว — เหมาะเป็น PR แยกเล็ก ๆ ต่างหาก
+2. ส่วน tail ของ pen/eraser ที่เหลือใน `onPointerMove` (บล็อก `if (this.tool === 'pen' || this.tool
+   === 'eraser')` ที่ยังเรียก `paintCell`/`cellFromEventUnclamped` เดิม) **น่าจะตายสนิทแล้วตั้งแต่ตอน
+   migrate pen** (pen เข้า TOOL_REGISTRY แล้ว, `activeGesture` check ด้านบนน่าจะ return ก่อนถึงบล็อกนี้
+   เสมอ) — แต่ยังไม่ได้ grep caller ยืนยันแบบเดียวกับที่ทำกับ tool อื่น ๆ **ห้ามลบจนกว่าจะตรวจซ้ำแบบ
+   เดียวกัน**
 
 ### 6. ยังไม่มีเทสต์ในส่วนที่เสี่ยงที่สุด
-มีเทสต์แล้ว: `src/lib/tools/` (115 tests รวม eyedropper/fill/gradient/spray) + `pixelMath` (4 tests) +
+มีเทสต์แล้ว: `src/lib/tools/` (127 tests รวมครบทุก tool ที่ migrate แล้ว) + `pixelMath` (4 tests) +
 `storage.ts` (12 tests — เพิ่มมาจากอีก session หนึ่งระหว่างนี้ ไม่ใช่ของ backlog นี้)
 **ยังไม่มีเลย:** `useTank.ts` (2,083 บรรทัด)
 **แนวทาง:** เขียนเทสต์ให้ `useTank.ts` ต่อ — ยังไม่มีการ audit ว่าจุดเสี่ยงที่สุดในนั้นคือจุดไหน
 
 ### 7. `docs/PIXI_MIGRATION_PLAN.md` ขัดกับงานที่ทำไปแล้ว (มีหมายเหตุอัปเดตแล้ว บางส่วน)
 ไฟล์นั้นเขียนว่า *"ห้ามแตะ src/hooks/usePixelEditor.ts และเครื่องมือวาดใน editor"*
-แต่ตอนนี้ refactor เครื่องมือวาดไปแล้ว 12 จาก 14 ตัว (เหลือ spray/curve)
+แต่ตอนนี้ refactor เครื่องมือวาดไปแล้วครบทุกตัว (14/14)
 **สถานะ:** §0 ของไฟล์นั้นมีหมายเหตุอัปเดต (2026-09-08) บอกจำนวนที่ migrate ไปแล้ว + เตือนว่า §5.D
 "ทำงานถูกแล้วไม่ต้องแก้" ไม่ตรงความจริงทั้งหมดแล้ว — **ยังไม่ได้แก้ §5.D เองแบบเต็ม ๆ** แค่แปะหมายเหตุ
 ไว้ให้เช็ค ARCHITECTURE.md ก่อนอ้างอิงจุดไหนว่า "เดิมและนิ่งแล้ว"
@@ -140,8 +154,8 @@ structure ออก เปลี่ยน wrapping element จาก `<label>` �
   ยืนยันด้วยการทดสอบจริง: ก่อนแก้ลากขวาทับเส้นแล้วไม่มีอะไรเกิดขึ้น หลังแก้ลบออกหมด
   → แก้ที่ `penTool.ts:createPenTool` + ล็อกด้วย unit test 2 ตัว
   (`rect`/`ellipse` ไม่มีปัญหานี้ — `ShapeGesture` อ่าน `button` อยู่แล้ว)
-  > **ที่ต้องเช็คต่อ:** tool ที่ยังไม่ migrate (curve) ยังใช้ `eraseOverride` ของเดิมอยู่ — ตอน migrate
-  > ต้องไม่ลืม modifier นี้เหมือนกัน (line/fill/gradient/spray เช็คแล้วตอน migrate)
+  > **ปิดจบแล้ว:** ทุก tool migrate ครบแล้ว รวม curve (ตัวสุดท้าย) — เช็คแล้วว่า right-click erase
+  > ยังทำงานถูกต้องทุกตัว (line/fill/gradient/spray/curve ทุกตัวเช็คแล้วตอน migrate ของตัวเอง)
 
 ## บทเรียนจากบั๊กที่เพิ่งแก้ (กันพลาดซ้ำ)
 

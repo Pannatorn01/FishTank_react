@@ -1,11 +1,10 @@
 # Pixel editor tool architecture
 
 Response to `.claude/prompt/edit-pixeleditor.md`: a from-scratch architecture for the drawing-tool
-engine. **Eleven tools are migrated and wired into the live `PixelEditorEngine`**: Pen/Eraser,
-Rect/Ellipse/Line, Magic Wand, Move, Select, Lasso, Eyedropper, Fill, Gradient, Spray. Only **Curve**
-is untouched, still running on the original inline `if (this.tool === 'xxx')` handling in
-`src/hooks/usePixelEditor.ts` - see its own §Migration plan entry for why it's the one tool that
-needed real interface work first.
+engine. **All fourteen tools are migrated and wired into the live `PixelEditorEngine`**: Pen/Eraser,
+Rect/Ellipse/Line, Magic Wand, Move, Select, Lasso, Eyedropper, Fill, Gradient, Spray, Curve. None of
+`usePixelEditor.ts`'s original inline `if (this.tool === 'xxx')` gesture handling remains - every tool
+now runs through `src/lib/tools/`.
 
 ## Why
 
@@ -36,7 +35,8 @@ src/lib/tools/
     fillTool.ts                   Fill
     gradientTool.ts                Gradient
     sprayTool.ts                    Spray
-  __tests__/             vitest unit tests for all of the above (115 tests, no DOM)
+    curveTool.ts                     Curve
+  __tests__/             vitest unit tests for all of the above (127 tests, no DOM)
 ```
 
 **Tool** is a stateless factory: given a `ToolPointerEvent` (a pointer event already resolved to a
@@ -159,11 +159,64 @@ on the timer - `onPointerMove` and `onTick` both call the same private `scatterO
 (`if (this.activeGesture) this.stopGestureTimer();`, replacing the old `if (this.tool === 'spray')`
 check - harmless for the ten other tools that never start a timer).
 
+**Curve needed the second and largest interface extension: a gesture that spans *more than one*
+pointerdown-to-pointerup cycle.** Every other tool - even Spray with its timer - is fundamentally one
+drag: begin, maybe move, end. Curve is genuinely two: drag out a straight line, release (which is
+*not* the gesture ending - it hands off to a live bezier preview with a draggable control handle, with
+no pointer button held at all), then a **second, separate** pointerdown either grabs that handle or
+commits the curve. Four additions made this possible without breaking every other tool's simpler
+one-drag assumption:
+- `GestureResult.keepActive?: boolean` - true on the drag-end→bend transition result: the engine must
+  *not* clear `activeGesture`, must *not* resolve the undo entry (no rollback, no "kept" decision) -
+  the gesture is still ongoing, just between phases.
+- `GestureResult.overlay`/`curvePreview` (paired with `keepActive`) - what to show for the new phase
+  immediately, since a phase transition can't wait for a move event the way an ordinary preview does.
+- `Gesture.onResumeDown?(e, ctx, nearControlPoint)` - the second pointerdown while `keepActive` is
+  still in effect. Returns `{ preview }` (grabbed the handle - gesture stays active, applied like any
+  other live preview) or `{ result }` (clicked elsewhere - finalizes exactly like a normal
+  `onPointerUp`). `nearControlPoint` is resolved by the **engine**, not the tool - `isNearCurveControl`
+  needs screen-space, zoom-aware hit-testing against the canvas's on-screen geometry, which only the
+  engine has; the tool only ever sees already-resolved cell coordinates, same as every other tool.
+- `Gesture.onKeyDown?(key, ctx)` - a key pressed while the gesture is active but not painting (e.g.
+  Enter to commit during bend-idle). Returns `null` to let normal key handling continue - the engine
+  only calls this when `activeGesture` exists at all, which nothing but Curve ever leaves set while not
+  painting.
+
+The engine wiring this required, roughly in the order a click actually flows through it:
+- `onPointerDown` checks `this.activeGesture?.onResumeDown` **before** every other routing check
+  (Magic Wand/Select-Lasso's move-routing, `TOOL_REGISTRY` dispatch) - otherwise a second click during
+  bend-idle would start a brand new curve gesture instead of resuming the pending one, since `this.tool`
+  is still `'curve'` and curve is *also* in `TOOL_REGISTRY` for its first click.
+- `onKeyDown`'s Escape branch generalizes from a curve-specific `if (this.curvePhase)` check to
+  `if (this.activeGesture)` calling the ordinary `cancelGesture()` - no bespoke `cancelCurve()` needed
+  anymore. A new generic block right after it calls `this.activeGesture?.onKeyDown(e.key, ctx)` and, if
+  it returns non-null, commits the result - this is what makes Enter-to-commit work, and is a no-op for
+  every tool but Curve since nothing else implements `onKeyDown`.
+- `commitGestureResult` gains a `keepActive` branch at its very top: apply `ops` (curve has none at the
+  transition, but the code stays generic), mirror `curvePreview` into `curvePhase`/`curveControl`, paint
+  the new phase's `overlay` if given (or just `reactNotify()` if not - releasing a control-handle drag
+  reuses the bezier already drawn by the last `onPointerMove`, so there's nothing new to repaint, but the
+  DOM-drawn handle still needs a React render to pick up the mirrored fields) - then returns immediately,
+  skipping the undo-resolution/cleanup the non-keepActive path does.
+- `cancelGesture()`'s own guard generalizes from `!this.painting && !this.curvePhase` to
+  `!this.painting && !this.activeGesture` - `resetGestureState()` (which it already calls) already knew
+  how to call `activeGesture.onCancel()` + erase the leftover overlay + clear `activeGesture`, from the
+  very first migration; it just needed to additionally null out `curvePhase`/`curveControl` when it does
+  (added right next to clearing `activeGesture`, harmless for every other tool since they're already null).
+- `setTool()`'s curve-specific auto-commit-on-tool-switch-away generalizes to
+  `this.activeGesture?.onKeyDown?.('Enter', ctx)`, committing if it returns non-null - matches the
+  original's `commitCurve()` call there exactly (switching tools away always commits a pending curve,
+  never silently discards it), but expressed generically instead of name-checking `'curve'`.
+
+**Curve is still the only tool with any of `onTick`/`onResumeDown`/`onKeyDown`/`keepActive` at all** -
+these exist purely because Curve genuinely needs them, not because the architecture anticipated more
+timer- or multi-cycle-driven tools. A future tool needing similar behavior can reuse them as-is.
+
 ### Integration into `PixelEditorEngine`
 
-A module-level `TOOL_REGISTRY` maps
+A module-level `TOOL_REGISTRY` maps **every** `ToolName` -
 `pen`/`eraser`/`rect`/`ellipse`/`line`/`magicWand`/`move`/`select`/`lasso`/`eyedropper`/`fill`/
-`gradient`/`spray` to their `Tool`. `NO_UNDO_TOOLS` (`magicWand`/`select`/`lasso`/`eyedropper`) skips `pushGestureUndo()` for
+`gradient`/`spray`/`curve` - to its `Tool`. `NO_UNDO_TOOLS` (`magicWand`/`select`/`lasso`/`eyedropper`) skips `pushGestureUndo()` for
 gestures that never touch a pixel - `fill` is deliberately **not** in that set, since it pushes undo
 and rolls it back on a no-op release instead, matching the original exactly (the *only* other tool with
 that specific rollback rule besides Fill itself). `onPointerDown` dispatches to the registry, with two
@@ -222,8 +275,33 @@ trailing block - once they're gone the whole block was unreachable and was delet
 methods ending in a plain comment noting every `ToolName` returns earlier now); and the spray-only
 `sprayTimer`/`sprayPointerCell` fields plus `startSprayTimer`/`stopSprayTimer`/`sprayTick` methods,
 replaced by the generic `gestureTimer`/`startGestureTimer`/`stopGestureTimer` described above.
-`currentPaintColor()` and `mirrorCells()` (the engine's own pre-migration symmetry helper, distinct
-from `paintPipeline.ts`'s pure `mirrorPoints`) both stay - Curve still calls them directly.
+
+Migrating Curve - the last tool - removed the most of any single step: the `if (this.tool === 'curve')`
+branches in `onPointerDown`/`onPointerMove`/`onPointerUp`; the curve-specific Escape/Enter checks in
+`onKeyDown` (replaced by the generic `activeGesture.onKeyDown`/`cancelGesture()` calls described above);
+`commitCurve`/`cancelCurve` in full; `curveStart`/`curveEnd`/`curveDraggingControl` fields (confirmed
+zero external readers, unlike `curvePhase`/`curveControl` - see below); and, once curve stopped being
+the last caller, the engine's own `quadraticBezierCells`/`mirroredExpand`/`thickenPath` methods (ported
+into `curveTool.ts`/already duplicated in `shapeTool.ts`). `clearCurveState()` **stays**, but its body
+changed completely: the 7 unrelated call sites that use it (switching frames, pushing a new undo step,
+sprite load/resize/reset - places where a pending curve draft must be silently dropped, not committed)
+didn't need to change at all, since they just call the same method name; only what happens *inside* it
+did, now routing through the generic `activeGesture.onCancel()` + `rollbackGestureUndo()` instead of
+resetting curve-specific fields by hand. `curvePhase`/`curveControl` **stay as engine fields** -
+confirmed via `PixelSelectionOverlay.tsx:27-28`, which reads them directly (screen-space, DOM-rendered
+bend handle) - mirrored from the active `CurveGesture`'s own internal state via the new
+`ToolPreview.curvePreview`/`GestureResult.curvePreview` fields, the same "mirror into legacy fields"
+trick as `movePreview`/`gradientPreview`. `isNearCurveControl` also stays on the engine (screen-space
+hit-testing needs the canvas's on-screen geometry, which only the engine has) - called from the new
+`onPointerDown` wiring, not from tool code.
+
+`shapePreviewCells`/`redrawShapePreview()` (and the two `drawGrid(this.shapePreviewCells ?? undefined)`
+call sites in `refresh()`/`attachCanvas()`) are now **fully dead** - Curve was their last writer, and
+nothing else was ever added to `shapePreviewCells` after Rect/Ellipse/Line's own migration. Left in
+place rather than removed in this same change: touching `refresh()`/`attachCanvas()` (core repaint
+entry points every tool goes through) for a field that's already inert felt like more risk than the
+change was worth bundled into an already-large diff. Flagged in `docs/EDITOR_IMPROVEMENTS.md` as a
+small, low-risk, standalone follow-up.
 
 ### Deviations found during implementation (worth flagging for future migration steps)
 
@@ -248,21 +326,38 @@ from `paintPipeline.ts`'s pure `mirrorPoints`) both stay - Curve still calls the
   re-verifying every caller was gone first (see the Integration section above). The lesson stands for
   whoever migrates the remaining tools: never delete something because it "should" be unreachable -
   grep every caller, every time.
+- **Two real bugs found and fixed while migrating Curve, both because unifying its cancel/rollback
+  paths onto the shared generic mechanism exposed them "for free" rather than by deliberate hunting:**
+  1. `commitGestureResult`'s "nothing changed" early-out never repainted `dirtyRects`, only rolled back
+     the undo entry - harmless for tools whose live preview is itself empty when nothing changed
+     (Magic Wand/Eyedropper), but every shape-like tool's live overlay is drawn **unclipped** (only the
+     final commit filters by selection - see `ShapeGesture.update`/`CurveGesture.setPreview`, neither
+     calls `withSelectionClip` for the preview, only the commit does). A rect/line/curve dragged
+     *entirely* outside an active selection ends with `ops: []`/`changed: false` but a fully-visible
+     overlay already painted onto the canvas bitmap - which the early-out never erased, stranding it on
+     screen. Confirmed via Playwright (drag a rect outside a selection, read the canvas back - pixels
+     were still there after release). Fixed by repainting `dirtyRects` even on the `!changed` path
+     (harmless when there's nothing to erase, or the repainted cells are unchanged, e.g. Fill's
+     same-color no-op) - this was presumably already correct in whatever pre-migration code Rect/
+     Ellipse/Line's own migration replaced, and quietly regressed there without a test catching it.
+  2. The original's `cancelCurve()` (Escape during bend-idle) never rolled back the undo entry
+     `pushGestureUndo()` pushed at drag-end's start - an abandoned curve draft never writes real pixels,
+     so restoring that snapshot would be a visual no-op, but the entry stayed on the undo stack forever
+     (an extra no-op Ctrl+Z), and `gestureUndoState`'s stale `dirty`/`redoStack` bookkeeping got silently
+     overwritten by whatever gesture ran next rather than ever being resolved. Migrating Curve onto the
+     same `cancelGesture()`/`resetGestureState()` path every other tool's Escape already uses fixes this
+     for free - `cancelGesture()` unconditionally calls `rollbackGestureUndo()` at its top. Accepted as a
+     deliberate, documented improvement (not literal-original-behavior-preservation) since it has no
+     observable downside and emerges naturally from *correctly generalizing* the architecture, which is
+     the whole point of unifying per-tool bespoke state handling in the first place.
 
-## Migration plan
+## Migration plan - complete
 
-Already migrated: **pen, eraser, rect, ellipse, line, magicWand, move, select, lasso, eyedropper, fill,
-gradient, spray.**
-
-Only one tool left:
-
-1. **curve** - 2-phase drag (`drag-end` → `bend`), the most stateful remaining tool, needing the
-   `keepActive`/`overlay`/`onResumeDown`/`onKeyDown` interface additions already added to `types.ts`
-   (see their own doc comments there) but not yet wired into the engine or used by any real `Gesture`.
-   Once curve is done, `thickenPath` and `shapePreviewCells`/`redrawShapePreview` can finally move too
-   (or be retired if curve absorbs them) - the last pieces of the pre-migration shape/curve machinery.
-
-**Highest-risk points for whoever does curve:**
+All fourteen tools are migrated: **pen, eraser, rect, ellipse, line, magicWand, move, select, lasso,
+eyedropper, fill, gradient, spray, curve.** Nothing remains on the legacy inline `if (this.tool ===
+'xxx')` architecture. The points below are kept as historical context for whoever extends this
+architecture next (a new tool, or a deeper refactor of what's here) - they were written while curve was
+still the only tool left, and turned out to matter exactly as described:
 - **Never spread a native DOM event** (`{ ...pointerEvent }`) when building a `ToolPointerEvent`. On a
   native event - which is what `getCoalescedEvents()` returns, unlike React's synthetic event -
   `clientX`/`clientY` are prototype getters, not own enumerable properties, so a spread silently drops
@@ -285,7 +380,7 @@ Only one tool left:
 
 ## Test coverage
 
-`npm test` (`vitest run`) - 115 tests, all pure logic, no DOM/canvas:
+`npm test` (`vitest run`) - 127 tests, all pure logic, no DOM/canvas:
 - **paintPipeline**: selection-clip inside/outside a rect and a sparse mask; symmetry mirroring
   on-axis (no duplicate) and off-axis, composed with selection-clip.
 - **DirtyRectTracker**: single cell, disjoint-cell union, canvas-edge clamping, empty input.
@@ -332,6 +427,16 @@ Only one tool left:
   dot with one shared color (not Fill's independent-per-mirror sampling); `onTick` scatters around the
   *last* position `onPointerMove` reported, not the original `beginGesture` cell; `onPointerUp` paints
   nothing further and always reports `changed: true`; `onCancel`.
+- **CurveTool**: drag-end phase previews a straight bresenham line and mirrors `{phase:'drag-end',
+  control:null}` into `curvePreview`; a zero-length drag cancels instead of transitioning to bend; a
+  real drag transitions to bend on release (`keepActive`, correct midpoint control, bezier overlay, no
+  `ops` yet); `onPointerMove` returns `null` during bend-idle (hovering with no button held paints
+  nothing); `onResumeDown` near the control point starts dragging it (returns `{preview}`, gesture stays
+  active); `onResumeDown` away from the control point commits (`{result}`, exact bezier cells, real
+  `changed:true`); Enter commits during bend-idle the same as clicking away; `onKeyDown` returns `null`
+  outside bend-idle or for keys it doesn't handle; right-click erases on commit without ever setting a
+  null color mid-drag; a selection restricts only the final commit (the live preview itself is
+  unclipped); symmetry mirrors the live preview; `onCancel`.
 - Pure functions moved into `selectionMask.ts` are exercised indirectly through Magic Wand/Select/
   Lasso's own tests (all pre-existing Magic Wand tests still pass unchanged, confirming the move was
   behavior-preserving).
@@ -339,9 +444,9 @@ Only one tool left:
 ## Verification performed
 
 - `npx tsc -b --noEmit` - clean.
-- `npx vitest run` - 115/115 passing.
+- `npx vitest run` - 127/127 passing.
 - `npm run build` - production build succeeds.
-- Manual Playwright smoke test against the running dev server, six rounds:
+- Manual Playwright smoke test against the running dev server, eight rounds:
   - *Pen/Rect/MagicWand/Move round*: Pen L-stroke with corner trim, undo/redo across two strokes,
     filled and outline Rect, Magic Wand select-then-drag-to-move (both the outline-only and filled
     cases, including the click-inside-selection → Move routing), and Escape mid-Pen-stroke fully
@@ -389,4 +494,22 @@ Only one tool left:
     unchanged 300ms later) - confirmed a keyboard tool-shortcut mid-drag does *not* switch tools at all
     (a separate, pre-existing, intentional guard: only Escape is let through while `painting` is true),
     so that path had to be tested via a toolbar click instead, not treated as a bug.
+  - *Curve round*: the full sequence end-to-end - drag the initial line, confirm the control handle
+    (`.pixel-curve-handle`) appears, drag it to bow the curve, release (handle stays visible - still
+    bend phase, not done), click away to commit, confirmed the committed pixel count matches what the
+    live overlay already showed (14 painted cells both before and after commit - the overlay was an
+    accurate preview) and the handle disappears; Undo removed it cleanly. Separately: Enter-to-commit
+    produces the same shape of result as click-away; Escape mid-initial-drag (button still held)
+    cancels with nothing painted and no handle ever appearing; Escape during bend-idle makes the handle
+    disappear with nothing painted (confirmed this also exercises the fixed orphaned-undo-entry
+    behavior, not just a visual check); switching tools away mid-bend via a toolbar click auto-commits
+    (painted count > 0, handle gone) - all via raw canvas pixel readback, not just screenshots.
+  - *Regression round (this batch touched `onKeyDown`/`setTool`/`cancelGesture`/`commitGestureResult`,
+    shared code every tool goes through)*: Pen Escape mid-stroke still cancels cleanly; Rect drag +
+    undo still works; Select Escape mid-marquee-drag still leaves no leftover dashed box (after
+    correctly distinguishing "no leftover draft" from "an earlier, unrelated settled selection is still
+    there" - selections aren't part of pixel undo history, so a prior `Ctrl+Z` doesn't clear one);
+    and the specific scenario the `commitGestureResult` dirty-rect fix targets - a Rect dragged
+    *entirely* outside an active selection - confirmed via pixel readback that no stray overlay pixels
+    are left on screen after release (before the fix, this exact scenario reproduced the bug).
   - No console/runtime errors in any run.

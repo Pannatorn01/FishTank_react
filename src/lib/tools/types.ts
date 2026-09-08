@@ -117,6 +117,13 @@ export interface GestureResult {
    *  through the freshly computed control point) - same shape as ToolPreview.overlay, needed here
    *  because a phase transition must show its preview immediately, without waiting for a move event. */
   overlay?: { cells: Cell[]; color: string } | null;
+  /** Curve only, paired with keepActive: mirrors the gesture's new phase/control-point into the
+   *  engine's own `curvePhase`/`curveControl` fields, same "mirror into legacy fields" trick as
+   *  ToolPreview.gradientPreview - PixelSelectionOverlay.tsx reads `engine.curvePhase`/
+   *  `engine.curveControl` directly to place the draggable bend handle. Not needed on a non-keepActive
+   *  (real end) result - the engine unconditionally nulls both fields out whenever it finishes a
+   *  gesture for good, regardless of which tool it was. */
+  curvePreview?: { phase: 'drag-end' | 'bend'; control: Cell | null };
 }
 
 /** What a gesture wants drawn while it's still in progress. Exactly one of `ops`/`overlay` is set:
@@ -152,6 +159,13 @@ export interface ToolPreview {
    *  can't reproduce (only ever one flat color) without reintroducing the regression it was written to
    *  fix. Same "mirror data into legacy fields for legacy rendering" pattern as `movePreview`. */
   gradientPreview?: { start: Cell; end: Cell; eraseOverride: boolean };
+  /** Curve only: mirrors the gesture's current phase/control-point into the engine's own `curvePhase`/
+   *  `curveControl` fields on every preview, not just at phase transitions - `curveControl` needs to
+   *  track live while the user drags the bend handle, the same way `moveDelta` tracks a live Move drag.
+   *  Applied unconditionally alongside whatever `overlay` is also present (unlike `gradientPreview`,
+   *  this doesn't replace the normal overlay path - curve still needs its bezier/line pixels drawn the
+   *  ordinary way, it just *also* needs these two fields kept in sync for the DOM-drawn handle). */
+  curvePreview?: { phase: 'drag-end' | 'bend'; control: Cell | null };
 }
 
 export interface Gesture {
