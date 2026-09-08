@@ -50,7 +50,8 @@
 > ทุกอย่างต้องผ่าน repository (§3) ไม่งั้น offline-first จะพังทันทีที่เน็ตหลุด
 
 **ความคืบหน้า: P0–P4 เสร็จ · P5 เขียนครบแล้ว** (ดู checklist §7) · ทดสอบในเบราว์เซอร์จริงด้วย
-[`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — **25/25 ผ่าน** (รันคู่กับ `npm run dev`)
+[`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — **25/25 ผ่าน** และ
+[`scripts/auth-smoke.cjs`](../scripts/auth-smoke.cjs) — **9/9 ผ่าน** (รันคู่กับ `npm run dev`)
 
 > ⚠️ **สิ่งที่ยังไม่ได้พิสูจน์:** โค้ด sync ทั้งหมดยังไม่เคยคุยกับ Supabase จริงสักครั้ง (ยังไม่มีโปรเจกต์/credential)
 > · logic ที่ทดสอบได้แบบ pure — merge, outbox, การ map record↔row — มี unit test 13 เคสครบ
@@ -632,8 +633,8 @@ create policy read_used_in_shared on sprites for select using (
 - [x] **P5-4** [`syncEngine.ts`](../src/lib/data/syncEngine.ts) (flush + delta pull + merge) · [`rows.ts`](../src/lib/data/rows.ts) (map record ↔ row) · [`merge.ts`](../src/lib/data/merge.ts) (last-write-wins + tiebreak ด้วย `rev`)
 - [ ] **P5-5** ⚠️ **ยังทดสอบกับ Supabase จริงไม่ได้** (ไม่มี credential) — logic ทั้งหมดมี unit test 13 เคส แต่ยังไม่เคยยิงขึ้น server จริงสักครั้ง · ต้องทำเมื่อมีโปรเจกต์: ตัดเน็ต → ทำงาน → ต่อเน็ต → ข้อมูลครบไม่ซ้ำ · 2 เครื่องบัญชีเดียวกัน
 - [ ] **P5-6** ตัดสินใจว่า sprite ต้องย้ายไป Supabase Storage ไหม (ใช้ตัวเลขจริงจาก P2)
-- [ ] **P6-1** guest mode: `localUserId` + ปุ่มล็อกอินแบบไม่บังคับ
-- [ ] **P6-2** magic link + Google + flow อัปโหลดงานเดิมตอนล็อกอินครั้งแรก (พร้อม progress)
+- [x] **P6-1** guest mode — `localUserId` มีตั้งแต่ P4 · ปุ่ม "Back up my work" เป็นข้อเสนอ ไม่ใช่ประตู · ไม่มี modal บังคับตอนโหลด (มีเทสต์คุม)
+- [x] **P6-2** magic link ([`useAuth.ts`](../src/hooks/useAuth.ts) + [`AccountMenu.tsx`](../src/components/AccountMenu.tsx)) + flow ถามตอนล็อกอินครั้งแรกว่าจะอัปโหลดงานในเครื่องไหม · `claimLocalWork()` ผ่าน outbox (ขัดจังหวะแล้วทำต่อได้ · รันซ้ำได้) · **เขียนธง `claimedBy` ต่อเมื่อ outbox ว่างจริง** · ไม่ลบข้อมูล local เลย · (Google login ยังไม่ทำ — magic link พอสำหรับตอนนี้)
 - [ ] **P6-3** `visibility` + `tank_shares` + หน้าดูตู้คนอื่นแบบ read-only (store `remoteTanks` แยก)
 - [ ] **P6-4** sprite gallery (`visibility = 'public'`) + ปุ่ม fork (คัดลอกจริง + `forked_from`)
 - [ ] **P6-5** ปุ่มรายงาน + ธง `hidden_by_admin` + หน้ารายการที่ถูกรายงาน — ก่อนเปิด public ทุกชนิด
