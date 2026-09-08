@@ -22,6 +22,7 @@ import {
   buildHistoryEntry,
   trimHistory,
 } from '@/lib/undoHistory';
+import { getRepos } from '@/lib/data';
 import * as storage from '@/lib/storage';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { createPenTool } from '@/lib/tools/tools/penTool';
@@ -422,6 +423,9 @@ class PixelEditorEngine {
    *  The editor stays fully usable (drawing is all in memory) - the UI just warns that work will not
    *  survive a reload. See the constructor's bootstrap comment. */
   readOnly = false;
+  /** False until hydrate() has finished - the app shows a loading state instead of an empty library
+   *  that looks like a user who has lost all their work. */
+  ready = false;
   active = true;
   /** Bumped only when a *different* sprite becomes current (new/load), never on save-in-place. */
   loadToken = 0;
@@ -457,35 +461,6 @@ class PixelEditorEngine {
         notify();
       });
     };
-    const loaded = storage.loadSprites();
-    if (loaded === null) {
-      this.sprites = storage.buildDefaultSprites();
-      // A first run that cannot write (storage already full, or Safari private mode where setItem always
-      // throws) must not take the whole app down from a constructor: keep the defaults in memory, mark
-      // the session read-only, and let the UI say so. Losing the starter sprites on reload is a far
-      // smaller failure than a white screen with no way back (see docs/STORAGE_DB_MIGRATION_PLAN.md P0-2).
-      try {
-        storage.saveSprites(this.sprites);
-      } catch (err) {
-        console.error('saveSprites failed during first-run bootstrap', err);
-        this.readOnly = true;
-      }
-    } else {
-      this.sprites = loaded;
-    }
-    this.paletteColors = storage.loadPaletteColors() ?? [...DEFAULT_PALETTE_COLORS];
-    this.savedColors = storage.loadSavedColors();
-    this.pinnedColors = new Set(storage.loadPinnedColors());
-    this.canvasBackground = storage.loadCanvasBackground() ?? 'checker-dark';
-    const onion = storage.loadOnionSettings();
-    if (onion) {
-      this.onionSkin = onion.enabled;
-      this.onionBefore = onion.before;
-      this.onionAfter = onion.after;
-      this.onionOpacity = onion.opacity;
-      this.onionColorMode = onion.colorMode;
-    }
-    this.brushSizes = storage.loadBrushSizes();
     this.centerSymmetryAxis();
 
     this.restartPreviewTimer();
@@ -532,6 +507,50 @@ class PixelEditorEngine {
       () => document.removeEventListener('keyup', onKeyUpGlobal),
     ];
 
+    this.reactNotify();
+  }
+
+  /**
+   * Loads the library and the user's editor preferences. Split out of the constructor because storage
+   * is asynchronous now (see src/lib/data/adapter.ts): an engine is constructed with safe, empty state
+   * and filled in a moment later, and `ready` says which of the two it currently is. Everything that
+   * draws waits for `ready` rather than rendering an empty library as if it were the real one.
+   */
+  async hydrate(): Promise<void> {
+    const { sprites: spriteRepo, prefs: prefsRepo } = getRepos();
+    await spriteRepo.hydrate();
+    this.sprites = spriteRepo.list();
+    if (this.sprites.length === 0) {
+      // A first run that cannot write (storage already full, or Safari private mode where setItem
+      // always throws) must not take the app down: keep the defaults in memory, mark the session
+      // read-only, and let the UI say so. Losing the starter sprites on reload is a far smaller
+      // failure than a white screen with no way back (docs/STORAGE_DB_MIGRATION_PLAN.md P0-2).
+      const defaults = storage.buildDefaultSprites();
+      try {
+        await spriteRepo.replaceAll(defaults);
+      } catch (err) {
+        console.error('seeding the default sprites failed', err);
+        this.readOnly = true;
+      }
+      this.sprites = defaults;
+    }
+
+    const prefs = await prefsRepo.load();
+    this.paletteColors = prefs.paletteColors ?? [...DEFAULT_PALETTE_COLORS];
+    this.savedColors = prefs.savedColors;
+    this.pinnedColors = new Set(prefs.pinnedColors);
+    this.canvasBackground = prefs.canvasBackground ?? 'checker-dark';
+    if (prefs.onion) {
+      this.onionSkin = prefs.onion.enabled;
+      this.onionBefore = prefs.onion.before;
+      this.onionAfter = prefs.onion.after;
+      this.onionOpacity = prefs.onion.opacity;
+      this.onionColorMode = prefs.onion.colorMode;
+    }
+    this.brushSizes = prefs.brushSizes;
+
+    this.ready = true;
+    this.refresh();
     this.reactNotify();
   }
 
@@ -689,14 +708,14 @@ class PixelEditorEngine {
   removePaletteColor(color: string): void {
     if (!this.paletteColors.includes(color)) return;
     this.paletteColors = this.paletteColors.filter((c) => c !== color);
-    storage.savePaletteColors(this.paletteColors);
+    getRepos().prefs.set({ paletteColors: this.paletteColors });
     this.reactNotify();
   }
 
   addSavedColor(color: string): void {
     if (this.savedColors.includes(color)) return;
     this.savedColors = [...this.savedColors, color];
-    storage.saveSavedColors(this.savedColors);
+    getRepos().prefs.set({ savedColors: this.savedColors });
     this.reactNotify();
   }
 
@@ -707,9 +726,9 @@ class PixelEditorEngine {
       const next = new Set(this.pinnedColors);
       next.delete(color);
       this.pinnedColors = next;
-      storage.savePinnedColors([...next]);
+      getRepos().prefs.set({ pinnedColors: [...next] });
     }
-    storage.saveSavedColors(this.savedColors);
+    getRepos().prefs.set({ savedColors: this.savedColors });
     this.reactNotify();
   }
 
@@ -722,7 +741,7 @@ class PixelEditorEngine {
     if (next.has(color)) next.delete(color);
     else next.add(color);
     this.pinnedColors = next;
-    storage.savePinnedColors([...next]);
+    getRepos().prefs.set({ pinnedColors: [...next] });
     this.reactNotify();
   }
 
@@ -734,7 +753,7 @@ class PixelEditorEngine {
     const [moved] = next.splice(from, 1);
     next.splice(to, 0, moved);
     this.savedColors = next;
-    storage.saveSavedColors(this.savedColors);
+    getRepos().prefs.set({ savedColors: this.savedColors });
     this.reactNotify();
   }
 
@@ -746,7 +765,7 @@ class PixelEditorEngine {
     const next = this.savedColors.filter((c) => this.pinnedColors.has(c) || used.has(c));
     if (next.length === this.savedColors.length) return;
     this.savedColors = next;
-    storage.saveSavedColors(this.savedColors);
+    getRepos().prefs.set({ savedColors: this.savedColors });
     this.reactNotify();
   }
 
@@ -756,7 +775,7 @@ class PixelEditorEngine {
     const preset = PRESET_PALETTES[name];
     if (!preset) return;
     this.paletteColors = [...preset];
-    storage.savePaletteColors(this.paletteColors);
+    getRepos().prefs.set({ paletteColors: this.paletteColors });
     this.reactNotify();
   }
 
@@ -772,7 +791,7 @@ class PixelEditorEngine {
 
   setCanvasBackground(bg: CanvasBackground): void {
     this.canvasBackground = bg;
-    storage.saveCanvasBackground(bg);
+    getRepos().prefs.set({ canvasBackground: bg });
     this.reactNotify();
   }
 
@@ -814,12 +833,14 @@ class PixelEditorEngine {
   }
 
   private persistOnionSettings(): void {
-    storage.saveOnionSettings({
-      enabled: this.onionSkin,
-      before: this.onionBefore,
-      after: this.onionAfter,
-      opacity: this.onionOpacity,
-      colorMode: this.onionColorMode,
+    getRepos().prefs.set({
+      onion: {
+        enabled: this.onionSkin,
+        before: this.onionBefore,
+        after: this.onionAfter,
+        opacity: this.onionOpacity,
+        colorMode: this.onionColorMode,
+      },
     });
   }
 
@@ -931,7 +952,7 @@ class PixelEditorEngine {
     const clamped = Math.min(MAX_BRUSH_SIZE, Math.max(1, Math.round(size)));
     if (clamped === this.brushSize) return;
     this.brushSizes = { ...this.brushSizes, [this.brushSizeToolKey()]: clamped };
-    storage.saveBrushSizes(this.brushSizes);
+    getRepos().prefs.set({ brushSizes: this.brushSizes });
     this.reactNotify();
   }
 
@@ -3799,7 +3820,7 @@ class PixelEditorEngine {
     this.refresh();
   }
 
-  saveCurrentSprite(name: string, type: Sprite['type'], onError: (msg: string) => void): void {
+  async saveCurrentSprite(name: string, type: Sprite['type'], onError: (msg: string) => void): Promise<void> {
     const finalName =
       name.trim() ||
       (type === 'fish'
@@ -3812,25 +3833,20 @@ class PixelEditorEngine {
     this.current.name = finalName;
     this.current.type = type;
 
-    // Whether this is a new sprite or an edit of an existing one is decided by looking it up in the
-    // library, not by a missing id - every sprite has had an id since it was created (see blankSprite).
+    // Whether this is a new sprite or an edit of an existing one is decided by the repository looking
+    // it up - every sprite has had an id since it was created (see blankSprite), so a missing id is
+    // no longer what "not saved yet" means.
     this.current.updatedAt = Date.now();
-    const previousSprites = this.sprites;
-    const idx = this.sprites.findIndex((s) => s.id === this.current.id);
-    // A copy, not an in-place splice: the rollback below has to have something to roll back to.
-    const next = [...this.sprites];
-    if (idx >= 0) next[idx] = cloneSprite(this.current);
-    else next.push(cloneSprite(this.current));
-    this.sprites = next;
-
+    const repo = getRepos().sprites;
     try {
-      storage.saveSprites(this.sprites);
+      await repo.put(cloneSprite(this.current));
     } catch (err) {
-      console.error('saveSprites failed', err);
-      this.sprites = previousSprites;
+      console.error('saving the sprite failed', err);
       onError(err instanceof storage.StorageQuotaError ? t('error.storageFull') : t('error.saveFailed'));
       return;
     }
+    // The repository is the library now; this array is the engine's view of it.
+    this.sprites = repo.list();
     this.dirty = false;
     this.reactNotify();
     window.dispatchEvent(new CustomEvent('ft:sprites-updated'));
@@ -3860,18 +3876,17 @@ class PixelEditorEngine {
     this.refresh();
   }
 
-  deleteSprite(id: string, confirmDelete: () => boolean, onError: (msg: string) => void): void {
+  async deleteSprite(id: string, confirmDelete: () => boolean, onError: (msg: string) => void): Promise<void> {
     if (!confirmDelete()) return;
-    const previousSprites = this.sprites;
-    this.sprites = this.sprites.filter((s) => s.id !== id);
+    const repo = getRepos().sprites;
     try {
-      storage.saveSprites(this.sprites);
+      await repo.remove(id);
     } catch (err) {
-      console.error('saveSprites failed', err);
-      this.sprites = previousSprites;
+      console.error('deleting the sprite failed', err);
       onError(t('error.deleteFailed'));
       return;
     }
+    this.sprites = repo.list();
     if (this.current.id === id) {
       this.current = blankSprite();
       this.activeLayerIndex = 0;
@@ -3903,6 +3918,9 @@ export function usePixelEditor() {
 
   useEffect(() => {
     engine.init(() => setTick((t) => t + 1));
+    // Not awaited: the engine renders its (empty, safe) initial state until `ready` flips, and every
+    // consumer gates on that rather than on this promise.
+    void engine.hydrate();
     return () => engine.destroy();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

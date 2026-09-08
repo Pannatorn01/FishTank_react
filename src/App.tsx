@@ -145,7 +145,12 @@ export default function App() {
       <StorageBanner readOnly={engine.readOnly} />
 
       <main>
-        <section className="tab-panel" hidden={tab !== 'editor'}>
+        {/* Storage is asynchronous now (src/lib/data), so there is a moment - a microtask today, a
+            network round-trip once there is a server - where the engine is constructed but empty.
+            Showing the editor then would show an empty library, which reads as "all my work is gone".
+            See PixelEditorEngine.hydrate(). */}
+        {!engine.ready && <p className="tab-panel-loading">{t('app.loading')}</p>}
+        <section className="tab-panel" hidden={tab !== 'editor' || !engine.ready}>
           <PixelEditorPanel
             engine={engine}
             name={name}
@@ -156,9 +161,9 @@ export default function App() {
             layoutApi={layoutApi}
           />
         </section>
-        <section className="tab-panel" hidden={tab !== 'tank' && tab !== 'life'}>
-          {hasVisitedTank && (
-            <Suspense fallback={<p className="tab-panel-loading">Loading…</p>}>
+        <section className="tab-panel" hidden={(tab !== 'tank' && tab !== 'life') || !engine.ready}>
+          {hasVisitedTank && engine.ready && (
+            <Suspense fallback={<p className="tab-panel-loading">{t('app.loading')}</p>}>
               <TankSection mode={tab === 'life' ? 'life' : 'build'} active={tab === 'tank' || tab === 'life'} />
             </Suspense>
           )}

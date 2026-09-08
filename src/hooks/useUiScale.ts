@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { KEY_UI_SCALE } from '@/lib/storage';
+import { KEY_UI_SCALE, loadRawPref, saveRawPref } from '@/lib/storage';
 
 /**
  * How large the whole editor draws. Everything in the UI is sized in rem, so one root font size scales
@@ -25,7 +25,7 @@ const STORAGE_KEY = KEY_UI_SCALE;
 
 function load(): UiScale {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = loadRawPref(STORAGE_KEY);
     return UI_SCALES.includes(raw as UiScale) ? (raw as UiScale) : 'normal';
   } catch {
     // Blocked or unreadable storage just means the default size, never a failure to render.
@@ -42,11 +42,7 @@ export function useUiScale() {
 
   const setScale = useCallback((next: UiScale) => {
     setScaleState(next);
-    try {
-      localStorage.setItem(STORAGE_KEY, next);
-    } catch {
-      // Not being able to remember the choice is no reason to refuse to make it.
-    }
+    saveRawPref(STORAGE_KEY, next);
   }, []);
 
   return { scale, setScale };

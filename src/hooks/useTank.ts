@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { t } from '@/lib/i18n';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { paintLayers } from '@/lib/pixelMath';
+import { getRepos, type TankState } from '@/lib/data';
 import * as storage from '@/lib/storage';
 import {
   clampTopLeftToShape as clampTopLeftToShapePure,
@@ -314,32 +315,46 @@ export class TankEngine {
   /** True when the in-memory tank has edits not yet written to localStorage (manual save() - see
    *  persist()/save()/refresh()). Gates the beforeunload warning and the Save/Refresh buttons. */
   dirty = false;
+  /** False until hydrate() has finished - see its doc comment. */
+  ready = false;
   private reactNotify: () => void = () => {};
 
   init(notify: () => void): void {
     this.reactNotify = notify;
-    this.sprites = storage.loadSprites() || [];
-    this.instances = (storage.loadInstances() || []).map((inst) => ({
+    this.rafId = requestAnimationFrame((t) => this.loop(t));
+    document.addEventListener('keydown', this.onKeyDown);
+    window.addEventListener('beforeunload', this.onBeforeUnload);
+  }
+
+  /**
+   * Loads the tank from storage. Split out of init() because storage is asynchronous now (see
+   * src/lib/data/adapter.ts): the engine starts with an empty tank and its animation loop already
+   * running - harmless, there is nothing in it to draw - and fills in a moment later. `ready` says
+   * which of the two states it is in so the UI does not present an empty tank as the user's own.
+   */
+  async hydrate(): Promise<void> {
+    const { sprites: spriteRepo, tank: tankRepo } = getRepos();
+    await spriteRepo.hydrate();
+    this.sprites = spriteRepo.list();
+
+    const state = await tankRepo.load();
+    this.instances = state.instances.map((inst) => ({
       ...inst,
       groupId: inst.groupId ?? null,
       zone: inst.zone ?? null,
       visible: inst.visible ?? true,
     }));
-    this.groups = storage.loadGroups().map((g) => ({ ...g, zone: g.zone ?? null }));
-    // Tank size loaded before room instances, not after - normalizeRoomInstances (see storage.ts)
-    // needs it to migrate a legacy record's viewport-fraction position onto the current tank-relative
-    // one, and to place any already-current record's margin-clamp bounds correctly.
-    const savedSize = storage.loadTankSize();
-    this.tankWidth = savedSize?.width ?? TANK_SIZE_DEFAULT.width;
-    this.tankHeight = savedSize?.height ?? TANK_SIZE_DEFAULT.height;
-    this.roomInstances = storage.loadRoomInstances(this.tankWidth, this.tankHeight);
-    this.tankShape = storage.loadTankShape() ?? 'rectangle';
-    this.tankCornerRadiusFrac = storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22;
-    this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
-    this.backgroundSpriteId = storage.loadTankBackgroundSpriteId();
-    this.backgroundTransform = storage.loadTankBackgroundTransform() ?? { x: 0, y: 0, scale: 1, rotation: 0 };
-    this.waterLevel = storage.loadTankWaterLevel() ?? 1;
-    this.algae = storage.loadTankAlgae() ?? 0;
+    this.groups = state.groups.map((g) => ({ ...g, zone: g.zone ?? null }));
+    this.tankWidth = state.width ?? TANK_SIZE_DEFAULT.width;
+    this.tankHeight = state.height ?? TANK_SIZE_DEFAULT.height;
+    this.roomInstances = state.roomInstances;
+    this.tankShape = state.shape;
+    this.tankCornerRadiusFrac = state.cornerRadiusFrac;
+    this.tankOvalTopCutFrac = state.ovalTopCutFrac;
+    this.backgroundSpriteId = state.backgroundSpriteId;
+    this.backgroundTransform = state.backgroundTransform;
+    this.waterLevel = state.waterLevel;
+    this.algae = state.algae;
 
     // Hunger/starvation, water-evaporation, and algae-growth catch-up (P5 §6 items 2/4/5,
     // docs/PIXI_MIGRATION_PLAN.md) - replays however much real time passed since the last save as one
@@ -350,16 +365,16 @@ export class TankEngine {
     // the waste-accelerated one (see tickAlgae()'s own doc comment) - waste itself isn't persisted, so
     // there's no historical waste count to have accelerated it while closed.
     const now = Date.now();
-    const savedLastTick = storage.loadTankLastTick();
-    const elapsedSinceLastTick = savedLastTick ? Math.max(0, now - savedLastTick) : 0;
+    const elapsedSinceLastTick = state.lastTickAt ? Math.max(0, now - state.lastTickAt) : 0;
     this.tickHunger(elapsedSinceLastTick);
     this.tickWaterLevel(elapsedSinceLastTick);
     this.tickAlgae(elapsedSinceLastTick, 0);
     this.lastTickAt = now;
 
-    this.rafId = requestAnimationFrame((t) => this.loop(t));
-    document.addEventListener('keydown', this.onKeyDown);
-    window.addEventListener('beforeunload', this.onBeforeUnload);
+    this.ready = true;
+    // The tank's size is only known now, so the canvas has to be re-measured against it.
+    this.resizeCanvas();
+    this.reactNotify();
   }
 
   destroy(): void {
@@ -680,8 +695,11 @@ export class TankEngine {
     this.reactNotify();
   }
 
+  /** Re-reads the sprite library after the editor changed it. Reads the repository's in-memory cache,
+   *  not storage: this runs from a DOM event handler and from the render path's neighbourhood, neither
+   *  of which can await anything (see SpriteRepo's doc comment). */
   refreshPalette(): void {
-    this.sprites = storage.loadSprites() || [];
+    this.sprites = getRepos().sprites.list();
     this.reactNotify();
   }
 
@@ -703,9 +721,9 @@ export class TankEngine {
       frames: [[storage.makeLayer(frame)]],
       frameMs: storage.DEFAULT_FRAME_MS,
     };
-    const all = [...(storage.loadSprites() || []), sprite];
-    storage.saveSprites(all);
-    this.sprites = all;
+    const repo = getRepos().sprites;
+    await repo.put(sprite);
+    this.sprites = repo.list();
     this.setTankBackgroundSprite(sprite.id);
   }
 
@@ -830,12 +848,32 @@ export class TankEngine {
   }
 
   /**
-   * Writes the current in-memory instances/groups/tank size to localStorage. Returns whether it worked
+   * Writes the tank through the storage layer (src/lib/data). Returns whether it worked
    * so the caller can tell the user - a save that fails silently is worse than no save button at all,
    * since the user walks away believing the tank is stored (docs/STORAGE_DB_MIGRATION_PLAN.md P0-3).
    * `dirty` deliberately stays true on failure: the unsaved work is still in memory and still at risk.
    */
-  save(): { ok: boolean; error?: unknown } {
+  /** The tank as the storage layer wants it (see TankState) - one place that knows the mapping, so
+   *  save() reads as "write the tank" rather than as a list of twelve individual writes. */
+  private snapshotForStorage(): TankState {
+    return {
+      instances: this.instances,
+      groups: this.groups,
+      roomInstances: this.roomInstances,
+      width: this.tankWidth,
+      height: this.tankHeight,
+      shape: this.tankShape,
+      cornerRadiusFrac: this.tankCornerRadiusFrac,
+      ovalTopCutFrac: this.tankOvalTopCutFrac,
+      backgroundSpriteId: this.backgroundSpriteId,
+      backgroundTransform: this.backgroundTransform,
+      waterLevel: this.waterLevel,
+      algae: this.algae,
+      lastTickAt: this.lastTickAt,
+    };
+  }
+
+  async save(): Promise<{ ok: boolean; error?: unknown }> {
     let result: { ok: boolean; error?: unknown } = { ok: true };
     // The tank is saved as one batch, so every record in it is stamped with the same moment rather
     // than tracking which individual fish actually moved: pretending to per-record precision the save
@@ -845,18 +883,7 @@ export class TankEngine {
     this.groups = this.groups.map(storage.touchMeta);
     this.roomInstances = this.roomInstances.map(storage.touchMeta);
     try {
-      storage.saveInstances(this.instances);
-      storage.saveGroups(this.groups);
-      storage.saveRoomInstances(this.roomInstances);
-      storage.saveTankSize({ width: this.tankWidth ?? TANK_SIZE_DEFAULT.width, height: this.tankHeight ?? TANK_SIZE_DEFAULT.height });
-      storage.saveTankShape(this.tankShape);
-      storage.saveTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC, this.tankCornerRadiusFrac);
-      storage.saveTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC, this.tankOvalTopCutFrac);
-      storage.saveTankBackgroundSpriteId(this.backgroundSpriteId);
-      storage.saveTankBackgroundTransform(this.backgroundTransform);
-      storage.saveTankLastTick(this.lastTickAt);
-      storage.saveTankWaterLevel(this.waterLevel);
-      storage.saveTankAlgae(this.algae);
+      await getRepos().tank.save(this.snapshotForStorage());
       this.dirty = false;
     } catch (err) {
       console.warn('tank save failed', err);
@@ -871,27 +898,24 @@ export class TankEngine {
   /** Reloads instances/groups/tank size from localStorage, discarding any unsaved in-memory edits
    *  (including an unsaved resize) - prompts first if there's actually something to lose (mirrors
    *  the sprite editor's newSprite()). */
-  refresh(confirmDiscard: () => boolean): void {
+  async refresh(confirmDiscard: () => boolean): Promise<void> {
     if (this.dirty && !confirmDiscard()) return;
-    this.instances = (storage.loadInstances() || []).map((inst) => ({
+    const state = await getRepos().tank.load();
+    this.instances = state.instances.map((inst) => ({
       ...inst,
       groupId: inst.groupId ?? null,
       zone: inst.zone ?? null,
       visible: inst.visible ?? true,
     }));
-    this.groups = storage.loadGroups().map((g) => ({ ...g, zone: g.zone ?? null }));
-    // Tank size loaded before room instances, not after - normalizeRoomInstances (see storage.ts)
-    // needs it to migrate a legacy record's viewport-fraction position onto the current tank-relative
-    // one, and to place any already-current record's margin-clamp bounds correctly.
-    const savedSize = storage.loadTankSize();
-    this.tankWidth = savedSize?.width ?? TANK_SIZE_DEFAULT.width;
-    this.tankHeight = savedSize?.height ?? TANK_SIZE_DEFAULT.height;
-    this.roomInstances = storage.loadRoomInstances(this.tankWidth, this.tankHeight);
-    this.tankShape = storage.loadTankShape() ?? 'rectangle';
-    this.tankCornerRadiusFrac = storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22;
-    this.tankOvalTopCutFrac = storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28;
-    this.backgroundSpriteId = storage.loadTankBackgroundSpriteId();
-    this.backgroundTransform = storage.loadTankBackgroundTransform() ?? { x: 0, y: 0, scale: 1, rotation: 0 };
+    this.groups = state.groups.map((g) => ({ ...g, zone: g.zone ?? null }));
+    this.tankWidth = state.width ?? TANK_SIZE_DEFAULT.width;
+    this.tankHeight = state.height ?? TANK_SIZE_DEFAULT.height;
+    this.roomInstances = state.roomInstances;
+    this.tankShape = state.shape;
+    this.tankCornerRadiusFrac = state.cornerRadiusFrac;
+    this.tankOvalTopCutFrac = state.ovalTopCutFrac;
+    this.backgroundSpriteId = state.backgroundSpriteId;
+    this.backgroundTransform = state.backgroundTransform;
     this.selectedId = null;
     this.marqueeIds = null;
     this.draggingInstance = null;
@@ -2459,7 +2483,8 @@ export function useTank() {
   useEffect(() => {
     engine.init(() => setTick((t) => t + 1));
     engine.resizeCanvas();
-    engine.refreshPalette();
+    // Not awaited - the engine draws its empty initial tank until `ready` flips (see hydrate()).
+    void engine.hydrate();
     const onResize = () => engine.resizeCanvas();
     window.addEventListener('resize', onResize);
     return () => {

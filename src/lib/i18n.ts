@@ -178,6 +178,7 @@ const en: Dict = {
   'error.storageFull': 'Browser storage is full. Export a backup, then delete some sprites to free space.',
   'error.tankSaveFailed': 'Could not save the tank (browser storage may be full). Your changes are still here - free some space and save again.',
   'error.readOnly': 'Browser storage is unavailable, so nothing can be saved this session. Your work will be lost when this tab closes.',
+  'app.loading': 'Loading your work…',
   'storage.exportBackup': 'Export backup',
   'storage.nearlyFull': 'Browser storage is {percent}% full. Export a backup and delete what you no longer need.',
   'error.importFailed': 'Could not read that sprite file - it may be corrupted or not a valid sprite export.',

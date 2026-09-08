@@ -1,6 +1,6 @@
 # แผนย้ายชั้นเก็บข้อมูล: localStorage → Storage Adapter → Database
 
-> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0 + P1 + P2 เสร็จแล้ว · P3 (async adapter) เป็นงานถัดไป — เฟสใหญ่สุด** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
+> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0–P3 เสร็จแล้ว · P4 (IndexedDB) เป็นงานถัดไป** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
 > ที่มา: audit โค้ดจริง ไม่ใช่การเดา
 > ทุกข้ออ้างอิง `ไฟล์:บรรทัด` ณ commit `86efa06` — ถ้าบรรทัดเลื่อน ให้ grep ชื่อฟังก์ชันที่ระบุไว้แทน
 >
@@ -49,8 +49,8 @@
 > ผลลัพธ์ที่ตามมาโดยตรง: **ห้ามใช้ Supabase client อ่าน/เขียนตรงจาก component เด็ดขาด**
 > ทุกอย่างต้องผ่าน repository (§3) ไม่งั้น offline-first จะพังทันทีที่เน็ตหลุด
 
-**ความคืบหน้า: P0, P1, P2 เสร็จแล้ว** (ดู checklist §7) · ทดสอบในเบราว์เซอร์จริงด้วย
-[`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — 19/19 ผ่าน (รันคู่กับ `npm run dev`) · งานถัดไปคือ **P3 — เฟสที่ใหญ่และเสี่ยงที่สุด**
+**ความคืบหน้า: P0–P3 เสร็จแล้ว** (ดู checklist §7) · ทดสอบในเบราว์เซอร์จริงด้วย
+[`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — 19/19 ผ่าน ทั้งก่อนและหลัง P3 (รันคู่กับ `npm run dev`) · งานถัดไปคือ **P3 — เฟสที่ใหญ่และเสี่ยงที่สุด**
 
 ---
 
@@ -327,6 +327,11 @@ export interface StorageAdapter {
 5. **beforeunload** — ตอนนี้เตือนเมื่อ `dirty` ([`useTank.ts:280`](../src/hooks/useTank.ts#L280)) ยังใช้ได้เหมือนเดิม
    แต่ **ห้าม await การเซฟใน `beforeunload`** (เบราว์เซอร์ไม่รอ) — เตือนอย่างเดียวพอ
 
+**ข้อยกเว้นที่ตัดสินใจตอนลงมือ (P3):** ค่า preference ที่เป็นของ *เครื่องนี้* เท่านั้น — dock layout,
+UI scale, panel collapsed, theme — **ไม่ผ่าน data layer** แต่เรียก `loadRawPref()`/`saveRawPref()` ใน
+storage.ts แบบ sync ต่อไป เพราะมันจะไม่มีวันขึ้น database (ดู §5) และถ้าทำเป็น async จะได้ผลข้างเคียง
+คือ layout กระพริบผิดทุกครั้งที่โหลด · ที่ยังต้องประกาศ key ไว้ใน storage.ts คือเพื่อให้ backup/reset เห็น
+
 **กฎเหล็กของเฟสนี้:** ห้ามเปลี่ยน backend พร้อมกับเปลี่ยน API
 P3 ต้องจบด้วย **พฤติกรรมเหมือนเดิม 100%** โดยข้างในยังเป็น localStorage ทุกประการ
 จะได้แยกออกว่าถ้าพัง คือพังเพราะ async ไม่ใช่เพราะ backend
@@ -601,10 +606,10 @@ create policy read_used_in_shared on sprites for select using (
 - [x] **P1-2** ลบแบบ tombstone — `saveSprites()` เทียบกับของเดิมในสตอเรจแล้วเขียน tombstone ให้ตัวที่หายไป (ตัด `frames` ทิ้งเพื่อคืนพื้นที่จริง) · `loadSprites()` กรอง tombstone ออกให้ UI ไม่ต้องรู้เรื่อง
 - [x] **P2-1** [`src/lib/pixelCodec.ts`](../src/lib/pixelCodec.ts) (`rle1`) + round-trip test 10 เคส (รวม worst case ทุกช่องสีต่างกัน และข้อมูลเสียหาย)
 - [x] **P2-2** อ่านได้ทั้งเก่า/ใหม่ เขียนแบบใหม่อย่างเดียว + ตัวเลขจริงบันทึกไว้ใน §4 P2 แล้ว
-- [ ] **P3-1** `StorageAdapter` + `LocalStorageAdapter` + repos
-- [ ] **P3-2** `hydrate()` แยกจาก constructor ทั้งสอง engine + สถานะ `ready`
-- [ ] **P3-3** sprite cache ในหน่วยความจำ แทนการอ่าน storage ตอนรับ `ft:sprites-updated`
-- [ ] **P3-4** ไม่มี `localStorage` เหลือนอก `src/lib/data/`
+- [x] **P3-1** [`src/lib/data/`](../src/lib/data/) — `StorageAdapter` (async ทั้งหมด) + `LocalStorageAdapter` + `SpriteRepo`/`TankRepo`/`EditorPrefsRepo` + `getRepos()`
+- [x] **P3-2** `hydrate()` แยกออกจาก constructor/`init()` ทั้งสอง engine + ธง `ready` + หน้าจอ loading ใน `App.tsx` และ `TankSection.tsx`
+- [x] **P3-3** `SpriteRepo` ถือ cache ในหน่วยความจำ · `refreshPalette()` อ่านจาก cache แบบ sync (render loop ไม่ต้อง await) · ผู้ฟัง event ทั้ง 3 จุดไม่ต้องแก้เลย
+- [x] **P3-4** ไม่มีการเรียก `localStorage` เหลือนอก `src/lib/storage.ts` (ตัว backend) และ `src/lib/data/` — ค่า per-device (layout / uiScale / panel collapsed) ใช้ `loadRawPref`/`saveRawPref` แบบ sync โดยตั้งใจ ดูเหตุผลใน §4 P3
 - [ ] **P4** `IndexedDbAdapter` + migration ครั้งเดียว + ธง
 - [ ] **P4-2** สร้าง `tankId` ฝั่ง client ตั้งแต่ตอนนี้ (เตรียมตาราง `tanks` ใน P5)
 - [ ] **P4-3** `TankEngine` รับ `tankId` เป็นพารามิเตอร์ + IndexedDB store `tank` ใช้ `tankId` เป็น key

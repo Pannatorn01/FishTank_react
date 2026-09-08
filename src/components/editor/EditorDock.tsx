@@ -1,6 +1,6 @@
 import { Fragment, useRef, useState, type ReactNode } from 'react';
 import type { DockDropLocation } from '@/hooks/useDockDrag';
-import { KEY_SIDE_PANEL_COLLAPSED_PREFIX } from '@/lib/storage';
+import { KEY_SIDE_PANEL_COLLAPSED_PREFIX, loadRawPref, saveRawPref } from '@/lib/storage';
 import { columnKey, rootRemPx, type DockColumns, type DockPanelId, type DockZone } from '@/hooks/useEditorLayout';
 
 /** How far the pointer has to move from where it went down before that counts as "dragging" rather than
@@ -15,7 +15,7 @@ const COLLAPSE_PREFIX = KEY_SIDE_PANEL_COLLAPSED_PREFIX;
 
 function loadCollapsed(id: string): boolean {
   try {
-    return localStorage.getItem(COLLAPSE_PREFIX + id) === '1';
+    return loadRawPref(COLLAPSE_PREFIX + id) === '1';
   } catch {
     return false;
   }
@@ -64,11 +64,7 @@ export function DockPanel({
   const toggle = () => {
     const next = !collapsed;
     setCollapsed(next);
-    try {
-      localStorage.setItem(COLLAPSE_PREFIX + id, next ? '1' : '0');
-    } catch {
-      // Not being able to remember the choice is no reason to refuse to make it.
-    }
+    saveRawPref(COLLAPSE_PREFIX + id, next ? '1' : '0');
   };
 
   const endGesture = (e: React.PointerEvent, cancelled: boolean) => {

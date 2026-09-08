@@ -752,6 +752,35 @@ export function saveOnionSettings(settings: OnionSettings): void {
   writeKey(KEY_ONION, JSON.stringify(settings));
 }
 
+/**
+ * Device-local UI preferences: the dock layout, the UI scale, and each panel's collapsed state.
+ *
+ * These deliberately never go through the async data layer (src/lib/data) even though everything else
+ * now does. They describe *this browser window* - how wide the columns are on this monitor, how large
+ * the text is on this screen - so they will never live in a database, and making them asynchronous
+ * would buy nothing but a flash of the wrong layout on every load. They live here rather than in the
+ * hooks that own them only so backup/reset can see the keys (see allOwnedKeys).
+ *
+ * Every one of them swallows its errors: not being able to remember an arrangement is never a reason
+ * to refuse to render one.
+ */
+export function loadRawPref(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch (e) {
+    console.warn('reading a device preference failed', e);
+    return null;
+  }
+}
+
+export function saveRawPref(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Deliberately silent - see loadRawPref's doc comment.
+  }
+}
+
 export function loadUiTheme(): UiTheme | null {
   try {
     const raw = localStorage.getItem(KEY_UI_THEME);
