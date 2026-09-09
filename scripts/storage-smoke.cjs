@@ -61,12 +61,18 @@ function check(name, ok, detail) {
   await page.goto(URL, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('canvas.pixel-canvas');
   const libCards = await page.locator('.library-card').count();
-  check('cold start shows the two default sprites', libCards === 2, `cards=${libCards}`);
-
   const bootstrapRows = await readStore(page, 'sprites');
+  // Counted, not hard-coded at two. How many sprites ship with the app is a product decision that has
+  // already changed once (2 -> 18 when the PixelLab assets landed), and a literal here turns that into
+  // a red suite rather than a review. What has to hold is that a first run has a library at all and
+  // that the UI shows every row that was seeded - a seeded sprite the library does not list is the
+  // failure worth catching.
+  check('cold start seeds a library', bootstrapRows.length > 0, `rows=${bootstrapRows.length}`);
+  check('and the library shows all of it', libCards === bootstrapRows.length, `cards=${libCards} rows=${bootstrapRows.length}`);
+
   check(
-    'bootstrap wrote frames run-length encoded into IndexedDB',
-    bootstrapRows.length === 2 && bootstrapRows.every((s) => s.frames.every((f) => f.every((l) => l.cells.enc === 'rle1'))),
+    'bootstrap wrote every frame run-length encoded into IndexedDB',
+    bootstrapRows.every((s) => s.frames.every((f) => f.every((l) => l.cells.enc === 'rle1'))),
     `rows=${bootstrapRows.length}`
   );
 
@@ -99,11 +105,23 @@ function check(name, ok, detail) {
     encoded: rows.every((s) => s.frames.every((f) => f.every((l) => l.cells && l.cells.enc === 'rle1'))),
     bytes: JSON.stringify(rows).length,
   };
-  check('saving adds the sprite to the library', afterSave.count === 3 && afterSave.names.includes('Smoke Fish'), JSON.stringify(afterSave.names));
+  check(
+    'saving adds the sprite to the library',
+    afterSave.count === bootstrapRows.length + 1 && afterSave.names.includes('Smoke Fish'),
+    JSON.stringify(afterSave.names)
+  );
   check('every saved record carries RecordMeta', afterSave.hasMeta);
   check('every saved record has an id', afterSave.allHaveIds);
   check('every saved frame is encoded', afterSave.encoded);
-  check('3 sprites still cost well under 20KB', afterSave.bytes < 20000, `${afterSave.bytes} chars`);
+  // Per sprite rather than a flat total, because the total now moves whenever the seeded set does -
+  // which is what made the old "3 sprites under 20KB" check go red on a change that was not about
+  // storage at all. The number this is really guarding is what P2 bought: RLE keeps a sprite in the
+  // low kilobytes, so a library stays far inside the ~5MB localStorage fallback even for someone with
+  // hundreds of them. A room backdrop is 400x248, an order of magnitude more cells than a fish, so the
+  // budget is generous per sprite and still catches encoding silently falling back to raw cells.
+  const perSprite = Math.round(afterSave.bytes / afterSave.count);
+  check('sprites still cost single-digit KB each', perSprite < 9000, `${perSprite} chars/sprite over ${afterSave.count}`);
+  check('and the whole library is a small fraction of the localStorage fallback', afterSave.bytes < 500_000, `${afterSave.bytes} chars`);
 
   // ---- 3. reload: does the drawing survive? -----------------------------------------
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -125,7 +143,11 @@ function check(name, ok, detail) {
     afterDelete.tombstones.length === 1 && afterDelete.tombstones[0].frames === 0,
     JSON.stringify(afterDelete.tombstones));
   const cardsAfterDelete = await page.locator('.library-card').count();
-  check('deleted sprite is gone from the library UI', cardsAfterDelete === 2, `cards=${cardsAfterDelete}`);
+  check(
+    'deleted sprite is gone from the library UI',
+    cardsAfterDelete === bootstrapRows.length,
+    `cards=${cardsAfterDelete} seeded=${bootstrapRows.length}`
+  );
 
   // ---- 5. a library saved in the OLD uncompressed format still loads -----------------
   await page.evaluate(() => {

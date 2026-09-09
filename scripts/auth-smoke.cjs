@@ -35,7 +35,10 @@ function check(name, ok, detail) {
 
   // Guest mode: the app is fully usable, and nothing demands an account.
   const cards = await page.locator('.library-card').count();
-  check('guest can use the app immediately', cards === 2, `sprites=${cards}`);
+  // Not a fixed count - how many sprites ship with the app is a product decision (see the same note in
+  // storage-smoke.cjs). What guest mode promises is a usable app with something already in it, before
+  // anyone is asked for an account.
+  check('guest can use the app immediately', cards > 0, `sprites=${cards}`);
   const dialogs = await page.locator('[role="alertdialog"]').count();
   check('no sign-in wall on load', dialogs === 0);
 
