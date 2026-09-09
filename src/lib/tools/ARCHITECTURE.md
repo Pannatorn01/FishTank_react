@@ -526,3 +526,154 @@ still the only tool left, and turned out to matter exactly as described:
     *entirely* outside an active selection - confirmed via pixel readback that no stray overlay pixels
     are left on screen after release (before the fix, this exact scenario reproduced the bug).
   - No console/runtime errors in any run.
+
+## Follow-up cleanup: the engine's leftover copies removed (2026-09-09)
+
+The tool migration left `PixelEditorEngine` holding its own private, byte-for-byte identical copies of
+seven functions this directory already owned: `maskFromSelection`, `boundingBoxOfMask`,
+`maskBoundaryEdges`, `chainBoundaryEdges`, `traceMaskOutline`, `masksEqual` and `polygonMask` (plus
+`boundingBoxOfPoints`, only ever called by that `polygonMask`). The tools ran on the shared versions,
+the engine ran on its own - two implementations of the same tricky grid-line/even-odd geometry that
+could silently drift apart. All eight are gone; the engine imports from `selectionMask.ts` now.
+
+To make that possible, `maskFromSelection` and `settleSelection` take a new `SelectionState` interface
+(just `selection` + `selectionMask`) instead of a full `ToolContext`, which both a `ToolContext` and the
+engine itself satisfy structurally - so the engine no longer has to build a whole ToolContext just to
+settle a selection. The engine's `applySelectionMask` survives as a four-line wrapper that writes
+`settleSelection`'s result into engine fields; its one remaining caller is `commitRotate`.
+
+Two more consolidations in the same pass, both outside this directory:
+
+- **`translateSelectionBy(dx, dy)`** on the engine. The "shift the selection box, the lasso outline and
+  the mask by a delta" block was copy-pasted verbatim in three places (`commitMove`, `nudgeSelection`,
+  and `commitGestureResult`'s `moveSelectionBy` branch) - three chances for a Move-tool drag, an
+  arrow-key nudge and a legacy drag-commit to settle selection geometry differently. `shiftMask` moved
+  into `selectionMask.ts` alongside the rest of the mask machinery.
+- **`src/lib/download.ts` and `src/lib/spriteExport.ts`.** `downloadBlob` existed three times (both
+  engines and `data/backup.ts`, the last of which revoked its object URL synchronously rather than on
+  a timer - now it does not). The frame/sheet/JSON exports moved out of the engine wholesale: they
+  read nothing but the sprite and the frame index, and each had its own copy of the export-scale
+  formula and the "name or 'sprite'" filename fallback.
+
+`usePixelEditor.ts`: 3972 -> 3728 lines. Verified with `tsc -b` (`noUnusedLocals` on, so a missed
+caller or a dead import fails the build), the full 273-test suite, `oxlint` (warning count unchanged),
+and `npm run build`.
+
+## Two bugs the duplicated-block pattern was hiding (2026-09-09)
+
+Both found by looking for repeated blocks, not by looking for bugs - which is the point: each was a
+long list of field assignments copy-pasted between code paths that have to end up in the same state,
+where one copy had quietly fallen behind the other.
+
+**Switching tanks carried the previous tank's water level and algae over** (`useTank.ts`).
+`refresh()` - which is how `switchTank`, `createTank` and the remote-sync reload all land a tank -
+copied `loadEverything`'s "apply TankState to engine fields" block but stopped three fields short:
+`waterLevel`, `algae` and `lastTickAt`. Because `snapshotForStorage()` reads those same fields straight
+back out, this was not just a display bug: the next save wrote the *old* tank's water level and algae
+onto the tank that had been switched to, and a brand new tank inherited whatever algae the previous one
+had grown. Now one `applyTankState(tankId, state)` that both paths call, with the catch-up replay
+(`catchUpSince`) alongside it - so switching to a tank untouched for three days replays those three
+days exactly as opening the app on it would. The predator roll deliberately stays in `loadEverything`
+only: it is once per app load, not once per tank switch.
+
+**Deleting the sprite you were editing could crash the canvas** (`usePixelEditor.ts`). The
+`deleteSprite` branch that swaps in a blank sprite was a third partial copy of the swap block, missing
+`frameIndex`/`previewFrame`, the zoom reset and the undo stacks. `blankSprite()` has exactly one frame,
+so deleting while on frame 3 left `frameIndex` at 3 and the next `drawGrid()` called
+`paintLayers(ctx, frames[3])` - `undefined.forEach`, a hard TypeError - and an undo afterwards could
+pull the deleted sprite's pixels back onto the blank one. `newSprite` had separately drifted too
+(missing `previewFrame`). All four paths (new / load / import / delete-the-open-one) now go through one
+`adoptSprite(sprite, dirty)`; `dirty` is the only thing that legitimately differed between them.
+
+`src/hooks/__tests__/usePixelEditor.test.ts` is new (6 tests) and `PixelEditorEngine` is now a value
+export to make it possible, the same way `TankEngine` already was - every DOM-touching method already
+guarded on a null canvas, so a bare `new PixelEditorEngine()` is a working headless engine. The
+repository seam it needed already existed (`setRepos`), so `deleteSprite` is tested without mocking a
+module. Both fixes were confirmed to be real by reverting each one and watching the new tests fail
+(the frame-index one fails with `expected 3 to be +0`), then restoring it.
+
+## Third pass: the copies outside the engine classes (2026-09-09)
+
+**`cellGeometry.ts` is new** and holds the four helpers this directory had been carrying multiple
+byte-identical copies of: `brushCellsAt` (three copies - Pen, Line/Rect/Ellipse, Curve), `thickenPath`
+and `mirrorExpand` (two each - shapeTool and curveTool), and `inBounds` (two - Select and Lasso). Each
+copy carried a comment explaining why it was a copy ("small and stable enough that a shared import
+isn't worth it for two callers"), and those comments had gone stale in both directions: `brushCellsAt`
+had grown to three callers, and `thickenPath`'s said the engine still used it, which stopped being true
+when Curve was migrated. `colorsMatch` (Fill and Magic Wand) went to `pixelMath.ts` instead - it is
+plain color math sitting directly next to the `hexToRgb` it calls, with nothing tool-specific about it.
+
+**What was NOT unified, deliberately:** `constrainToAngle` vs `constrainToSquare`, and
+`resolveMarqueeMode` vs `resolveWandCombine`. Both pairs look similar and mean different things; the
+warnings against merging them are above and still stand. Identical bodies were the bar for this pass.
+
+**`ptr()` in the tool tests** existed eleven times, once per test file, identical every time. It now
+lives in `__tests__/testUtils.ts` next to `makeFrame`/`makeContext`.
+
+**`PixelThumb.tsx` is new** (`src/components/`). Five components were drawing the same
+clear/scale-to-fit/center/paint sequence into a square canvas at five different sizes: `LibraryThumb`
+(48), `GalleryThumb` (64), `PaletteThumb` (32, the only parametrized one), `FrameThumb` (52) and
+`LayerThumb` (26). `paint` stayed a callback because the three things being drawn are genuinely
+different - a sprite's first frame, one frame's layer stack, and a single layer's cells *ignoring* its
+visibility (a hidden layer still has to be identifiable in the layer list, so that one cannot go through
+`paintLayers`). The `deps` prop preserves a real difference the copies had: the sprite thumbnails
+repaint when the sprite changes, while the frame strip and layer list repaint on **every** render,
+because the engine mutates those cells in place and there is no value React could compare. Omitting
+`deps` gives the every-render behavior. `SpriteThumb` wraps the common case.
+
+**`components/gallery/`** holds what `GalleryDialog` and `TankGalleryDialog` had in common: cursor
+pagination (`useGalleryPage` - reset on open, append on page, the short-page-means-no-more rule, and
+turning a failed request into an error plus an empty list rather than a dialog stuck on "loading"), the
+report flow (`useContentReport`), the modal chrome and report form (`GalleryFrame`), and the flag
+button (`ReportButton`). The two dialogs keep only what actually differs: a grid of sprite cards with a
+copy button, and a list of tank rows with an open button. This also collapsed a duplicated
+`set-state-in-effect` lint warning into one.
+
+Verified with `tsc -b`, 282 tests, `npm run build`, and - because most of this is UI that no unit test
+covers - the three existing Playwright smoke scripts against a real dev server: `gallery-ui-smoke`
+(14/14), `tank-gallery-ui-smoke` (10/10) and `tanks-ui-smoke` (20/20, which exercises the tank-switching
+path the `applyTankState` fix above landed in). Note those scripts hardcode port 5173; a second dev
+server on 5174 needs the URL overridden or it silently tests whatever is on 5173.
+
+## Fourth pass: a comment turned into a constraint (2026-09-09)
+
+`src/lib/selectionTransform.ts` is new and holds the resize/rotate geometry that was four private
+methods on the engine: `buildResizePreview` -> `scaledRegionCells`, `computeResizedBox` -> `resizedBox`,
+`computeRotatePreview` -> `rotatedRegionCells`, and `rotatedSelectionMask` -> `rotatedMask`. All four
+are pure functions of a box, a captured region and an angle, and none of them could be tested where they
+were: reaching them meant a live engine and a DOM canvas.
+
+The reason for doing it, though, was not testability. `rotatedSelectionMask`'s doc comment said the
+mask had to reuse "the exact mapping computeRotatePreview used for the pixels" because "any independent
+derivation drifts from where the pixels actually went" - and then, directly underneath, re-derived that
+mapping: its own `cx`/`cy`/`cos`/`sin`, its own inverse-rotate expression. The two happened to agree
+(confirmed algebraically: one floors into region-local coordinates and the other into canvas
+coordinates, and `origin.x0` is an integer, so `floor(v - x0) === floor(v) - x0`), but nothing except
+that comment was keeping them agreeing. They are now one `inverseRotation(origin, angle)` object that
+both functions call, so the promise is structural.
+
+`src/lib/__tests__/selectionTransform.test.ts` (12 tests) covers it, including that property directly:
+for six different angles, the cells `rotatedMask` marks are exactly the cells `rotatedRegionCells`
+painted. Also covered: that a resize duplicates whole cells rather than blending two colors into a
+third (it is pixel art - an interpolated resize would invent colors that are not in the palette), that
+the corners of a rotated bounding box stay empty rather than smearing edge pixels into them (the
+regression the "skipped, not clamped" comment describes), and the off-canvas case.
+
+`MoveBufferCell` and the new `ColoredCell` were the same interface; the engine now uses `ColoredCell`.
+
+**One lint warning was a real (small) bug.** `TankCanvas`'s two tank-size fields synced themselves from
+the engine in an effect, so a size the engine set itself - a preset, a reset, switching to a
+differently-sized tank - painted one frame showing the *previous* tank's numbers before correcting
+itself. They now catch up during render, compared against the size the fields were last filled from.
+
+**Three `set-state-in-effect` warnings were left alone deliberately**, in `useGallery`, `SharedTankView`
+and `TankSharePanel`. All three are the same shape: reset to a loading state, then start a network
+request. That is an effect synchronizing with an external system, which is what the rule's own help
+text says effects are for; the warning is aimed at the reset line, and the contortion needed to silence
+it would make the code worse, not better. The three `only-export-components` warnings are in
+shadcn-generated `components/ui/` files and would be undone by the generator.
+
+Verified with `tsc -b`, 294 tests, `npm run build`, `oxlint` (7 -> 6 warnings), and against a real dev
+server: `tanks-ui-smoke` 20/20, `gallery-ui-smoke` 14/14, plus a throwaway 8-check script for the size
+fields specifically - that a half-typed number stays in the field without resizing the tank, that
+committing applies it, and that a size the engine chose shows up in the field and matches what is drawn.
