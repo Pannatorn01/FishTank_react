@@ -1,4 +1,5 @@
 import { Container, FillGradient, type FederatedPointerEvent, Graphics, Sprite as PixiSprite } from 'pixi.js';
+import { spriteDims } from '@/lib/pixelMath';
 import type { TankEngine } from '@/hooks/useTank';
 import { PACK_SPRITE_NAMES } from '@/lib/data/pixellabPack';
 import { roomSceneMargin } from '@/lib/storage';
@@ -268,8 +269,7 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
   function contentBox(sprite: Sprite): { x: number; y: number; width: number; height: number } {
     const cached = contentBoxes.get(sprite.id);
     if (cached) return cached;
-    const width = sprite.width || 16;
-    const height = sprite.height || 16;
+    const { width, height } = spriteDims(sprite);
     let minX = width;
     let minY = height;
     let maxX = -1;
@@ -315,8 +315,7 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     const frameCount = Math.max(1, sprite.frames.length);
     const frameIndex = animate ? Math.floor(Date.now() / CAST_FRAME_MS) % frameCount : 0;
     view.texture = textureFor(sprite, frameIndex);
-    const cellsWide = sprite.width || 16;
-    const cellsHigh = sprite.height || 16;
+    const { width: cellsWide, height: cellsHigh } = spriteDims(sprite);
     const box = contentBox(sprite);
     // Scale so the *drawn* pixels come out widthFrac of the artwork wide; the canvas around them is
     // scaled to match and simply stays transparent.
@@ -354,8 +353,7 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
       artRect = { x: 0, y: 0, width: roomWidth, height: roomHeight };
       return;
     }
-    const cellsWide = sprite.width || 16;
-    const cellsHigh = sprite.height || 16;
+    const { width: cellsWide, height: cellsHigh } = spriteDims(sprite);
     // A backdrop with several frames is an animated room - drifting sky, a curtain moving. One frame
     // is the still case and costs the same code path.
     const frameCount = Math.max(1, sprite.frames.length);

@@ -8,7 +8,7 @@ import { computeSchoolSteer, type SchoolSteer } from '@/tank/sim/schooling';
 // Re-exported, not redefined: useTank.test.ts and the Life panel have always imported these two
 // from here.
 export { HUNGER_FULL_TO_EMPTY_MS, STARVATION_DEATH_MS } from '@/tank/sim/vitals';
-import { paintLayers } from '@/lib/pixelMath';
+import { paintLayers, spriteDims } from '@/lib/pixelMath';
 import { getRepos, type TankState, type TankSummary } from '@/lib/data';
 import * as storage from '@/lib/storage';
 import {
@@ -320,6 +320,7 @@ export class TankEngine {
    *  one callback - the scene at time t - and knows nothing else about the tank. */
   private readonly sceneExport = new SceneExport(
     (timeMs) => this.compositeScene(timeMs),
+    () => this.tankName,
     () => this.reactNotify()
   );
 
@@ -616,10 +617,7 @@ export class TankEngine {
   }
 
   spriteDims(sprite?: Sprite): { width: number; height: number } {
-    return {
-      width: (sprite && sprite.width) || storage.DEFAULT_GRID_SIZE,
-      height: (sprite && sprite.height) || storage.DEFAULT_GRID_SIZE,
-    };
+    return spriteDims(sprite);
   }
 
   spritePx(sprite?: Sprite): { pw: number; ph: number } {

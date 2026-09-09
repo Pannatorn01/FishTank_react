@@ -1,5 +1,5 @@
 import { useEffect, useRef, type DependencyList } from 'react';
-import { paintLayers } from '@/lib/pixelMath';
+import { paintLayers, spriteDims } from '@/lib/pixelMath';
 import type { Sprite } from '@/lib/types';
 
 /**
@@ -57,10 +57,7 @@ export function PixelThumb({
 
 /** The common case: a sprite's first frame. Repaints when the sprite object changes. */
 export function SpriteThumb({ sprite, size, className }: { sprite: Sprite; size: number; className?: string }) {
-  // A sprite from an older save (or a hand-edited import) can be missing its dimensions; 16 is the
-  // fallback every previous copy of this used.
-  const width = sprite.width || 16;
-  const height = sprite.height || 16;
+  const { width, height } = spriteDims(sprite);
   return (
     <PixelThumb
       size={size}

@@ -1,15 +1,11 @@
 import { Texture } from 'pixi.js';
-import { paintLayers } from '@/lib/pixelMath';
+import { paintLayers, spriteDims } from '@/lib/pixelMath';
 import type { Sprite } from '@/lib/types';
 
 /** Same raster density every sprite in the tank has always been painted at (see DISPLAY_SCALE in
  *  useTank.ts) - kept identical here so a Pixi-rendered sprite is pixel-for-pixel the same crispness
  *  as the Canvas2D one it's replacing, not a coincidentally-close approximation. */
 const DISPLAY_SCALE = 4;
-
-function spriteDims(sprite: Sprite): { width: number; height: number } {
-  return { width: sprite.width || 16, height: sprite.height || 16 };
-}
 
 /**
  * Pixi textures for every (sprite, frame) pair currently in use, keyed so a sprite with multiple

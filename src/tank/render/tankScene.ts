@@ -1,4 +1,5 @@
 import { ColorMatrixFilter, Container, FillGradient, Graphics, Sprite } from 'pixi.js';
+import { spriteDims } from '@/lib/pixelMath';
 import type { TankEngine } from '@/hooks/useTank';
 import { roomSceneMargin } from '@/lib/storage';
 import type { Instance, RoomInstance, SelectionBox, Sprite as SpriteData, TankShape } from '@/lib/types';
@@ -38,10 +39,6 @@ const WASTE_RADIUS_Y = 5;
 const ALGAE_COLOR = 0x4ade80;
 /** Matches useTank.ts's Canvas2D BABY_SCALE_FRAC exactly - see growthScale() below. */
 const BABY_SCALE_FRAC = 0.5;
-
-function spriteDims(sprite: SpriteData): { width: number; height: number } {
-  return { width: sprite.width || 16, height: sprite.height || 16 };
-}
 
 /** Mirrors useTank.ts's private TankEngine.growthScale() (P5 §6 item 6) - duplicated rather than
  *  called on the engine since it's pure math over fields already on `inst` (bornAt/matureAt), the same

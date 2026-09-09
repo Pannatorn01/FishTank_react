@@ -4,8 +4,41 @@ import { downloadBlob } from '@/lib/download';
  *  window onto the tank: it asks for frames and never learns what is in them. */
 export type SceneFrame = (timeMs: number) => HTMLCanvasElement;
 
-/** Filename stem for every export. */
-const BASE_NAME = 'fish-tank';
+/** Used when the tank has no usable name of its own - a tank created before names existed, or one named
+ *  with nothing but spaces or punctuation. */
+const FALLBACK_NAME = 'fish-tank';
+
+/** Longest filename stem taken from a tank's name. Long enough that a real name survives whole, short
+ *  enough that a pasted paragraph does not become the filename. */
+const MAX_NAME_LENGTH = 40;
+
+/**
+ * Turns a tank's name into a filename stem.
+ *
+ * Every export used to be `fish-tank.png` regardless of which tank it came from, so someone with three
+ * tanks got three files with the same name and had to open each to tell them apart. The tank has had a
+ * name all along.
+ *
+ * Anything that is awkward in a filename - path separators, the characters Windows reserves, control
+ * characters, whitespace runs - collapses to a single dash, and leading/trailing dashes and dots are
+ * trimmed (a name beginning with a dot would make a hidden file on Unix; one ending in a dot is
+ * rejected outright by Windows). A name that is nothing but those characters leaves an empty stem,
+ * which falls back rather than producing a file called `.png`.
+ */
+export function exportBaseName(tankName: string): string {
+  const cleaned = tankName
+    // Control characters, plus the set Windows reserves in a filename. Written as escapes rather
+    // than as the characters themselves: as literals the class holds raw NUL..US and DEL bytes,
+    // which no editor renders and no reviewer can check.
+    .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]+/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '')
+    .slice(0, MAX_NAME_LENGTH)
+    // Slicing can leave a trailing dash mid-word; trim again rather than shipping "my-tank-".
+    .replace(/[-.]+$/g, '');
+  return cleaned || FALLBACK_NAME;
+}
 
 /** How often the video recorder redraws, and the frame rate it captures at. Real time, on its own
  *  timer, independent of the tank's simulation loop - the point is to record what is actually
@@ -32,11 +65,19 @@ export class SceneExport {
   private recording: { recorder: MediaRecorder; timer: number } | null = null;
 
   private readonly frame: SceneFrame;
+  /** The tank's current name, read per export rather than stored: it can be renamed between one
+   *  export and the next. */
+  private readonly tankName: () => string;
   private readonly notify: () => void;
 
-  constructor(frame: SceneFrame, notify: () => void) {
+  constructor(frame: SceneFrame, tankName: () => string, notify: () => void) {
     this.frame = frame;
+    this.tankName = tankName;
     this.notify = notify;
+  }
+
+  private baseName(): string {
+    return exportBaseName(this.tankName());
   }
 
   get isRecording(): boolean {
@@ -46,7 +87,7 @@ export class SceneExport {
   /** A still photo of the tank exactly as it looks right now (one frame at t=0, so every animated item
    *  draws its first frame) - the simplest of the three formats. */
   png(): void {
-    this.frame(0).toBlob((blob) => downloadBlob(blob, `${BASE_NAME}.png`));
+    this.frame(0).toBlob((blob) => downloadBlob(blob, `${this.baseName()}.png`));
   }
 
   /**
@@ -69,7 +110,7 @@ export class SceneExport {
       if (e.data.size > 0) chunks.push(e.data);
     };
     recorder.onstop = () => {
-      downloadBlob(new Blob(chunks, { type: mimeType }), `${BASE_NAME}.webm`);
+      downloadBlob(new Blob(chunks, { type: mimeType }), `${this.baseName()}.webm`);
     };
     const startedAt = performance.now();
     // The stream is bound to this one canvas, so each redraw has to land *in* it rather than replacing
@@ -129,7 +170,7 @@ export class SceneExport {
         if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
       }
       gif.finish();
-      downloadBlob(new Blob([gif.bytes() as BlobPart], { type: 'image/gif' }), `${BASE_NAME}.gif`);
+      downloadBlob(new Blob([gif.bytes() as BlobPart], { type: 'image/gif' }), `${this.baseName()}.gif`);
     } finally {
       this.encodingGif = false;
       this.notify();

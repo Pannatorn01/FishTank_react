@@ -1,4 +1,26 @@
-import type { Cell, Frame, Layer, SelectionBox } from './types';
+import type { Cell, Frame, Layer, SelectionBox, Sprite } from './types';
+
+/** Stands in for a sprite's own dimensions when it has none - see `spriteDims`. Deliberately a literal
+ *  rather than an import of `storage.DEFAULT_GRID_SIZE`: this module is pure geometry with no storage
+ *  dependency, and they are the same number for the same reason (a sprite with no size recorded is
+ *  treated as one that was created at the default size). */
+const FALLBACK_SPRITE_SIZE = 16;
+
+/**
+ * A sprite's size in cells, with a fallback for one that has none.
+ *
+ * The fallback is not defensive noise: sprites saved before width/height were recorded, and hand-edited
+ * or imported JSON, can genuinely arrive without them, and every drawing path needs *some* number to
+ * scale by rather than producing a zero-sized canvas. It was written out inline at ten call sites
+ * across the two renderers, the thumbnail component and the tank engine - all agreeing on 16, which is
+ * exactly the kind of agreement that survives right up until it doesn't.
+ */
+export function spriteDims(sprite?: Pick<Sprite, 'width' | 'height'> | null): { width: number; height: number } {
+  return {
+    width: sprite?.width || FALLBACK_SPRITE_SIZE,
+    height: sprite?.height || FALLBACK_SPRITE_SIZE,
+  };
+}
 
 /**
  * Run-length merges each row: a stretch of consecutive same-colored cells becomes one fillRect instead
