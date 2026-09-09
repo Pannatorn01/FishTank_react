@@ -3,6 +3,10 @@ import { useEffect, useRef, useState } from 'react';
 import { t } from '@/lib/i18n';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { SceneExport } from '@/tank/export/sceneExport';
+import { decayHunger, decayWaterLevel, growAlgae } from '@/tank/sim/vitals';
+// Re-exported, not redefined: useTank.test.ts and the Life panel have always imported these two
+// from here.
+export { HUNGER_FULL_TO_EMPTY_MS, STARVATION_DEATH_MS } from '@/tank/sim/vitals';
 import { paintLayers } from '@/lib/pixelMath';
 import { getRepos, type TankState, type TankSummary } from '@/lib/data';
 import * as storage from '@/lib/storage';
@@ -58,8 +62,6 @@ export const TANK_ZOOM_STEPS = [0.5, 0.75, 1];
  *  hunger decay of 1 real day means a fish left completely unfed needs feeding roughly daily to stay
  *  above 0; §9 Q2's "4 days unfed = dead" then gives a comfortable grace window on top of that, not a
  *  hair-trigger one. */
-export const HUNGER_FULL_TO_EMPTY_MS = 24 * 60 * 60 * 1000;
-export const STARVATION_DEATH_MS = 4 * 24 * 60 * 60 * 1000;
 /** ~3 pellets to refill an empty fish - keeps feeding a repeated small interaction rather than one
  *  click maxing hunger out for a day. */
 export const FOOD_HUNGER_GAIN = 0.34;
@@ -80,17 +82,6 @@ const WASTE_COLLECT_RADIUS = 26;
  *  how much waste can actually exist, just where the readout bottoms out. */
 const WASTE_MAX_FOR_ZERO_QUALITY = 8;
 
-/** P5 §6 item 4 (water level + refill) - evaporation is much slower than hunger decay (real tanks
- *  lose water over days/weeks, not hours), so a tank left alone for a normal multi-day stretch between
- *  visits still has most of its water rather than needing a refill on every single visit. */
-const WATER_FULL_TO_EMPTY_MS = 5 * 24 * 60 * 60 * 1000;
-
-/** P5 §6 item 5 (algae + scrub). Baseline growth (zero waste sitting around) reaches full coverage in
- *  this many real ms; each piece of uncollected waste speeds that up by ALGAE_WASTE_SPEEDUP_PER_ITEM
- *  (e.g. 0.4 = 40% faster per item), per the user's own framing: "จะเกิดไวขึ้นถ้าไม่เก็บขี้ปลา" - algae
- *  isn't just a timer, dirty water (uncollected waste) actively feeds it. */
-const ALGAE_BASE_FULL_MS = 6 * 24 * 60 * 60 * 1000;
-const ALGAE_WASTE_SPEEDUP_PER_ITEM = 0.4;
 /** How much total scrub distance (px, summed across a drag) it takes to clean the glass from fully
  *  algae-covered back to spotless - calibrated to a few full-width swipes of the tank, not one wipe
  *  (scrubbing should read as an actual chore, if a quick one). */
@@ -111,7 +102,6 @@ const BREEDING_POPULATION_CAP = 12;
  *  continuously (see wellFedSince) - per §9 Q4's "ต้องกินอิ่มมา ≥1 วันติดก่อน", keeps breeding from firing
  *  the moment a starving tank gets one meal. */
 const WELL_FED_MIN_MS = DAY_MS;
-const WELL_FED_HUNGER_THRESHOLD = 0.5;
 /** How long a bred fish takes to reach full size - see growthScale(). */
 const BABY_MATURATION_MS = 3 * DAY_MS;
 /** A newborn renders at this fraction of adult size, growing linearly to 1 by BABY_MATURATION_MS - see
@@ -2018,24 +2008,20 @@ export class TankEngine {
     this.persist();
   }
 
-  /** Same one-shot-elapsed-time shape as tickHunger() below (called every frame during normal play, and
-   *  once from init() to catch up on evaporation that happened while the tab was closed), but far
-   *  simpler - water level has no "crossed zero, something else now has to happen" consequence to track
-   *  the way hunger's starvation clock does, so a plain linear decay clamped to 0 is the whole thing. */
+  // The three slow clocks (hunger/starvation, evaporation, algae growth) are pure functions in
+  // src/tank/sim/vitals.ts. They take an elapsed duration rather than reading a clock, which is what
+  // lets one frame and one app-closed gap go through exactly the same code.
+
   private tickWaterLevel(elapsedMs: number): void {
-    if (elapsedMs <= 0) return;
-    this.waterLevel = Math.max(0, this.waterLevel - elapsedMs / WATER_FULL_TO_EMPTY_MS);
+    this.waterLevel = decayWaterLevel(this.waterLevel, elapsedMs);
   }
 
-  /** Same one-shot-elapsed-time shape again, growing instead of shrinking - `wasteCount` speeds it up
-   *  (see ALGAE_WASTE_SPEEDUP_PER_ITEM's doc comment for why: dirty water actively feeds algae, this
-   *  isn't just a second independent timer). Passed in rather than read off `this.wasteItems.length`
-   *  directly so init()'s catch-up call can explicitly pass 0 (no historical waste count to know about
-   *  across a reload - see its own comment) while the per-frame call passes the real current count. */
   private tickAlgae(elapsedMs: number, wasteCount: number): void {
-    if (elapsedMs <= 0) return;
-    const growthRate = (1 / ALGAE_BASE_FULL_MS) * (1 + wasteCount * ALGAE_WASTE_SPEEDUP_PER_ITEM);
-    this.algae = Math.min(1, this.algae + elapsedMs * growthRate);
+    this.algae = growAlgae(this.algae, elapsedMs, wasteCount);
+  }
+
+  private tickHunger(elapsedMs: number): void {
+    decayHunger(this.instances, elapsedMs, Date.now());
   }
 
   /** Wipes some algae off the glass (P5 §6 item 5) - called from the Life-mode scrub-drag with however
@@ -2076,50 +2062,6 @@ export class TankEngine {
     if (key === this.algaePatchesSizeKey) return;
     this.algaePatchesSizeKey = key;
     this.algaePatches = generateAlgaePatches(this.canvas.width, this.canvas.height);
-  }
-
-  /** Resolves `elapsedMs` of real time's worth of hunger decay (and any resulting starvation death) in
-   *  one shot - called every frame with a tiny `elapsedMs` (dt in ms) during normal play, and once from
-   *  init() with however much real time passed while the tab was closed (see the catch-up comment
-   *  there). Both call sites share this rather than the closed-tab case getting its own separate
-   *  "simulate N days" loop, since a single linear-decay step covers either case identically - the
-   *  only difference is the size of `elapsedMs`.
-   *
-   *  Finding exactly *when* hunger crossed zero during this step (not just clamping it to 0) matters
-   *  for the very next thing this does with that: `starvingSince` has to be the real moment hunger hit
-   *  0, not "now", or a big catch-up jump (e.g. reopening the app after several days away) would reset
-   *  the 4-day starvation clock instead of correctly discovering it had already run out while closed. */
-  private tickHunger(elapsedMs: number): void {
-    if (elapsedMs <= 0) return;
-    const now = Date.now();
-    const stepStart = now - elapsedMs;
-    this.instances.forEach((inst) => {
-      if (inst.kind !== 'fish' || inst.dead) return;
-      if (inst.hunger > 0) {
-        const decayed = inst.hunger - elapsedMs / HUNGER_FULL_TO_EMPTY_MS;
-        if (decayed > 0) {
-          inst.hunger = decayed;
-        } else {
-          const fracToZero = inst.hunger / (elapsedMs / HUNGER_FULL_TO_EMPTY_MS);
-          inst.hunger = 0;
-          inst.starvingSince = stepStart + fracToZero * elapsedMs;
-        }
-      }
-      if (inst.hunger <= 0 && inst.starvingSince && now - inst.starvingSince >= STARVATION_DEATH_MS) {
-        inst.dead = true;
-        inst.diedAt = now;
-        inst.groupId = null;
-      }
-      // Breeding eligibility streak (P5 §6 item 6) - a plain "when did this last become true"
-      // timestamp, so (like bornAt/starvingSince) it stays correct across an app-closed gap with no
-      // special catch-up logic: comparing it against `now` is exactly as valid after reopening the app
-      // as it always was.
-      if (inst.hunger > WELL_FED_HUNGER_THRESHOLD) {
-        if (!inst.wellFedSince) inst.wellFedSince = now;
-      } else {
-        inst.wellFedSince = 0;
-      }
-    });
   }
 
   /** BABY_SCALE_FRAC (newborn) .. 1 (fully grown), interpolated linearly between bornAt and matureAt - a purely
