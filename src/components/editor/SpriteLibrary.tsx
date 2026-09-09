@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { GalleryDialog } from '@/components/editor/GalleryDialog';
+import { SpriteThumb } from '@/components/PixelThumb';
 import { useAuth } from '@/hooks/useAuth';
 import { setSpriteVisibility } from '@/lib/data/gallery';
 import { useLanguage } from '@/lib/i18n';
-import { paintLayers } from '@/lib/pixelMath';
 import type { Sprite, SpriteType } from '@/lib/types';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 
@@ -20,22 +20,7 @@ const TYPE_TABS: { type: SpriteType; icon: string; key: string }[] = [
 const TYPE_ICON: Record<SpriteType, string> = { fish: 'fish', object: 'leaf', room: 'image', background: 'water' };
 
 function LibraryThumb({ sprite }: { sprite: Sprite }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = ref.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const width = sprite.width || 16;
-    const height = sprite.height || 16;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const cellPx = THUMB_PX / Math.max(width, height);
-    ctx.save();
-    ctx.translate((THUMB_PX - width * cellPx) / 2, (THUMB_PX - height * cellPx) / 2);
-    paintLayers(ctx, sprite.frames[0], width, height, cellPx);
-    ctx.restore();
-  }, [sprite]);
-  return <canvas ref={ref} width={THUMB_PX} height={THUMB_PX} className="pixelated" />;
+  return <SpriteThumb sprite={sprite} size={THUMB_PX} />;
 }
 
 /**

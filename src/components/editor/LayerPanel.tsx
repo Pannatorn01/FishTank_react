@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
+import { PixelThumb } from '@/components/PixelThumb';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import { paintFrameCells } from '@/lib/pixelMath';
@@ -11,20 +12,18 @@ const IMPORT_IMAGE_ACCEPT = 'image/*';
 const THUMB_PX = 26;
 
 function LayerThumb({ layer, width, height }: { layer: Layer; width: number; height: number }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = ref.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const cellPx = THUMB_PX / Math.max(width, height);
-    ctx.save();
-    ctx.translate((THUMB_PX - width * cellPx) / 2, (THUMB_PX - height * cellPx) / 2);
-    paintFrameCells(ctx, layer.cells, width, height, cellPx);
-    ctx.restore();
-  });
-  return <canvas ref={ref} width={THUMB_PX} height={THUMB_PX} className="layer-thumb pixelated" />;
+  // paintFrameCells, not paintLayers: a hidden or fully transparent layer still has to show its
+  // contents here, or the list would have nothing to identify the layer you are about to unhide. No
+  // `deps` either - the engine paints into these cells in place.
+  return (
+    <PixelThumb
+      size={THUMB_PX}
+      width={width}
+      height={height}
+      className="layer-thumb"
+      paint={(ctx, cellPx) => paintFrameCells(ctx, layer.cells, width, height, cellPx)}
+    />
+  );
 }
 
 /** `showTitle` is false when the panel is docked (see PixelEditorPanel): the dock's own header already

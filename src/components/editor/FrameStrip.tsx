@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { PixelThumb } from '@/components/PixelThumb';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
 import { paintLayers } from '@/lib/pixelMath';
@@ -20,22 +21,17 @@ function FrameThumb({
   active: boolean;
   onClick: () => void;
 }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = ref.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const cellPx = THUMB_PX / Math.max(width, height);
-    ctx.save();
-    ctx.translate((THUMB_PX - width * cellPx) / 2, (THUMB_PX - height * cellPx) / 2);
-    paintLayers(ctx, layers, width, height, cellPx);
-    ctx.restore();
-  });
   return (
     <button type="button" className={`frame-thumb-wrap${active ? ' active' : ''}`} onClick={onClick} tabIndex={-1}>
-      <canvas ref={ref} width={THUMB_PX} height={THUMB_PX} className="frame-thumb pixelated" />
+      {/* No `deps`: the engine mutates these layers' cells in place while painting, so this has to
+          repaint on every render rather than when some prop identity changes. */}
+      <PixelThumb
+        size={THUMB_PX}
+        width={width}
+        height={height}
+        className="frame-thumb"
+        paint={(ctx, cellPx) => paintLayers(ctx, layers, width, height, cellPx)}
+      />
     </button>
   );
 }

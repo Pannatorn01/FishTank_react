@@ -76,12 +76,28 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
     void engine.refresh(() => confirm(t('tank.refreshConfirm')));
   };
 
-  const [widthInput, setWidthInput] = useState(String(engine.tankWidth ?? ''));
-  const [heightInput, setHeightInput] = useState(String(engine.tankHeight ?? ''));
-  useEffect(() => {
-    setWidthInput(String(engine.tankWidth ?? ''));
-    setHeightInput(String(engine.tankHeight ?? ''));
-  }, [engine.tankWidth, engine.tankHeight]);
+  // The two size fields are editable text, so they need state of their own - a half-typed "12" must
+  // not be parsed as a 12px tank on every keystroke - but they also have to follow the engine when it
+  // changes the size itself (a preset, a reset, or switching to a tank of a different size). That
+  // catch-up is done during render, comparing against the size these fields were last filled from,
+  // rather than in an effect: an effect would paint one frame showing the previous tank's numbers
+  // before correcting itself.
+  const [size, setSize] = useState(() => ({
+    width: String(engine.tankWidth ?? ''),
+    height: String(engine.tankHeight ?? ''),
+    fromEngine: [engine.tankWidth, engine.tankHeight] as [number | null, number | null],
+  }));
+  if (size.fromEngine[0] !== engine.tankWidth || size.fromEngine[1] !== engine.tankHeight) {
+    setSize({
+      width: String(engine.tankWidth ?? ''),
+      height: String(engine.tankHeight ?? ''),
+      fromEngine: [engine.tankWidth, engine.tankHeight] as [number | null, number | null],
+    });
+  }
+  const widthInput = size.width;
+  const heightInput = size.height;
+  const setWidthInput = (width: string) => setSize((prev) => ({ ...prev, width }));
+  const setHeightInput = (height: string) => setSize((prev) => ({ ...prev, height }));
 
   const applySize = () => {
     const w = parseInt(widthInput, 10);
