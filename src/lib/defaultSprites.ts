@@ -1,7 +1,5 @@
 import { emptyFrame } from './pixelMath';
-import { decodeFrame } from './pixelCodec';
 import { makeLayer, newRecordMeta, uid, DEFAULT_FRAME_MS, DEFAULT_GRID_SIZE } from './storage';
-import { PIXELLAB_PACK } from './data/pixellabPack';
 import type { Frame, Sprite } from './types';
 
 /**
@@ -115,25 +113,7 @@ export function buildDefaultSprites(): Sprite[] {
       ],
       frameMs: DEFAULT_FRAME_MS,
     },
-    ...buildPackSprites(),
   ];
-}
-
-/** The PixelLab art pack (see data/pixellabPack.ts) as real sprites, seeded alongside the two
- *  procedural samples above so a first run opens on a library worth looking at rather than one
- *  goldfish. Decoded here rather than shipped as flat cell arrays because the pack's two scenes are
- *  320x200 and 348x224 - as plain JSON that is megabytes, and run-length encoded it is not. */
-function buildPackSprites(): Sprite[] {
-  return PIXELLAB_PACK.map((entry) => ({
-    ...newRecordMeta(),
-    id: uid('sprite'),
-    name: entry.name,
-    type: entry.type,
-    width: entry.width,
-    height: entry.height,
-    frames: entry.frames.map((frame) => [makeLayer(decodeFrame(frame))]),
-    frameMs: entry.frameMs ?? DEFAULT_FRAME_MS,
-  }));
 }
 
 /** Every localStorage key this app writes - kept as one list so backup/reset (see below) can't drift

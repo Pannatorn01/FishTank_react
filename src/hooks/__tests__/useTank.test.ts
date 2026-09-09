@@ -5,7 +5,7 @@ import {
   STARVATION_DEATH_MS,
   TankEngine,
 } from '../useTank';
-import type { Instance, Sprite, TankGroup } from '@/lib/types';
+import type { Instance, PredatorEvent, PredatorPhase, Sprite, TankGroup } from '@/lib/types';
 import { emptyTankState, type TankState } from '@/lib/data';
 
 /** vitest's node env has no localStorage - a minimal in-memory stand-in (copied from storage.test.ts).
@@ -778,5 +778,146 @@ describe('schooling through update()', () => {
     // a is now a school of one: it gets no steer, so its target is a wandering one, not b's depth.
     call(engine, 'update', 0.016);
     expect(a.targetY).not.toBeCloseTo(500, 1);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P5 - the cat raid (stepPredator / scarePredator)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A raid parked at the start of `phase`, already stood next to the tank unless it is still walking
+ *  in. The engine only ever rolls one of these at init() with a 20% chance, so a test that wants a
+ *  particular stage has to place it there itself. */
+function raidingEngine(phase: PredatorPhase, over: Partial<PredatorEvent> = {}) {
+  const engine = makeEngine([fish()]);
+  engine.predator = {
+    variant: 'orange',
+    phase,
+    xFrac: 0.34,
+    targetXFrac: 0.34,
+    facingLeft: false,
+    phaseStartedAt: NOW,
+    spawnedAt: NOW,
+    expiresAt: NOW + 6_000,
+    ...over,
+  };
+  return engine;
+}
+
+describe('the cat raid', () => {
+  it('walks toward the tank during the approach, facing the way it is going', () => {
+    const engine = raidingEngine('approach', { xFrac: -0.05, facingLeft: true });
+    call(engine, 'stepPredator', 0.5);
+    const predator = engine.predator!;
+    expect(predator.phase).toBe('approach');
+    expect(predator.xFrac).toBeGreaterThan(-0.05);
+    expect(predator.xFrac).toBeLessThan(0.34);
+    expect(predator.facingLeft).toBe(false);
+  });
+
+  it('sits down to stare once the walk reaches the tank', () => {
+    const engine = raidingEngine('approach', { xFrac: 0.33 });
+    call(engine, 'stepPredator', 1);
+    expect(engine.predator!.phase).toBe('stalk');
+    expect(engine.predator!.xFrac).toBe(0.34);
+  });
+
+  it('only starts the countdown when it pounces, not while it is still staring', () => {
+    const engine = raidingEngine('stalk');
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.predator!.phase).toBe('stalk');
+
+    vi.setSystemTime(NOW + 4_000);
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.predator!.phase).toBe('pounce');
+    expect(engine.predator!.expiresAt).toBe(NOW + 4_000 + 6_000);
+  });
+
+  it('takes a fish and settles down to eat when the countdown runs out', () => {
+    const engine = raidingEngine('pounce', { expiresAt: NOW + 1_000 });
+    expect(engine.instances).toHaveLength(1);
+
+    vi.setSystemTime(NOW + 1_001);
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.instances).toHaveLength(0);
+    expect(engine.predator!.phase).toBe('feast');
+  });
+
+  it('a tap during the pounce turns it around and costs no fish', () => {
+    const engine = raidingEngine('pounce', { expiresAt: NOW + 1_000 });
+    engine.scarePredator();
+    expect(engine.predator!.phase).toBe('flee');
+
+    // Past the moment the fish would have been taken had the tap not landed.
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.instances).toHaveLength(1);
+  });
+
+  it('ignores a tap that lands after the fish is already gone', () => {
+    const engine = raidingEngine('feast');
+    engine.scarePredator();
+    expect(engine.predator!.phase).toBe('feast');
+  });
+
+  it('leaves the room once it has finished fleeing', () => {
+    const engine = raidingEngine('flee');
+    vi.setSystemTime(NOW + 5_000);
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.predator).toBeNull();
+  });
+
+  it('leaves the room once it has finished eating', () => {
+    const engine = raidingEngine('feast');
+    vi.setSystemTime(NOW + 5_000);
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.predator).toBeNull();
+  });
+});
+
+describe('when a cat gets hungry', () => {
+  /** The hunger clock is private and set by init(); these tests set it directly rather than running
+   *  a whole init() against fake storage. */
+  function withRaidDue(engine: TankEngine, at: number) {
+    (engine as unknown as { nextRaidAt: number }).nextRaidAt = at;
+  }
+
+  it('sends a cat across the room once its hunger clock comes due', () => {
+    const engine = makeEngine([fish()]);
+    withRaidDue(engine, NOW + 1_000);
+
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.predator).toBeNull();
+
+    vi.setSystemTime(NOW + 1_001);
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.predator?.phase).toBe('approach');
+  });
+
+  it('starts the walk from outside the room, heading for the tank', () => {
+    const engine = makeEngine([fish()]);
+    withRaidDue(engine, NOW);
+    call(engine, 'stepPredator', 0.1);
+    const predator = engine.predator!;
+    // Off one edge of the artwork or the other, and aimed at the opposite side of the tank.
+    expect(predator.xFrac < 0 || predator.xFrac > 1).toBe(true);
+    expect(predator.facingLeft).toBe(predator.xFrac > 1);
+  });
+
+  it('does not stalk an empty tank, and tries again later instead', () => {
+    const engine = makeEngine([]);
+    withRaidDue(engine, NOW);
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.predator).toBeNull();
+    expect((engine as unknown as { nextRaidAt: number }).nextRaidAt).toBeGreaterThan(NOW);
+  });
+
+  it('schedules the next visit when one ends, so cats keep coming', () => {
+    const engine = raidingEngine('feast');
+    withRaidDue(engine, 0);
+    vi.setSystemTime(NOW + 5_000);
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.predator).toBeNull();
+    expect((engine as unknown as { nextRaidAt: number }).nextRaidAt).toBeGreaterThan(NOW + 5_000);
   });
 });

@@ -1,5 +1,6 @@
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
+import { CAT_VARIANTS } from '@/lib/data/pixellabPack';
 import { t } from '@/lib/i18n';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { SceneExport } from '@/tank/export/sceneExport';
@@ -21,7 +22,7 @@ import {
   roundedCornerRadius,
 } from '@/tank/sim/geometry';
 import { type AlgaePatch, generateAlgaePatches } from '@/tank/sim/algae';
-import type { BackgroundTransform, FoodItem, Instance, PredatorEvent, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape, WasteItem } from '@/lib/types';
+import type { BackgroundTransform, FoodItem, Instance, PredatorEvent, PredatorPhase, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape, WasteItem } from '@/lib/types';
 
 /** Re-exported from geometry.ts (their canonical home as of P3 - see docs/PIXI_MIGRATION_PLAN.md) so
  *  existing `from '@/hooks/useTank'` import sites (TankCanvas.tsx's shape sliders) didn't need to
@@ -113,11 +114,38 @@ const BABY_SCALE_FRAC = 0.5;
  *  actual swim bounds like any other placement. */
 const BABY_SPAWN_OFFSET = 24;
 
-/** P5 §6 item 7 (predator, docs/PIXI_MIGRATION_PLAN.md §9 Q6) - "สุ่มโผล่มาตอนเปิดแอปเข้ามาเล่น มีโอกาส
- *  20%": a single roll each time the app is loaded (see init()), not a recurring ambient spawn. */
-const PREDATOR_SPAWN_CHANCE = 0.2;
-/** How long the predator lingers before successfully grabbing a fish if not scared off in time. */
+/** P5 §6 item 7 (predator, docs/PIXI_MIGRATION_PLAN.md §9 Q6). Originally a 20% roll on each app
+ *  load, which meant most sessions never saw a cat do anything at all. Now the cats are always
+ *  there asleep and simply get hungry: a raid is scheduled for a random moment inside a window, and
+ *  another is scheduled when that one ends. The randomness decides *when* a cat gets hungry, not
+ *  whether a cat exists.
+ *
+ *  The first window is short so a session that opens and watches for a minute sees one; the ones
+ *  after it are much longer, because a cat at the glass every half minute stops being an event. */
+const PREDATOR_FIRST_HUNGER_MS: readonly [number, number] = [20_000, 45_000];
+const PREDATOR_NEXT_HUNGER_MS: readonly [number, number] = [90_000, 180_000];
+
+/** A uniform pick inside an inclusive [min, max] millisecond window. */
+function randomBetween([min, max]: readonly [number, number]): number {
+  return min + Math.random() * (max - min);
+}
+/** How long the predator lingers before successfully grabbing a fish if not scared off in time.
+ *  This is the pounce phase alone - the approach and the stalk before it are extra warning on top,
+ *  not part of the deadline. */
 const PREDATOR_REACT_MS = 6_000;
+/** Room widths per second the cat covers on foot. Slow enough that a player who looks up mid-walk
+ *  still has time to react, rather than the cat teleporting to the glass. */
+const PREDATOR_WALK_FRAC_PER_S = 0.09;
+/** How long the cat sits staring at the tank before it pounces. The second of the two warnings. */
+const PREDATOR_STALK_MS = 3_500;
+/** How long a scared cat stays on screen running off, and how long a successful one stays to eat.
+ *  Both end with the cat simply gone - there is no walk back to its sleeping spot to animate. */
+const PREDATOR_FLEE_MS = 2_200;
+const PREDATOR_FEAST_MS = 3_000;
+/** Where beside the tank the cat settles to stalk and pounce from, as a fraction of the room
+ *  artwork's width. Two spots, one each side, so the raid does not always come from the same
+ *  direction; the cat starts from whichever edge is further away and walks in. */
+const PREDATOR_TANK_SIDES = [0.34, 0.66] as const;
 
 /** Matches tankScene.ts's Pixi version exactly - see the hunger-bar comment in drawInstance(). */
 const HUNGER_BAR_HEIGHT = 4;
@@ -232,10 +260,15 @@ export class TankEngine {
   algaePatches: AlgaePatch[] = [];
   private algaePatchesSizeKey = '';
 
-  /** The current cat/bird trying to steal a fish (P5 §6 item 7), or null - rolled once at init(), then
+  /** The cat currently trying to steal a fish (P5 §6 item 7), or null - rolled once at init(), then
    *  either scared off (scarePredator()) or, once `expiresAt` passes unhandled, resolves into a stolen
    *  fish (see update()). Never persisted - see PredatorEvent's own doc comment in types.ts. */
   predator: PredatorEvent | null = null;
+
+  /** When the next cat gets hungry enough to try the tank (epoch ms), or 0 before init() has set
+   *  it. Transient like `predator` itself: closing the app resets the clock rather than banking
+   *  hunger while nobody is watching. */
+  private nextRaidAt = 0;
 
   /** Logical tank size (the actual simulation space fish swim in) set via the size controls or by
    *  dragging the resize handle - null only very briefly before init() runs. A view/layout
@@ -498,18 +531,10 @@ export class TankEngine {
     this.applyTankState(tankId, state);
     const now = this.catchUpSince(state.lastTickAt);
 
-    // Predator (P5 §6 item 7) - a single roll per app load (see PREDATOR_SPAWN_CHANCE's doc comment),
-    // not something re-rolled on every tab switch (which is why this sits here and not in the shared
-    // helpers above - `refresh` deliberately does not roll). Only worth spawning if there's actually a
-    // fish to threaten - an empty tank never gets a predator event.
-    if (this.instances.some((i) => i.kind === 'fish' && !i.dead) && Math.random() < PREDATOR_SPAWN_CHANCE) {
-      this.predator = {
-        kind: Math.random() < 0.5 ? 'cat' : 'bird',
-        xFrac: 0.15 + Math.random() * 0.7,
-        spawnedAt: now,
-        expiresAt: now + PREDATOR_REACT_MS,
-      };
-    }
+    // Predator (P5 §6 item 7) - the first cat gets hungry some time in the next minute. Scheduled
+    // here rather than in the shared helpers above because `refresh` (a tab switch, a remote sync)
+    // deliberately must not restart the clock.
+    this.nextRaidAt = now + randomBetween(PREDATOR_FIRST_HUNGER_MS);
   }
 
   destroy(): void {
@@ -2036,9 +2061,17 @@ export class TankEngine {
   }
 
   /** Scares the current predator off (P5 §6 item 7) - called from Life mode tapping directly on it.
-   *  No-op if there isn't one right now (e.g. it already resolved this same frame). */
+   *  No-op if there isn't one right now (e.g. it already resolved this same frame).
+   *
+   *  A tap lands only while the cat is still on its way in, watching, or mid-pounce. Once it has
+   *  the fish there is nothing left to scare it away from, and letting a late tap end the feast
+   *  early would read as the tap having worked when the fish is already gone. */
   scarePredator(): void {
-    this.predator = null;
+    const predator = this.predator;
+    if (!predator || predator.phase === 'flee' || predator.phase === 'feast') return;
+    // It turns and runs the way it was heading from, not the way it was facing at the tank.
+    predator.facingLeft = predator.targetXFrac <= 0.5;
+    this.enterPredatorPhase('flee', Date.now());
   }
 
   /** Removes a random live fish permanently (P5 §6 item 7, §9 Q6 - "หายจากตู้ถาวร") - deliberately not
@@ -2226,7 +2259,7 @@ export class TankEngine {
     this.ensureAlgaePatches();
     this.tickBreeding(elapsedMs);
 
-    this.stepPredator();
+    this.stepPredator(dt);
     this.stepFood(dt);
     this.stepPooping();
     this.stepWaste(dt);
@@ -2235,12 +2268,95 @@ export class TankEngine {
     this.instances.forEach((inst) => this.stepInstance(inst, dt, schoolSteer));
   }
 
-  /** A predator's visit is over: it takes a fish with it, or leaves empty-handed. */
-  private stepPredator(): void {
-    if (this.predator && Date.now() >= this.predator.expiresAt) {
-      this.stealRandomFish();
-      this.predator = null;
+  /** Advances the raid one frame: walk in, sit and stare, pounce, then either flee or eat.
+   *  Only the pounce phase can cost the player a fish, and only by running out - every other phase
+   *  ends on its own clock. `dt` is seconds, as everywhere else in the step methods. */
+  private stepPredator(dt: number): void {
+    const now = Date.now();
+    if (!this.predator) {
+      if (this.nextRaidAt && now >= this.nextRaidAt) this.beginRaid(now);
+      return;
     }
+    const predator = this.predator;
+    const since = now - predator.phaseStartedAt;
+    switch (predator.phase) {
+      case 'approach': {
+        const step = PREDATOR_WALK_FRAC_PER_S * dt;
+        const remaining = predator.targetXFrac - predator.xFrac;
+        if (Math.abs(remaining) <= step) {
+          predator.xFrac = predator.targetXFrac;
+          // Turn to face the tank before sitting down to watch it.
+          predator.facingLeft = predator.targetXFrac > 0.5;
+          this.enterPredatorPhase('stalk', now);
+        } else {
+          predator.xFrac += Math.sign(remaining) * step;
+          predator.facingLeft = remaining < 0;
+        }
+        break;
+      }
+      case 'stalk':
+        if (since >= PREDATOR_STALK_MS) {
+          this.enterPredatorPhase('pounce', now);
+          predator.expiresAt = now + PREDATOR_REACT_MS;
+        }
+        break;
+      case 'pounce':
+        if (now >= predator.expiresAt) {
+          this.stealRandomFish();
+          this.enterPredatorPhase('feast', now);
+        }
+        break;
+      case 'flee': {
+        // Straight out of the room the way it came, rather than back to its sleeping spot: the spot
+        // is already drawn empty for the raider, and a cat that trots home would need a whole
+        // settling-down animation to not look like it teleported into a nap.
+        predator.xFrac += (predator.facingLeft ? -1 : 1) * PREDATOR_WALK_FRAC_PER_S * 2 * dt;
+        if (since >= PREDATOR_FLEE_MS) this.endRaid(now);
+        break;
+      }
+      case 'feast':
+        if (since >= PREDATOR_FEAST_MS) this.endRaid(now);
+        break;
+    }
+  }
+
+  /** One cat wakes up hungry and starts across the room. Skipped if there is nothing in the tank
+   *  worth taking - a cat that stalks an empty tank is just a cat walking into a wall - and in that
+   *  case the clock is simply pushed back so it tries again later. */
+  private beginRaid(now: number): void {
+    if (!this.instances.some((i) => i.kind === 'fish' && !i.dead)) {
+      this.nextRaidAt = now + randomBetween(PREDATOR_NEXT_HUNGER_MS);
+      return;
+    }
+    // Which side of the tank it makes for, and therefore which edge of the room it walks in from -
+    // the far one, so the approach is actually visible rather than a step and a half.
+    const targetXFrac = PREDATOR_TANK_SIDES[Math.floor(Math.random() * PREDATOR_TANK_SIDES.length)];
+    const fromLeft = targetXFrac >= 0.5;
+    this.predator = {
+      // Which of the room's cats gets up. Uniform across the coats: they are the same animal in
+      // three colours, so there is no reason for one to raid more often than another.
+      variant: CAT_VARIANTS[Math.floor(Math.random() * CAT_VARIANTS.length)],
+      phase: 'approach',
+      xFrac: fromLeft ? -0.05 : 1.05,
+      targetXFrac,
+      facingLeft: !fromLeft,
+      phaseStartedAt: now,
+      spawnedAt: now,
+      // Set for real when the pounce phase starts; until then there is no deadline to run down.
+      expiresAt: now + PREDATOR_REACT_MS,
+    };
+  }
+
+  /** The visit is over, however it went, and the next one is scheduled from here. */
+  private endRaid(now: number): void {
+    this.predator = null;
+    this.nextRaidAt = now + randomBetween(PREDATOR_NEXT_HUNGER_MS);
+  }
+
+  private enterPredatorPhase(phase: PredatorPhase, now: number): void {
+    if (!this.predator) return;
+    this.predator.phase = phase;
+    this.predator.phaseStartedAt = now;
   }
 
   private stepFood(dt: number): void {

@@ -1,3 +1,8 @@
+// The cat coats are declared by the generated art pack (its PACK list is what decides how many
+// there are), so PredatorEvent borrows the type from there. Type-only in both directions -
+// pixellabPack imports SpriteType from here - so nothing circular survives compilation.
+import type { CatVariant } from './data/pixellabPack';
+
 /**
  * Sync bookkeeping carried by every record that will eventually live in a database (see
  * docs/STORAGE_DB_MIGRATION_PLAN.md P1). None of it is used by the app's own logic today - it exists
@@ -250,18 +255,40 @@ export interface WasteItem {
   createdAt: number;
 }
 
-/** A cat or bird that shows up to try to steal a fish (P5 §6 item 7, docs/PIXI_MIGRATION_PLAN.md §9
- *  Q6) - rolled once per app load (see TankEngine.init()), not something that keeps re-appearing while
- *  the app stays open. Lives in the *room* around the tank (Life mode only - see roomScene.ts), not
- *  inside the water, so `xFrac` is a fraction of the room's own width rather than a tank-logical
- *  coordinate. Purely transient (like FoodItem/WasteItem) - never written to localStorage, so a
- *  reload doesn't resume a predator event that was already in progress. */
+/** One of the room's cats getting up to try to steal a fish (P5 §6 item 7,
+ *  docs/PIXI_MIGRATION_PLAN.md §9 Q6) - rolled once per app load (see TankEngine.init()), not
+ *  something that keeps re-appearing while the app stays open. Lives in the *room* around the tank
+ *  (Life mode only - see roomScene.ts), not inside the water, so `xFrac` is a fraction of the room's
+ *  own width rather than a tank-logical coordinate. Purely transient (like FoodItem/WasteItem) -
+ *  never written to localStorage, so a reload doesn't resume a predator event that was already in
+ *  progress.
+ *
+ *  `variant` says which of the three cats it is, so the scene can leave that one's sleeping spot
+ *  empty while it is up at the glass - the same cat cannot be asleep in the corner and raiding at
+ *  once. It replaces the old cat-or-bird `kind`: the bird is gone from the room. */
 export interface PredatorEvent {
-  kind: 'cat' | 'bird';
+  variant: CatVariant;
+  /** Where the raid has got to. The phases run approach -> stalk -> pounce, and end in either
+   *  flee (the player tapped it in time) or feast (it got a fish). Splitting the visit up like
+   *  this is what gives the player two separate warnings - a cat crossing the room, then a cat sat
+   *  staring at the glass - before the window in which a tap still saves the fish. */
+  phase: PredatorPhase;
+  /** Fraction of the room artwork's width; animated during approach and flee, fixed otherwise. */
   xFrac: number;
+  /** Where the approach walk is heading: the spot beside the tank it stalks and pounces from. */
+  targetXFrac: number;
+  /** True while the cat is walking left, so the renderer can mirror a sprite drawn facing right. */
+  facingLeft: boolean;
+  /** When the current phase began - every phase's own length is measured from here. */
+  phaseStartedAt: number;
   spawnedAt: number;
+  /** Only meaningful in the pounce phase: the moment the fish is lost if no tap lands first. It is
+   *  the one deadline in the sequence, and the only phase that draws the countdown bar. */
   expiresAt: number;
 }
+
+/** The stages of one cat's raid - see PredatorEvent.phase. */
+export type PredatorPhase = 'approach' | 'stalk' | 'pounce' | 'flee' | 'feast';
 
 /** A decoration placed in the area around the tank (kind 'room' sprites) rather than inside its
  *  swim space - can be dragged anywhere in that area, always renders above the tank frame (so it

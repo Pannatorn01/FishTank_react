@@ -1,7 +1,8 @@
 import { ColorMatrixFilter, Container, FillGradient, Graphics, Sprite } from 'pixi.js';
 import { spriteDims } from '@/lib/pixelMath';
 import type { TankEngine } from '@/hooks/useTank';
-import { roomSceneMargin } from '@/lib/storage';
+import { PACK_SPRITE_NAMES } from '@/lib/data/pixellabPack';
+import { buildCastSprites, roomSceneMargin } from '@/lib/storage';
 import type { Instance, RoomInstance, SelectionBox, Sprite as SpriteData, TankShape } from '@/lib/types';
 import { ovalFlatTopGeometry, roundedCornerRadius } from '@/tank/sim/geometry';
 import { textureFor } from './textureCache';
@@ -32,6 +33,10 @@ const HUNGER_BAR_HEIGHT = 4;
 const HUNGER_BAR_GAP = 4;
 const FOOD_COLOR = 0xf5a623;
 const FOOD_RADIUS = 4;
+/** How wide a falling pellet is drawn, in tank-logical px. The pixel-art pellet is scaled to this
+ *  rather than drawn at its own cell size, so a pellet stays the size the feeding behaviour was
+ *  tuned around (fish steer toward FOOD_RADIUS-sized targets) whatever the artwork's canvas is. */
+const FOOD_SPRITE_WIDTH = FOOD_RADIUS * 4;
 const WASTE_COLOR = 0x6b4a2f;
 const WASTE_RADIUS_X = 3;
 const WASTE_RADIUS_Y = 5;
@@ -163,6 +168,11 @@ export function createTankScene(stage: Container): TankSceneHandle {
   const zoneBelowLayer = new Container();
   const wasteLayer = new Graphics();
   const foodLayer = new Graphics();
+  /** The pixel-art pellets, one pooled Sprite per food item on screen. Kept beside foodLayer rather
+   *  than replacing it: the plain circle stays as the fallback for a build with no art. */
+  const foodSpriteLayer = new Container();
+  const foodSprites: Sprite[] = [];
+  const foodArt = buildCastSprites().get(PACK_SPRITE_NAMES.foodPellet);
   const instanceLayer = new Container();
   const overlayLayer = new Container();
   const outline = new Graphics();
@@ -171,7 +181,7 @@ export function createTankScene(stage: Container): TankSceneHandle {
   backgroundSprite.visible = false;
   backgroundSprite.anchor.set(0.5);
 
-  root.addChild(air, water, backgroundSprite, waterline, algaeLayer, zoneBelowLayer, wasteLayer, foodLayer, instanceLayer, overlayLayer);
+  root.addChild(air, water, backgroundSprite, waterline, algaeLayer, zoneBelowLayer, wasteLayer, foodLayer, foodSpriteLayer, instanceLayer, overlayLayer);
   // `mask` is added as root's own child (not left floating outside the scene graph) specifically so
   // it inherits root's transform - a mask that's never actually parented anywhere keeps Pixi's
   // default identity transform regardless of where the container using it as a mask ends up moving.
@@ -415,9 +425,30 @@ export function createTankScene(stage: Container): TankSceneHandle {
     });
 
     foodLayer.clear();
-    engine.foodItems.forEach((food) => {
-      foodLayer.circle(food.x, food.y, FOOD_RADIUS).fill(FOOD_COLOR);
-    });
+    if (foodArt) {
+      // Grow the pool as needed and hide the tail of it, rather than making and destroying Sprites
+      // every frame - feeding drops a handful of pellets at once and this runs per frame.
+      const texture = textureFor(foodArt);
+      engine.foodItems.forEach((food, i) => {
+        let view = foodSprites[i];
+        if (!view) {
+          view = new Sprite();
+          view.anchor.set(0.5);
+          view.eventMode = 'none';
+          foodSprites.push(view);
+          foodSpriteLayer.addChild(view);
+        }
+        view.texture = texture;
+        view.scale.set(FOOD_SPRITE_WIDTH / (texture.width || 1));
+        view.position.set(food.x, food.y);
+        view.visible = true;
+      });
+      for (let i = engine.foodItems.length; i < foodSprites.length; i++) foodSprites[i].visible = false;
+    } else {
+      engine.foodItems.forEach((food) => {
+        foodLayer.circle(food.x, food.y, FOOD_RADIUS).fill(FOOD_COLOR);
+      });
+    }
 
     const order = engine.visibleDrawOrder();
     const liveIds = new Set<string>();
@@ -466,6 +497,7 @@ export function createTankScene(stage: Container): TankSceneHandle {
     // double-destroy when the recursive pass reaches them again.
     instanceViews.clear();
     roomViews.clear();
+    foodSprites.length = 0;
     sceneRoot.destroy({ children: true });
   }
 

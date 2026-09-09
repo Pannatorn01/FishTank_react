@@ -8,30 +8,52 @@ SRC = sys.argv[1]
 OUT = sys.argv[2]
 
 # name, type, [source files - more than one means an animation], optional ms per frame.
+#
+# Every entry here is art the *renderer* uses - the room's cats, their emote bubbles, and the room
+# itself. None of it is seeded into the user's sprite library any more. It used to be, and the
+# result was a library the user had to scroll past two dozen cat poses and a row of props to reach
+# their own drawings. A library holds what someone drew; this holds what the game draws.
 # Leave the fourth item off for the app's default pace (DEFAULT_FRAME_MS, 350ms); give it for
 # anything whose motion has its own tempo - a drifting sky wants a much slower hold than a fish tail.
-PACK = [
-    ("Cat sitting",    "room",   ["chibi-cat-B-32.png"]),
-    ("Cat reaching up","room",   ["chibi-cat-reach-32x40-v3.png"]),
-    ("Cat standing",   "room",   ["chibi-cat-swipe-32-v2.png"]),
-    ("Cat asleep",     "room",   ["chibi-cat-sleep-32-v2.png"]),
-    ("Bird perched",   "room",   ["bird-perch-32.png"]),
-    ("Bird pecking",   "room",   ["bird-peck-32.png"]),
-    ("Bird flapping",  "room",   ["bird-flap-32.png", "bird-fly-32.png"]),
-    ("Bird looking down","room", ["bird-lookdown-32.png"]),
-    ("Bird asleep",    "room",   ["bird-sleep-32.png"]),
+CAST = [
+    # The Life-mode cast: three cats in the five poses a raid runs through - asleep on the floor,
+    # walking over, sitting and staring at the glass, pouncing, and eating what it got. The poses
+    # the scene has no state for (angry, running, licking, yawning, standing, drinking) stay in
+    # pixellab-assets/cat-orange/ until it does.
+    ("Cat orange asleep",   "room", ["cats/orange/asleep-%d.png" % i for i in range(5)], 420),
+    ("Cat orange walking",  "room", ["cats/orange/walk-%d.png" % i for i in range(8)], 130),
+    ("Cat orange sitting",  "room", ["cats/orange/sit-%d.png" % i for i in range(5)], 380),
+    ("Cat orange pouncing", "room", ["cats/orange/pounce-%d.png" % i for i in range(8)], 110),
+    ("Cat orange eating",   "room", ["cats/orange/eat-%d.png" % i for i in range(7)], 200),
+    ("Cat grey asleep",   "room", ["cats/grey/asleep-%d.png" % i for i in range(5)], 420),
+    ("Cat grey walking",  "room", ["cats/grey/walk-%d.png" % i for i in range(8)], 130),
+    ("Cat grey sitting",  "room", ["cats/grey/sit-%d.png" % i for i in range(5)], 380),
+    ("Cat grey pouncing", "room", ["cats/grey/pounce-%d.png" % i for i in range(8)], 110),
+    ("Cat grey eating",   "room", ["cats/grey/eat-%d.png" % i for i in range(7)], 200),
+    ("Cat cream asleep",   "room", ["cats/cream/asleep-%d.png" % i for i in range(5)], 420),
+    ("Cat cream walking",  "room", ["cats/cream/walk-%d.png" % i for i in range(8)], 130),
+    ("Cat cream sitting",  "room", ["cats/cream/sit-%d.png" % i for i in range(5)], 380),
+    ("Cat cream pouncing", "room", ["cats/cream/pounce-%d.png" % i for i in range(8)], 110),
+    ("Cat cream eating",   "room", ["cats/cream/eat-%d.png" % i for i in range(7)], 200),
+    # Emote bubbles shown above a cat (roomScene.ts). Single frames: the bubble pops in and out
+    # rather than animating, so its whole motion belongs to the scene, not to the sprite.
+    ("Emote happy",    "room",   ["emotes/happy.png"]),
+    ("Emote angry",    "room",   ["emotes/angry.png"]),
+    ("Emote sleepy",   "room",   ["emotes/sleepy.png"]),
+    ("Emote hungry",   "room",   ["emotes/hungry.png"]),
+    # The two tools the player actually uses on the tank: the sponge that follows a scrub drag, and
+    # the pellets that fall through the water after a feed. Both were drawn as flat Pixi shapes (a
+    # yellow rounded rectangle, a plain circle) next to pixel-art fish, which looked exactly like
+    # what it was.
     ("Tank brush",     "room",   ["brush-40x32.png"]),
     ("Food pellets",   "object", ["food-pellet-32.png"]),
-    ("Fish poop",      "object", ["fishpoop-32-v2.png"]),
-    ("Fish poop sinking", "object", ["fishpoop-sinking-32-a35.png",
-                                     "fishpoop-sinking-32-a60.png",
-                                     "fishpoop-sinking-32-a80.png"]),
-    ("Algae patch",    "object", ["algae-32-v2.png"]),
-    ("Underwater scene", "background", ["background-320x200.png"]),
+    # The room itself. Also render-only: the backdrop is the room Life mode draws, not a picture the
+    # user has to keep filed in their library to stop the room going blank.
     ("Room by the window", "background", ["room-window-348x224.png"]),
 ]
 
-# The shared palette every shipped sprite is snapped to, so the cat, the bird, the props and the
+
+# The shared palette every shipped sprite is snapped to, so the cats, the props and the
 # scenes read as one set. Remapped here, while generating, rather than in a folder of pre-remapped
 # copies: that folder kept vanishing off disk between runs, and a derived file that can disappear is
 # worse than no derived file at all.
@@ -39,6 +61,10 @@ PALETTE = [
     "#14141f", "#2b2b3d", "#4a4a5e", "#7a7a8c", "#b4b4c2", "#e8e8f0", "#ffffff",
     "#2f6fb8", "#4f9ad8", "#8fcbee",
     "#c8862a", "#e8a83c", "#f7d472",
+    # Added for the emote bubbles: an anger red and a heart pink. Nothing else in the pack is
+    # either colour, so the snap keeps sending the cats' warm browns to the brown ramp - checked
+    # against the rendered sprites after adding these, not assumed.
+    "#c0392b", "#e08aa0",
     "#3d7d4e", "#5aa86a",
     "#6b4a2f", "#c9ad7a", "#e3cd9c",
 ]
@@ -92,15 +118,44 @@ def rle(path):
         runs += [run_len, run_index]
     return w, h, palette, runs
 
+# Entries whose PNGs are no longer on disk are carried over verbatim from the module this script
+# last wrote. The source art for a few of the older sprites was deleted once it had been packed, and
+# regenerating without this would silently drop them out of the starter library - a content
+# regression with no error to notice it by. Reading the previous output back is not elegant, but the
+# alternative is a generator that quietly ships less than it did last run.
+def carried_entries(path):
+    try:
+        text = open(path, encoding="utf-8").read()
+    except OSError:
+        return {}
+    nl = chr(10)
+    out = {}
+    for b in text.split(nl + "  {" + nl)[1:]:
+        body = b.split(nl + "  }," )[0]
+        for line in body.split(nl):
+            if line.startswith("    name: "):
+                name = line[len("    name: "):].rstrip(",").strip("'")
+                out[name] = "  {" + nl + body + nl + "  },"
+                break
+    return out
+
+
+CARRIED = carried_entries(OUT)
+
+
+def sources_present(files):
+    return all(os.path.exists(os.path.join(SRC, f)) for f in files)
+
+
 lines = [
     "// GENERATED FILE - do not edit by hand.",
     "// Rebuilt by: python pixellab-assets/genpack.py pixellab-assets src/lib/data/pixellabPack.ts",
     "//",
-    "// The art pack generated with PixelLab (see pixellab-assets/): the cat and bird poses, the",
-    "// tank props and the two scenes, snapped to one shared 18-colour palette by the generator.",
+    "// The art generated with PixelLab (see pixellab-assets/): the three cats' poses, the emote",
+    "// bubbles and the room, snapped to one shared 20-colour palette by the generator.",
     "//",
     "// Stored run-length encoded in pixelCodec's own RleFrame shape so seeding costs no image decoding",
-    "// and adds no second storage format - storage.buildDefaultSprites turns these into real Sprites.",
+    "// and adds no second storage format - storage.buildCastSprites turns these into real Sprites.",
     "import type { RleFrame } from '../pixelCodec';",
     "import type { SpriteType } from '../types';",
     "",
@@ -116,53 +171,94 @@ lines = [
     "  frames: RleFrame[];",
     "}",
     "",
-    "export const PIXELLAB_PACK: PackEntry[] = [",
+    "/** Life mode's art - the cats, the emote bubbles above them, and the room backdrop.",
+    " *",
+    " *  None of this is seeded into the user's sprite library. It is the renderer's own art, decoded",
+    " *  on first use and never written to storage (see storage.buildCastSprites). A library holds what",
+    " *  the user drew; this holds what the game draws. */",
+    "export const ROOM_CAST_PACK: PackEntry[] = [",
 ]
 
 total = 0
-for entry in PACK:
-    name, kind, files = entry[0], entry[1], entry[2]
-    frame_ms = entry[3] if len(entry) > 3 else None
-    frames = []
-    w = h = None
-    for f in files:
-        fw, fh, pal, runs = rle(os.path.join(SRC, f))
-        if w is None:
-            w, h = fw, fh
-        elif (fw, fh) != (w, h):
-            raise SystemExit("frame size mismatch in %s: %dx%d vs %dx%d" % (name, fw, fh, w, h))
-        frames.append((pal, runs))
-    lines.append("  {")
-    lines.append("    name: %r," % name)
-    lines.append("    type: '%s'," % kind)
-    lines.append("    width: %d," % w)
-    lines.append("    height: %d," % h)
-    if frame_ms is not None:
-        lines.append("    frameMs: %d," % frame_ms)
-    lines.append("    frames: [")
-    for pal, runs in frames:
-        lines.append("      {")
-        lines.append("        enc: 'rle1',")
-        lines.append("        palette: [%s]," % ", ".join("'%s'" % c for c in pal))
-        lines.append("        runs: [%s]," % ", ".join(str(n) for n in runs))
-        lines.append("      },")
-        total += len(runs)
-    lines.append("    ],")
-    lines.append("  },")
+carried_over = []
+
+
+def emit(entries):
+    """Appends one TypeScript array body's worth of entries to `lines`."""
+    global total
+    for entry in entries:
+        name, kind, files = entry[0], entry[1], entry[2]
+        frame_ms = entry[3] if len(entry) > 3 else None
+        if not sources_present(files):
+            if name not in CARRIED:
+                raise SystemExit("no art and no previous entry for %r" % name)
+            lines.append(CARRIED[name])
+            carried_over.append(name)
+            continue
+        frames = []
+        w = h = None
+        for f in files:
+            fw, fh, pal, runs = rle(os.path.join(SRC, f))
+            if w is None:
+                w, h = fw, fh
+            elif (fw, fh) != (w, h):
+                raise SystemExit("frame size mismatch in %s: %dx%d vs %dx%d" % (name, fw, fh, w, h))
+            frames.append((pal, runs))
+        lines.append("  {")
+        lines.append("    name: %r," % name)
+        lines.append("    type: '%s'," % kind)
+        lines.append("    width: %d," % w)
+        lines.append("    height: %d," % h)
+        if frame_ms is not None:
+            lines.append("    frameMs: %d," % frame_ms)
+        lines.append("    frames: [")
+        for pal, runs in frames:
+            lines.append("      {")
+            lines.append("        enc: 'rle1',")
+            lines.append("        palette: [%s]," % ", ".join("'%s'" % c for c in pal))
+            lines.append("        runs: [%s]," % ", ".join(str(n) for n in runs))
+            lines.append("      },")
+            total += len(runs)
+        lines.append("    ],")
+        lines.append("  },")
+
+
+emit(CAST)
 lines.append("];")
 lines.append("")
-lines.append("/** The pack entries other code addresses by name - Life mode's cast (roomScene.ts) needs to find")
-lines.append(" *  the sleeping and the awake pose of each animal, and a name is the only stable handle: sprite ids")
-lines.append(" *  are minted fresh on every device that seeds the pack. Renaming one of these in the editor")
-lines.append(" *  detaches it from the scene, which is why the scene falls back to its own drawn shapes. */")
+lines.append("/** The pack entries other code addresses by name - Life mode's cast (roomScene.ts) looks up each")
+lines.append(" *  cat's poses, and a name is the only stable handle: sprite ids are minted fresh on every device")
+lines.append(" *  that seeds the pack. Renaming one of these in the editor detaches it from the scene, which is")
+lines.append(" *  why the scene falls back to its own drawn shapes. */")
 lines.append("export const PACK_SPRITE_NAMES = {")
-lines.append("  catAsleep: 'Cat asleep',")
-lines.append("  catAwake: 'Cat reaching up',")
-lines.append("  birdAsleep: 'Bird asleep',")
-lines.append("  birdAwake: 'Bird flapping',")
 lines.append("  roomScene: 'Room by the window',")
+lines.append("  scrubBrush: 'Tank brush',")
+lines.append("  foodPellet: 'Food pellets',")
 lines.append("} as const;")
+lines.append("")
+lines.append("/** The emote bubble shown above a cat (roomScene.ts drawEmote). Names match the pack entries. */")
+lines.append("export const EMOTE_SPRITE_NAMES = {")
+lines.append("  happy: 'Emote happy',")
+lines.append("  angry: 'Emote angry',")
+lines.append("  sleepy: 'Emote sleepy',")
+lines.append("  hungry: 'Emote hungry',")
+lines.append("} as const;")
+lines.append("export type EmoteKind = keyof typeof EMOTE_SPRITE_NAMES;")
+lines.append("")
+lines.append("/** The three cats that live in the room. Same drawing in three coats - see")
+lines.append(" *  pixellab-assets/cats/, built by recolouring the one generated cat rather than generating three. */")
+lines.append("export const CAT_VARIANTS = ['orange', 'grey', 'cream'] as const;")
+lines.append("export type CatVariant = (typeof CAT_VARIANTS)[number];")
+lines.append("export type CatPose = 'asleep' | 'walking' | 'sitting' | 'pouncing' | 'eating';")
+lines.append("")
+lines.append("/** The pack entry name for one cat in one pose. Kept as a function rather than a table so a new")
+lines.append(" *  coat only has to be added to CAT_VARIANTS and to genpack.py's PACK. */")
+lines.append("export function catSpriteName(variant: CatVariant, pose: CatPose): string {")
+lines.append("  return `Cat ${variant} ${pose}`;")
+lines.append("}")
 lines.append("")
 
 open(OUT, "w", encoding="utf-8").write("\n".join(lines).replace("'", "'"))
-print("wrote", OUT, "entries:", len(PACK), "run numbers:", total)
+print("wrote", OUT, "cast entries:", len(CAST), "run numbers:", total)
+if carried_over:
+    print("carried over (source art missing):", ", ".join(carried_over))

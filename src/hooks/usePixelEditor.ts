@@ -506,6 +506,21 @@ export class PixelEditorEngine {
       this.sprites = defaults;
     }
 
+    // Life mode's cast used to be seeded into the library along with the rest of the art pack, so
+    // a library from before that changed is carrying up to two dozen cat poses and a row of emote
+    // bubbles the user never asked for. The renderer reads its own copies now (storage.buildCastSprites),
+    // so these are pure clutter and get cleared out on load.
+    const strays = storage.strayCastSprites(this.sprites);
+    if (strays.length) {
+      try {
+        for (const sprite of strays) await spriteRepo.remove(sprite.id);
+        this.sprites = spriteRepo.list();
+      } catch (err) {
+        // Not fatal - the room draws from its own art either way, this is only tidying.
+        console.error('clearing the old cast sprites out of the library failed', err);
+      }
+    }
+
     const prefs = await prefsRepo.load();
     this.colors.hydrate(prefs);
     this.canvasBackground = prefs.canvasBackground ?? 'checker-dark';
