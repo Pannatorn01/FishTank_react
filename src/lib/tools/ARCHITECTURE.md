@@ -851,3 +851,56 @@ passing.** Three mutants, each caught: never computing the steer (5 tests fail),
 fish in it - the cursor-chasing bug the exclusion exists to prevent (3 fail), and applying the steer
 without the per-fish offset so the school stacks onto one depth (3 fail). A test suite that passes
 proves nothing on its own; one that fails when you break the thing it names proves something.
+
+## Clearing the backlog (2026-09-10)
+
+The last four items on the list, done together.
+
+**`spriteDims` is one function.** The "a sprite with no recorded size counts as 16x16" fallback was
+inline in ten places across both renderers, the thumbnail component and the tank engine - two of them
+identical private functions differing only in which alias of `Sprite` they named. It is in `pixelMath`
+now; the renderers import it from there, not from the engine, so they keep the independence
+`tankScene.ts`'s own comment asks for.
+
+**Exports are named after the tank.** Every export was `fish-tank.png` regardless of which tank made
+it. They use the tank's name now, sanitized. The character class is written as `\u` escapes, and that
+is worth keeping: as literals it holds raw NUL..US and DEL bytes that no editor renders, and while
+reading it back I misread the rendered version as `[ -<]` (space to '<', which would eat digits and
+punctuation) and started fixing a bug that did not exist. `cat -v` showed the real bytes. Nine tests
+cover the sanitizer, including digits, parentheses and a Thai name - the cases that fail loudly if that
+class ever does become a range.
+
+**oxlint is at zero, four of six by fixing the code.** The `*Variants` consts nothing imported are no
+longer exported; `SharedTankView` is keyed by tankId+slug so it remounts instead of resetting itself in
+an effect; `TankSharePanel` clears its error when fresh data arrives rather than before the request;
+`useGalleryPage` lost its reset because both dialogs now mount their body only while open. The two
+remaining `void load()` / `void reload()` calls are suppressed *at the line*, with the reason: fetching
+over the network is what effects are for, every setState in both happens after an await, and the rule
+cannot see through the call.
+
+That last fix introduced a regression the existing gallery probe caught - two identical listing requests
+on open, because a freshly mounted body means the effect runs at mount and StrictMode's dev double-invoke
+fires it again while `load` is rebuilt each render. A ref guard makes it once per mount. **The probe
+caught what no unit test would have.**
+
+**The raised bevel, once instead of twelve times.** A dark 2px border with the top and left edges lit is
+what makes every control look like a physical button; there was already a `.pixel-raised` utility and
+eleven rules that spelled it out again anyway. One grouped selector list now, placed at the first of
+them so every later override (`:active`, `.pixel-inset`, the active tool button) still wins.
+`::-webkit-scrollbar-thumb` is deliberately NOT in that list - a browser that does not know a selector
+in a group drops the whole rule, which would have taken the bevel off everything else.
+
+Not merged, though a scanner flags them: the eight `[data-theme]` palettes. They define the same ~20
+properties and happen to agree on a colour or two; coupling them would stop a theme changing its mind.
+Only 5 of 55 repeated runs were in those blocks.
+
+CSS has no type checker, so this one was verified twice: every element the rule touches was probed for
+its computed border before and after (identical, including the neighbours that override it), and
+full-page screenshots of both views are byte-for-byte identical with the animating tank canvas masked.
+
+**storage.ts, 1069 -> 889 lines.** Its size was the symptom; the problem was that two large sections
+were not storage at all. The starter sprites (procedural art, run once when nothing is saved) are
+`defaultSprites.ts`; frame geometry (`emptyFrame`/`resampleFrame`/`padFrame`/`RESIZE_ANCHOR_FRAC`,
+which reads and writes nothing) went to `pixelMath.ts`. Call sites were updated rather than hidden
+behind a re-export barrel - a barrel would leave storage.ts still appearing to own them, and
+`defaultSprites` needs `makeLayer`/`uid` from storage, so re-exporting it back would have made a cycle.
