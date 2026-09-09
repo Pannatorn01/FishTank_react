@@ -677,3 +677,55 @@ Verified with `tsc -b`, 294 tests, `npm run build`, `oxlint` (7 -> 6 warnings), 
 server: `tanks-ui-smoke` 20/20, `gallery-ui-smoke` 14/14, plus a throwaway 8-check script for the size
 fields specifically - that a half-typed number stays in the field without resizing the tank, that
 committing applies it, and that a size the engine chose shows up in the field and matches what is drawn.
+
+## Fifth pass: three subsystems out of PixelEditorEngine (2026-09-09)
+
+Each of these was a whole concern living inside a class about pixels. All three keep the engine as a
+facade - getters and one-line delegating methods - so no component changed.
+
+**`src/lib/canvasViewport.ts` (`CanvasViewport`)** - how much of the sprite is on screen and where:
+the zoom scale and its per-sprite bounds, the pan offset and its clamp, the DOM transform that carries
+the pan, the bitmap/CSS sizing split, fit-to-window, and the anchored zoom that keeps a point under the
+cursor. ~250 lines and six fields. It reads the sprite's size through a callback (the sprite can be
+resized or replaced underneath it) and takes a notify callback for the renders it should trigger; it
+never touches a cell, a layer or a frame. Three field doc comments were orphaned by the move and were
+carried onto the fields they describe rather than deleted - they record why pan is a transform instead
+of native scroll (a scrollbar appearing mid-stroke used to resize the wrap's content box and jump the
+canvas out from under the cursor) and why `appliedPanX/Y` is separate from `panX/Y` (the clamp measures
+a rect still showing the old pan, and conflating them made a fast drag stop one step short).
+
+**`src/lib/palette.ts` (`Palette`)** - the fixed top row, the artist's saved colors, which of those are
+pinned, the two presets, and every prefs write that persists them. What deliberately did *not* move is
+what counts as a color being "in use": `clearUnused` takes that set as an argument, because it is a
+question about the sprite, and `Palette` knows nothing about frames.
+
+**`src/lib/animationPreview.ts` (`AnimationPreview`)** - the looping thumbnail: its timer, its
+rAF-throttled repaint, its own frame cursor (deliberately independent of the frame being edited - the
+point of the panel is to watch the animation while working on one frame of it), and its off-screen
+compositing canvas. `compositeToBitmap` moved with it, since the preview was its only caller. The
+engine's `gestureBaseBitmap` stays put, and its comment now explains why the two scratch canvases are
+*not* shared instead of pointing at a field that has moved.
+
+`drawGrid` and the onion-skin painting were left on the engine on purpose. They read essentially all of
+the gesture state - move/resize/rotate previews, the selection, the gradient overlay, the curve handle -
+so extracting them would mean handing a module a bundle of everything it might need, which is a worse
+boundary than no boundary.
+
+`usePixelEditor.ts`: 3579 -> 3179 lines. Verified per commit with `tsc -b`, 294 tests and
+`npm run build`, and - since none of this has unit coverage, being timers and DOM measurement - with
+throwaway browser scripts against a real dev server:
+
+- *viewport (13 checks)*: zooming changes the canvas's CSS size **without** reallocating its bitmap
+  (the whole point of the native-resolution split) and scales the checkerboard with it; zoom in then
+  out returns to the original size; a middle-drag pans; panning far past the edge stops at the clamp
+  instead of flinging the canvas away; fit brings the whole canvas inside the wrap and clears the pan.
+- *palette (7 checks)*: applying a preset repaints the top row with that preset's actual colors and
+  they survive a reload; a painted color lands in the saved row and survives a reload too.
+- *preview (5 checks)*: painting shows up in the panel; a single-frame sprite holds still; a two-frame
+  sprite cycles.
+
+Two cautions for anyone writing more of these. The palette script's first version read each swatch's
+`title` attribute, got an empty string for every one, and "passed" its reload check by comparing
+nothing to nothing - it reads the computed background color now. And the existing `scripts/*-ui-smoke.
+cjs` hardcode port 5173: with a stale dev server already on that port, they silently test whatever is
+running there rather than your changes.
