@@ -15,7 +15,7 @@ import {
   roundedCornerRadius,
 } from '@/tank/sim/geometry';
 import { type AlgaePatch, generateAlgaePatches } from '@/tank/sim/algae';
-import type { BackgroundTransform, FoodItem, Instance, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape, WasteItem } from '@/lib/types';
+import type { BackgroundTransform, FoodItem, Instance, PredatorEvent, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape, WasteItem } from '@/lib/types';
 
 /** Re-exported from geometry.ts (their canonical home as of P3 - see docs/PIXI_MIGRATION_PLAN.md) so
  *  existing `from '@/hooks/useTank'` import sites (TankCanvas.tsx's shape sliders) didn't need to
@@ -121,6 +121,12 @@ const BABY_SCALE_FRAC = 0.5;
  *  actual swim bounds like any other placement. */
 const BABY_SPAWN_OFFSET = 24;
 
+/** P5 §6 item 7 (predator, docs/PIXI_MIGRATION_PLAN.md §9 Q6) - "สุ่มโผล่มาตอนเปิดแอปเข้ามาเล่น มีโอกาส
+ *  20%": a single roll each time the app is loaded (see init()), not a recurring ambient spawn. */
+const PREDATOR_SPAWN_CHANCE = 0.2;
+/** How long the predator lingers before successfully grabbing a fish if not scared off in time. */
+const PREDATOR_REACT_MS = 6_000;
+
 /** Matches tankScene.ts's Pixi version exactly - see the hunger-bar comment in drawInstance(). */
 const HUNGER_BAR_HEIGHT = 4;
 const HUNGER_BAR_GAP = 4;
@@ -141,6 +147,37 @@ function randomSwimVelocity(speed: SwimSpeed): { vx: number; vy: number } {
 }
 
 type Snapshot = { instances: Instance[]; groups: TankGroup[]; roomInstances: RoomInstance[] };
+
+/**
+ * Where a tank's contents come from. There are two: this browser's own storage (the default), and a
+ * tank someone else shared, fetched over the network and never written down (see lib/data/sharing.ts).
+ *
+ * The seam is here rather than inside the repositories because the difference is not *where* the data
+ * is stored, it is whether it is the user's at all - and that difference has to reach `readOnly`,
+ * which is enforced by the engine, not by storage.
+ */
+export interface TankSource {
+  load(): Promise<{ tankId: string; sprites: Sprite[]; state: TankState }>;
+}
+
+export interface TankEngineOptions {
+  source?: TankSource;
+  /** Nothing this engine holds may be written back - it is not the viewer's tank. Only ever set
+   *  together with a `source` that is not local storage. */
+  readOnly?: boolean;
+}
+
+/** The default: this browser's own library and current tank. */
+function localTankSource(): TankSource {
+  return {
+    async load() {
+      const { sprites: spriteRepo, tank: tankRepo } = getRepos();
+      await spriteRepo.hydrate();
+      const tankId = await tankRepo.currentId();
+      return { tankId, sprites: spriteRepo.list(), state: await tankRepo.load(tankId) };
+    },
+  };
+}
 
 /** Exported for unit tests (src/hooks/__tests__/useTank.test.ts) - app code gets its instance from
  *  the `useTank()` hook, never constructs one directly. */
@@ -202,6 +239,11 @@ export class TankEngine {
    *  this array itself doesn't change as algae grows/shrinks, only how much of it renderers reveal. */
   algaePatches: AlgaePatch[] = [];
   private algaePatchesSizeKey = '';
+
+  /** The current cat/bird trying to steal a fish (P5 §6 item 7), or null - rolled once at init(), then
+   *  either scared off (scarePredator()) or, once `expiresAt` passes unhandled, resolves into a stolen
+   *  fish (see update()). Never persisted - see PredatorEvent's own doc comment in types.ts. */
+  predator: PredatorEvent | null = null;
 
   /** Logical tank size (the actual simulation space fish swim in) set via the size controls or by
    *  dragging the resize handle - null only very briefly before init() runs. A view/layout
@@ -350,7 +392,19 @@ export class TankEngine {
    *  one tank today, but every read and write names it, so opening a second one later (plan P4-4) is a
    *  UI change rather than a storage one. */
   tankId: string | null = null;
+  /** True when this engine is showing somebody else's tank. The two paths that reach outside the
+   *  engine's own memory - save(), and re-reading the local sprite library in refreshPalette() -
+   *  check it, so a read-only view cannot become a write no matter which button a future panel wires
+   *  up. Everything else the engine does (fish swimming, dragging, dirty-marking) only ever moves
+   *  numbers around in memory and is discarded with the page. */
+  readonly readOnly: boolean;
+  private readonly source: TankSource;
   private reactNotify: () => void = () => {};
+
+  constructor(options: TankEngineOptions = {}) {
+    this.source = options.source ?? localTankSource();
+    this.readOnly = options.readOnly ?? false;
+  }
 
   init(notify: () => void): void {
     this.reactNotify = notify;
@@ -379,12 +433,9 @@ export class TankEngine {
   }
 
   private async loadEverything(): Promise<void> {
-    const { sprites: spriteRepo, tank: tankRepo } = getRepos();
-    await spriteRepo.hydrate();
-    this.sprites = spriteRepo.list();
-
-    this.tankId = await tankRepo.currentId();
-    const state = await tankRepo.load(this.tankId);
+    const { tankId, sprites, state } = await this.source.load();
+    this.sprites = sprites;
+    this.tankId = tankId;
     this.instances = state.instances.map((inst) => ({
       ...inst,
       groupId: inst.groupId ?? null,
@@ -417,6 +468,18 @@ export class TankEngine {
     this.tickWaterLevel(elapsedSinceLastTick);
     this.tickAlgae(elapsedSinceLastTick, 0);
     this.lastTickAt = now;
+
+    // Predator (P5 §6 item 7) - a single roll per app load (see PREDATOR_SPAWN_CHANCE's doc comment),
+    // not something re-rolled on every tab switch. Only worth spawning if there's actually a fish to
+    // threaten - an empty tank never gets a predator event.
+    if (this.instances.some((i) => i.kind === 'fish' && !i.dead) && Math.random() < PREDATOR_SPAWN_CHANCE) {
+      this.predator = {
+        kind: Math.random() < 0.5 ? 'cat' : 'bird',
+        xFrac: 0.15 + Math.random() * 0.7,
+        spawnedAt: now,
+        expiresAt: now + PREDATOR_REACT_MS,
+      };
+    }
   }
 
   destroy(): void {
@@ -741,6 +804,10 @@ export class TankEngine {
    *  not storage: this runs from a DOM event handler and from the render path's neighbourhood, neither
    *  of which can await anything (see SpriteRepo's doc comment). */
   refreshPalette(): void {
+    // A shared tank brought its own sprites with it and the local library is not its library - reading
+    // it here would swap another user's fish for whatever this browser happens to have under the same
+    // ids, or for nothing at all.
+    if (this.readOnly) return;
     this.sprites = getRepos().sprites.list();
     this.reactNotify();
   }
@@ -916,6 +983,7 @@ export class TankEngine {
   }
 
   async save(): Promise<{ ok: boolean; error?: unknown }> {
+    if (this.readOnly) return { ok: false, error: new Error('this tank belongs to someone else') };
     let result: { ok: boolean; error?: unknown } = { ok: true };
     // The tank is saved as one batch, so every record in it is stamped with the same moment rather
     // than tracking which individual fish actually moved: pretending to per-record precision the save
@@ -942,7 +1010,7 @@ export class TankEngine {
    *  the sprite editor's newSprite()). */
   async refresh(confirmDiscard: () => boolean): Promise<void> {
     if (this.dirty && !confirmDiscard()) return;
-    const state = await getRepos().tank.load(this.tankId ?? undefined);
+    const { state } = await this.source.load();
     this.instances = state.instances.map((inst) => ({
       ...inst,
       groupId: inst.groupId ?? null,
@@ -1941,6 +2009,23 @@ export class TankEngine {
     this.persist();
   }
 
+  /** Scares the current predator off (P5 §6 item 7) - called from Life mode tapping directly on it.
+   *  No-op if there isn't one right now (e.g. it already resolved this same frame). */
+  scarePredator(): void {
+    this.predator = null;
+  }
+
+  /** Removes a random live fish permanently (P5 §6 item 7, §9 Q6 - "หายจากตู้ถาวร") - deliberately not
+   *  the same path as old-age/starvation death (no float-to-surface, no grayscale, nothing left to
+   *  collect): a fish a predator actually got away with is just gone, the way it would be in real life. */
+  private stealRandomFish(): void {
+    const liveFish = this.instances.filter((i) => i.kind === 'fish' && !i.dead);
+    if (!liveFish.length) return;
+    const victim = liveFish[Math.floor(Math.random() * liveFish.length)];
+    this.instances = this.instances.filter((i) => i.id !== victim.id);
+    this.persist();
+  }
+
   /** Regenerates algaePatches only when the tank's own size has actually changed - the layout itself
    *  doesn't need to change as `algae` grows/shrinks, only how much of it drawAlgae()/tankScene.ts
    *  reveal (see algaePatches's own doc comment). */
@@ -2151,6 +2236,11 @@ export class TankEngine {
     this.tickAlgae(dt * 1000, this.wasteItems.length);
     this.ensureAlgaePatches();
     this.tickBreeding(dt * 1000);
+
+    if (this.predator && Date.now() >= this.predator.expiresAt) {
+      this.stealRandomFish();
+      this.predator = null;
+    }
 
     if (this.foodItems.length) {
       // Rests just above the sand strip fish can't swim into (see swimBoundsFor's own sandH) rather
@@ -2637,22 +2727,29 @@ export class TankEngine {
   }
 }
 
-export function useTank() {
+/**
+ * `options` is read once, when the engine is constructed - a live-switchable data source is not a real
+ * use case (a shared tank is opened as its own view, see SharedTankView), and pretending otherwise
+ * would mean tearing down and rebuilding a running simulation on any re-render whose caller happened
+ * to pass a fresh object literal.
+ */
+export function useTank(options?: TankEngineOptions) {
   const engineRef = useRef<TankEngine | null>(null);
   const [, setTick] = useState(0);
   if (!engineRef.current) {
-    engineRef.current = new TankEngine();
+    engineRef.current = new TankEngine(options);
   }
   const engine = engineRef.current;
 
   useEffect(() => {
     // A tank that arrived from another device is already in local storage; reload it so it is on
     // screen. Unsaved local edits win: they are only in memory, so reloading would destroy them, and
-    // the sync engine will carry them up on the next flush anyway.
+    // the sync engine will carry them up on the next flush anyway. Someone else's tank is not part of
+    // this browser's sync at all, so it never listens.
     const onTankSynced = () => {
       if (!engine.dirty) void engine.refresh(() => true);
     };
-    window.addEventListener('ft:tank-synced', onTankSynced);
+    if (!engine.readOnly) window.addEventListener('ft:tank-synced', onTankSynced);
     engine.init(() => setTick((t) => t + 1));
     engine.resizeCanvas();
     // Not awaited - the engine draws its empty initial tank until `ready` flips (see hydrate()).

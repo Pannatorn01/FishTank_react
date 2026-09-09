@@ -242,6 +242,19 @@ export interface WasteItem {
   createdAt: number;
 }
 
+/** A cat or bird that shows up to try to steal a fish (P5 §6 item 7, docs/PIXI_MIGRATION_PLAN.md §9
+ *  Q6) - rolled once per app load (see TankEngine.init()), not something that keeps re-appearing while
+ *  the app stays open. Lives in the *room* around the tank (Life mode only - see roomScene.ts), not
+ *  inside the water, so `xFrac` is a fraction of the room's own width rather than a tank-logical
+ *  coordinate. Purely transient (like FoodItem/WasteItem) - never written to localStorage, so a
+ *  reload doesn't resume a predator event that was already in progress. */
+export interface PredatorEvent {
+  kind: 'cat' | 'bird';
+  xFrac: number;
+  spawnedAt: number;
+  expiresAt: number;
+}
+
 /** A decoration placed in the area around the tank (kind 'room' sprites) rather than inside its
  *  swim space - can be dragged anywhere in that area, always renders above the tank frame (so it
  *  can overlap the tank), and never swims/animates/groups the way an in-tank Instance does. See

@@ -36,6 +36,16 @@ const SCRUB_BRUSH_WIDTH = 34;
 const SCRUB_BRUSH_HEIGHT = 22;
 const SCRUB_BRUSH_COLOR = 0xf4d35e;
 const SCRUB_BRUSH_OUTLINE = 0x8a6d1f;
+/** Predator (P5 §6 item 7) - sits on the room floor beside the tank (room-level coordinates, a sibling
+ *  of tankSlot rather than a child of it - it's threatening the tank from outside, not swimming in the
+ *  water). Tap it directly to scare it off before its countdown bar runs out. */
+const CAT_COLOR = 0x6b4423;
+const BIRD_COLOR = 0x4a6fa5;
+const BEAK_COLOR = 0xf2a93b;
+const PREDATOR_FLOOR_GAP = 6;
+const PREDATOR_BAR_WIDTH = 40;
+const PREDATOR_BAR_HEIGHT = 5;
+const PREDATOR_BAR_OFFSET_Y = -34;
 
 export type ArmedTool = 'feed' | 'scrub' | null;
 
@@ -90,6 +100,17 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
   scrubBrush.visible = false;
   tankSlot.addChild(scrubBrush);
 
+  // A sibling of tankSlot (room-level coordinates), added last so it draws on top of the tank/floor.
+  const predatorContainer = new Container();
+  predatorContainer.eventMode = 'static';
+  predatorContainer.cursor = 'pointer';
+  predatorContainer.visible = false;
+  const predatorBody = new Graphics();
+  const predatorTimerBar = new Graphics();
+  predatorContainer.addChild(predatorBody, predatorTimerBar);
+  stage.addChild(predatorContainer);
+  predatorContainer.on('pointertap', () => currentEngine?.scarePredator());
+
   let lastRoomSizeKey = '';
   let lastHitAreaSizeKey = '';
   // Kept in sync every render() call (see fitTankSlot) so the pointer handlers below - registered
@@ -98,6 +119,7 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
   let tankMargin = { x: 0, y: 0 };
   let armedTool: ArmedTool = null;
   let currentEngine: TankEngine | null = null;
+  let lastPredatorKind: 'cat' | 'bird' | null = null;
 
   function setArmedTool(tool: ArmedTool): void {
     armedTool = tool;
@@ -202,6 +224,50 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     cleanlinessBar.position.set(CLEANLINESS_BAR_MARGIN, CLEANLINESS_BAR_MARGIN);
   }
 
+  function drawCatShape(g: Graphics): void {
+    g.clear();
+    g.ellipse(0, 4, 16, 11).fill(CAT_COLOR);
+    g.poly([-14, -2, -8, -14, -4, -2]).fill(CAT_COLOR);
+    g.poly([4, -2, 8, -14, 14, -2]).fill(CAT_COLOR);
+  }
+
+  function drawBirdShape(g: Graphics): void {
+    g.clear();
+    g.ellipse(0, 0, 14, 10).fill(BIRD_COLOR);
+    g.poly([-4, -4, -18, -10, -6, 2]).fill(BIRD_COLOR);
+    g.poly([12, -2, 20, 0, 12, 2]).fill(BEAK_COLOR);
+  }
+
+  /** Room-level (not tank-local) - `predator.xFrac` is a fraction of the room's own width, sitting on
+   *  the floor line beside the tank, not inside the water (see PredatorEvent's own doc comment in
+   *  types.ts for why). */
+  function drawPredator(engine: TankEngine, roomWidth: number, roomHeight: number): void {
+    const predator = engine.predator;
+    if (!predator) {
+      predatorContainer.visible = false;
+      return;
+    }
+    predatorContainer.visible = true;
+    if (predator.kind !== lastPredatorKind) {
+      lastPredatorKind = predator.kind;
+      if (predator.kind === 'cat') drawCatShape(predatorBody);
+      else drawBirdShape(predatorBody);
+    }
+    const floorHeight = roomHeight * FLOOR_FRAC;
+    predatorContainer.position.set(predator.xFrac * roomWidth, roomHeight - floorHeight - PREDATOR_FLOOR_GAP);
+
+    const totalMs = Math.max(1, predator.expiresAt - predator.spawnedAt);
+    const remainingFrac = Math.max(0, Math.min(1, (predator.expiresAt - Date.now()) / totalMs));
+    predatorTimerBar.clear();
+    predatorTimerBar
+      .rect(-PREDATOR_BAR_WIDTH / 2, PREDATOR_BAR_OFFSET_Y, PREDATOR_BAR_WIDTH, PREDATOR_BAR_HEIGHT)
+      .fill({ color: 0x000000, alpha: 0.4 });
+    const barColor = remainingFrac > 0.5 ? 0x4ade80 : remainingFrac > 0.2 ? 0xfacc15 : 0xef4444;
+    predatorTimerBar
+      .rect(-PREDATOR_BAR_WIDTH / 2, PREDATOR_BAR_OFFSET_Y, PREDATOR_BAR_WIDTH * remainingFrac, PREDATOR_BAR_HEIGHT)
+      .fill(barColor);
+  }
+
   function render(engine: TankEngine, roomWidth: number, roomHeight: number): void {
     currentEngine = engine;
     if (roomWidth <= 0 || roomHeight <= 0) return;
@@ -213,6 +279,7 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     fitTankSlot(engine, roomWidth, roomHeight);
     tankScene.render(engine);
     drawCleanlinessBar(engine);
+    drawPredator(engine, roomWidth, roomHeight);
   }
 
   function destroy(): void {
@@ -224,6 +291,7 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     background.destroy();
     floor.destroy();
     cleanlinessBar.destroy();
+    predatorContainer.destroy({ children: true });
   }
 
   return { render, setArmedTool, destroy };
