@@ -15,7 +15,7 @@ import type {
   UiTheme,
 } from './types';
 import { decodeFrame, encodeFrame, isRleFrame, type RleFrame } from './pixelCodec';
-import { PIXELLAB_PACK } from './data/pixellabPack';
+import { PACK_SPRITE_NAMES, ROOM_CAST_PACK } from './data/pixellabPack';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
@@ -979,26 +979,81 @@ export function buildDefaultSprites(): Sprite[] {
       ],
       frameMs: DEFAULT_FRAME_MS,
     },
-    ...buildPackSprites(),
   ];
 }
 
-/** The PixelLab art pack (see data/pixellabPack.ts) as real sprites, seeded alongside the two
- *  procedural samples above so a first run opens on a library worth looking at rather than one
- *  goldfish. Decoded here rather than shipped as flat cell arrays because the pack's two scenes are
- *  320x200 and 348x224 - as plain JSON that is megabytes, and run-length encoded it is not. */
-function buildPackSprites(): Sprite[] {
-  return PIXELLAB_PACK.map((entry) => ({
-    ...newRecordMeta(),
-    id: uid('sprite'),
-    name: entry.name,
-    type: entry.type,
-    width: entry.width,
-    height: entry.height,
-    frames: entry.frames.map((frame) => [makeLayer(decodeFrame(frame))]),
-    frameMs: entry.frameMs ?? DEFAULT_FRAME_MS,
-  }));
+/** Life mode's cast (data/pixellabPack.ts ROOM_CAST_PACK) as Sprites, keyed by name.
+ *
+ *  Built once on first use and never written to storage: the cats and their emote bubbles are the
+ *  renderer's own art, not the user's. They used to be seeded into the sprite library along with
+ *  everything else, which meant opening the editor to two dozen cat poses nobody asked for.
+ *
+ *  Sprite is the shape the room already draws through (textureFor, content-box measuring), so the
+ *  cast is decoded into that shape rather than the renderer growing a second path for pack art. */
+let castSprites: Map<string, Sprite> | null = null;
+
+export function buildCastSprites(): Map<string, Sprite> {
+  if (!castSprites) {
+    castSprites = new Map(
+      ROOM_CAST_PACK.map((entry) => [
+        entry.name,
+        {
+          ...newRecordMeta(),
+          // Stable, and marked as pack art: these ids never reach storage, but they are what the
+          // texture cache keys on, so they must not change between frames.
+          id: `cast:${entry.name}`,
+          name: entry.name,
+          type: entry.type,
+          width: entry.width,
+          height: entry.height,
+          frames: entry.frames.map((frame) => [makeLayer(decodeFrame(frame))]),
+          frameMs: entry.frameMs ?? DEFAULT_FRAME_MS,
+        } satisfies Sprite,
+      ]),
+    );
+  }
+  return castSprites;
 }
+
+/** Every name the generated art has ever been seeded into a library under.
+ *
+ *  All of it is render-side art now, so all of it is dead weight in an editor: the props and scenes
+ *  that were seeded from the very first version, the single cat and the bird that the room used
+ *  before it was rebuilt, and the three cats and emote bubbles that briefly replaced them. A
+ *  library that has been through several of those versions holds a layer of each. */
+const RETIRED_CAST_NAMES = [
+  'Tank brush',
+  'Food pellets',
+  'Fish poop',
+  'Fish poop sinking',
+  'Algae patch',
+  'Underwater scene',
+  'Cat sitting',
+  'Cat reaching up',
+  'Cat standing',
+  'Cat asleep',
+  'Bird perched',
+  'Bird pecking',
+  'Bird flapping',
+  'Bird looking down',
+  'Bird asleep',
+];
+
+/** The library sprites that are really Life-mode cast art, and so should not be in a library at all.
+ *
+ *  Matched by name, which is the only handle there is - pack sprites get a fresh id on every device
+ *  that seeds them. A sprite the user renamed is therefore left alone, which is the right way round:
+ *  renaming one is the clearest signal available that they mean to keep it. */
+export function strayCastSprites(existing: Sprite[]): Sprite[] {
+  const names = new Set([...ROOM_CAST_PACK.map((entry) => entry.name), ...RETIRED_CAST_NAMES]);
+  return existing.filter((sprite) => names.has(sprite.name));
+}
+
+/** The room backdrop, for a library that has no background sprite of its own to offer. */
+export function castRoomSprite(): Sprite | undefined {
+  return buildCastSprites().get(PACK_SPRITE_NAMES.roomScene);
+}
+
 
 /** Every localStorage key this app writes - kept as one list so backup/reset (see below) can't drift
  *  out of sync with a key added elsewhere in this file without updating this too. */
