@@ -778,3 +778,51 @@ rather than by the refactor itself. A regex of the form `/(\/\*\*[\s\S]*?\*\/)?\
 like it swallows the doc comment above a constant; the lazy quantifier happily matched from ~150 lines
 higher up and deleted everything in between, and it only surfaced because `tsc` failed loudly. Anchor on
 exact text, and check what the edit actually removed.
+
+## Seventh pass: one TankState default, and update() as phases (2026-09-09)
+
+**`emptyTankState` is one function, not four copies.** `TankState`'s fields were listed by hand in the
+IndexedDB adapter, in `sharing.ts` (byte-for-byte identical), and in two test fixtures. It lives on
+`data/adapter.ts` now, beside the interface it builds. `sharing.ts`'s comment gave a real reason for
+keeping its own - "a remote tank is never written anywhere and has no business reaching into local
+storage's code" - and that reason still holds, so the shared copy went to the module that *declares the
+type* rather than to either reader; neither reaches into the other. The `lastTickAt: null` reasoning
+moved to `sharing.ts`'s call site, where it is the fact that matters.
+
+Worth recording what that actually guarantees, because the first version of the doc comment overclaimed
+it. Temporarily adding a required field to `TankState` fails the build in **three** places, not one:
+`emptyTankState`, `TankEngine.snapshotForStorage`, and `LocalStorageAdapter.loadTankState`. The last two
+genuinely construct a state from a real source and have to name every field - stopping there is correct,
+since each has to decide where the new value comes from. One *default*, several producers.
+
+**`TankEngine.update()` went from 205 lines to 18.** It ran a whole frame - slow clocks, predator
+departure, food sinking, digestion, waste sinking, schooling targets, then 110 lines of per-instance
+movement - and now reads as the sequence of phases it always was: `stepPredator`, `stepFood`,
+`stepPooping`, `stepWaste`, `stepInstance`. The order is load-bearing and now says so: the slow clocks
+can kill a fish, which every later phase has to see, and the school steering is read by the movement
+that closes the frame.
+
+`computeSchoolSteer` came out as a pure function (`tank/sim/schooling.ts`, 8 tests). It was always
+testable - instances in, map out - and simply had nowhere to live. The tests pin the decisions rather
+than the arithmetic: a dragged fish is excluded so the school does not chase the cursor, a group of one
+gets no steer (a steer would pin it to its own current depth instead of letting it wander), a tied
+heading breaks right.
+
+The 110-line movement body was re-indented one level when it stopped being a `forEach` callback. Rather
+than trust that by eye, the before/after files were compared as multisets of trimmed non-empty lines:
+the only differences were the temporary brace used to hold indentation during the edit, the `});` that
+closed the forEach, and the new import. No logic line added, removed or altered. That check is cheap and
+worth repeating for any mechanical re-indent of this size.
+
+**Not verified end to end**: the marquee-select -> Group flow, which is what exercises schooling live.
+The browser script could not get the marquee to take; that is a limitation of the script, not evidence
+about the code - the steering map's contract is unit-tested and its consumer was untouched. Everything
+else was: three fish all advance over four seconds, none escape the glass, no NaN coordinates, headings
+stay +/-1 through the bounce phase, hunger stays in range, no console errors.
+
+Two more script-not-code lessons from this pass, both of which produced confident-looking wrong output
+before being caught. Reading the tank out of IndexedDB uses `record.instances`, not
+`record.state.instances` - the wrong shape returns an empty list, and "0 fish" reads exactly like a
+broken refactor. And adding a fish does **not** persist; only Save does, and Save disables itself once
+nothing is pending, so a flush has to make the tank dirty first. The existing `tanks-ui-smoke.cjs` had
+both details right all along.
