@@ -2300,3 +2300,9 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 }
 .library-publish:hover:not(:disabled) { opacity: 1; }
 .library-publish.is-public { opacity: 1; color: #4ade80; }
+
+
+/* Tank switcher, at the left of the tank's action bar (TankSwitcher.tsx). */
+.tank-switcher { display: inline-flex; align-items: center; gap: 4px; }
+.tank-switcher-trigger { min-width: 9rem; max-width: 14rem; }
+.tank-switcher-input { width: 10rem; }

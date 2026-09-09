@@ -151,18 +151,77 @@ export class IndexedDbAdapter implements StorageAdapter {
     const db = await this.db();
     if (!db) return this.fallback.getCurrentTankId();
     const current = await this.meta(db, META_CURRENT_TANK);
-    if (current) return current;
+    if (current) {
+      await this.ensureTankRow(db, current);
+      return current;
+    }
     // Normally minted during the first-run migration; this only catches a store whose meta was wiped
     // out from under a running app.
     const id = uid('tank');
     await this.setMeta(db, META_CURRENT_TANK, id);
+    await this.ensureTankRow(db, id);
     return id;
+  }
+
+  /**
+   * Makes sure the open tank exists as a row, not just as an id in `meta`.
+   *
+   * A tank used to be written only when it was first saved, which meant a brand-new browser had a
+   * current tank that listTanks() could not see - so the tank switcher, which hides itself when there
+   * are no tanks, was invisible until the user happened to save. A tank the app is *showing* exists.
+   */
+  private async ensureTankRow(db: IDBDatabase, id: string): Promise<void> {
+    const existing = await get<TankRecord>(db, STORE_TANKS, id);
+    if (!existing) await put(db, STORE_TANKS, tankRecord(id, 'My Tank', emptyTankState()));
   }
 
   async setCurrentTankId(id: string): Promise<void> {
     const db = await this.db();
     if (!db) return this.fallback.setCurrentTankId(id);
     await this.setMeta(db, META_CURRENT_TANK, id);
+  }
+
+  readonly supportsMultipleTanks = true;
+
+  /**
+   * Creates the tank straight away rather than waiting for its first save.
+   *
+   * A tank that exists only once something has been put in it cannot be listed, named, or switched to
+   * - so making one would appear to do nothing until the user also placed a fish. The row is written
+   * empty, which is exactly what a new tank is.
+   */
+  async createTank(name: string): Promise<string> {
+    const db = await this.db();
+    if (!db) return this.fallback.createTank(name);
+    const id = uid('tank');
+    await put(db, STORE_TANKS, tankRecord(id, name.trim() || 'My Tank', emptyTankState()));
+    return id;
+  }
+
+  async renameTank(id: string, name: string): Promise<void> {
+    const db = await this.db();
+    if (!db) return this.fallback.renameTank(id, name);
+    const existing = await get<TankRecord>(db, STORE_TANKS, id);
+    if (!existing) return;
+    await put(db, STORE_TANKS, { ...existing, name: name.trim() || existing.name, updatedAt: Date.now() });
+  }
+
+  /**
+   * Deletes a tank locally and moves off it if it was the one open.
+   *
+   * Refuses the last one: an app with no tank has nowhere to put anything, and would have to invent a
+   * replacement on the next load - which is a confusing way to say "that did not work".
+   */
+  async deleteTank(id: string): Promise<void> {
+    const db = await this.db();
+    if (!db) return this.fallback.deleteTank(id);
+    const tanks = await getAll<TankRecord>(db, STORE_TANKS);
+    if (tanks.length <= 1) throw new Error('cannot delete the only tank');
+    await del(db, STORE_TANKS, id);
+    if ((await this.meta(db, META_CURRENT_TANK)) === id) {
+      const next = tanks.find((t) => t.id !== id);
+      if (next) await this.setMeta(db, META_CURRENT_TANK, next.id);
+    }
   }
 
   async listTanks(): Promise<TankSummary[]> {

@@ -128,6 +128,27 @@ export class TankRepo {
     return this.adapter.listTanks();
   }
 
+  get supportsMultiple(): boolean {
+    return this.adapter.supportsMultipleTanks;
+  }
+
+  create(name: string): Promise<string> {
+    return this.adapter.createTank(name);
+  }
+
+  rename(id: string, name: string): Promise<void> {
+    return this.adapter.renameTank(id, name);
+  }
+
+  /** Told about a deletion the same way onWrite is told about a save, so the sync engine can pass it
+   *  on: a tank removed here has to be removed on the other devices too, not just stop being uploaded. */
+  onDelete: ((tankId: string) => void) | null = null;
+
+  async delete(id: string): Promise<void> {
+    await this.adapter.deleteTank(id);
+    this.onDelete?.(id);
+  }
+
   load(tankId?: string): Promise<TankState> {
     return this.adapter.loadTankState(tankId);
   }

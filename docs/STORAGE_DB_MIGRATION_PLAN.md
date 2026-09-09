@@ -688,7 +688,7 @@ create policy read_used_in_shared on sprites for select using (
 - [x] **P4-1** [`IndexedDbAdapter`](../src/lib/data/indexedDbAdapter.ts) + migration ครั้งเดียว + ธง `migratedFrom.localStorage` (ไม่ลบข้อมูลเดิม) + fallback กลับไป localStorage เมื่อเปิด IndexedDB ไม่ได้
 - [x] **P4-2** `currentTankId` + `localUserId` ถูกสร้างตั้งแต่รันครั้งแรก (แม้ไม่มีอะไรให้ migrate)
 - [x] **P4-3** `TankEngine.tankId` + ทุก load/save ระบุตู้ · store `tanks` ใช้ `id` เป็น keyPath · `listTanks()` พร้อมใช้
-- [ ] **P4-4** (ยังไม่ทำ — ตั้งใจ) UI สลับ/สร้าง/ลบตู้ · โครงข้อมูลรองรับแล้ว เหลือแค่งาน UI
+- [x] **P4-4** UI สลับ/สร้าง/เปลี่ยนชื่อ/ลบตู้ — [`TankSwitcher.tsx`](../src/components/tank/TankSwitcher.tsx) ในแถบเครื่องมือของตู้ · ถามก่อนทิ้งงานที่ยังไม่เซฟทุกครั้งที่สลับ/สร้าง · ลบตู้สุดท้ายไม่ได้ · sprite library ใช้ร่วมกันทุกตู้ · ทดสอบด้วย [`tanks-ui-smoke.cjs`](../scripts/tanks-ui-smoke.cjs) **20/20** (local ล้วน ไม่ต้องใช้ Supabase)
 - [x] **P5-1** `src/lib/supabase.ts` + [`.env.example`](../.env.example) · โปรเจกต์จริงตั้งค่าแล้ว (`.env` เข้า .gitignore) · รับได้ทั้ง `VITE_SUPABASE_PUBLISHABLE_KEY` (ชื่อใหม่ที่ Supabase ใช้ตอนนี้) และ `VITE_SUPABASE_ANON_KEY` (ชื่อเก่า)
 - [x] **P5-2** [`supabase/schema.sql`](../supabase/schema.sql) **รันจริงบนโปรเจกต์แล้ว (2026-09-08)** — ตาราง 7 ตัว + RLS + `bump_rev` ครบ · ยืนยันด้วย REST: ผู้ใช้นิรนามอ่านได้ `200 []` ทุกตาราง (ไม่เห็นอะไรเลย = ถูก) และ insert โดนปฏิเสธ `42501 violates row-level security` · ⚠️ ยังเหลือ **เทสต์ด้วยบัญชีจริง 2 คน** ว่า A อ่านของ B ไม่ได้ (ต้องมี auth = P6 ก่อน)
 - [x] **P5-3** [`outbox.ts`](../src/lib/data/outbox.ts) — คิวใน IndexedDB store `outbox` + exponential backoff (cap 5 นาที) + coalesce เหลือรายการเดียวต่อ record

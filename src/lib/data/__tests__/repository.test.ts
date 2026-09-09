@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EditorPrefs, StorageAdapter, TankState, TankSummary } from '../adapter';
-import { EditorPrefsRepo, SpriteRepo } from '../repository';
+import { EditorPrefsRepo, SpriteRepo, TankRepo } from '../repository';
 import * as storage from '../../storage';
 import type { Sprite } from '../../types';
 
@@ -44,8 +44,22 @@ class FakeAdapter implements StorageAdapter {
     return 'tank_test';
   }
   async setCurrentTankId(): Promise<void> {}
+  tanks: TankSummary[] = [{ id: 'tank_test', name: 'Test', updatedAt: 0 }];
   async listTanks(): Promise<TankSummary[]> {
-    return [{ id: 'tank_test', name: 'Test', updatedAt: 0 }];
+    return this.tanks;
+  }
+  readonly supportsMultipleTanks = true;
+  async createTank(name: string): Promise<string> {
+    const id = `tank_${this.tanks.length + 1}`;
+    this.tanks = [...this.tanks, { id, name, updatedAt: Date.now() }];
+    return id;
+  }
+  async renameTank(id: string, name: string): Promise<void> {
+    this.tanks = this.tanks.map((t) => (t.id === id ? { ...t, name } : t));
+  }
+  async deleteTank(id: string): Promise<void> {
+    if (this.tanks.length <= 1) throw new Error('cannot delete the only tank');
+    this.tanks = this.tanks.filter((t) => t.id !== id);
   }
   async loadTankState(): Promise<TankState> {
     throw new Error('not used in these tests');
@@ -177,5 +191,44 @@ describe('EditorPrefsRepo', () => {
 
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe('TankRepo (several tanks)', () => {
+  it('creates, renames and lists tanks', async () => {
+    const adapter = new FakeAdapter();
+    const repo = new TankRepo(adapter);
+
+    const id = await repo.create('Reef');
+    await repo.rename(id, 'Reef tank');
+
+    const names = (await repo.list()).map((t) => t.name);
+    expect(names).toContain('Reef tank');
+    expect(repo.supportsMultiple).toBe(true);
+  });
+
+  it('announces a deletion so it can be carried to other devices', async () => {
+    // Without this the deletion is purely local, and the next device to sync reads the still-present
+    // row as "not uploaded yet" and brings the tank back.
+    const adapter = new FakeAdapter();
+    const repo = new TankRepo(adapter);
+    const deleted: string[] = [];
+    repo.onDelete = (id) => deleted.push(id);
+
+    const id = await repo.create('Spare');
+    await repo.delete(id);
+
+    expect(deleted).toEqual([id]);
+    expect((await repo.list()).some((t) => t.id === id)).toBe(false);
+  });
+
+  it('refuses to delete the only tank, and says nothing was deleted', async () => {
+    const adapter = new FakeAdapter();
+    const repo = new TankRepo(adapter);
+    const deleted: string[] = [];
+    repo.onDelete = (id) => deleted.push(id);
+
+    await expect(repo.delete('tank_test')).rejects.toThrow('only tank');
+    expect(deleted).toEqual([]);
   });
 });

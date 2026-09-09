@@ -71,6 +71,18 @@ export interface StorageAdapter {
   setCurrentTankId(id: string): Promise<void>;
   listTanks(): Promise<TankSummary[]>;
 
+  /** False for a backend that can only ever hold one tank (localStorage). The UI hides the tank
+   *  switcher rather than offering controls that would fail - an offer nobody can accept is worse
+   *  than no offer. */
+  readonly supportsMultipleTanks: boolean;
+  /** Creates an empty tank and returns its id. Does not switch to it: that is the caller's decision,
+   *  and the engine has unsaved state to deal with first. */
+  createTank(name: string): Promise<string>;
+  renameTank(id: string, name: string): Promise<void>;
+  /** Removes a tank and everything in it. The last tank cannot be deleted - a user with no tank at all
+   *  has nowhere to put a fish, and the app would have to invent one back immediately. */
+  deleteTank(id: string): Promise<void>;
+
   loadTankState(tankId?: string): Promise<TankState>;
   saveTankState(state: TankState, tankId?: string): Promise<void>;
 

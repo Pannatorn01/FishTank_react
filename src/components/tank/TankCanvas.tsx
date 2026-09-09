@@ -24,6 +24,7 @@ const TankPixiLayer = lazy(() => import('@/tank/render/TankPixiLayer').then((m) 
 import { RoomLayer } from './RoomLayer';
 import { useTankViewport } from './useTankViewport';
 import { TankBackgroundOverlay } from './TankBackgroundOverlay';
+import { TankSwitcher } from './TankSwitcher';
 
 const SPEED_ICON: Record<(typeof SWIM_SPEEDS)[number], string> = {
   slow: 'fa-solid fa-turtle',
@@ -207,6 +208,8 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
 
       <div className="tank-action-bar">
         <div className="tank-action-group">
+          <TankSwitcher engine={engine} />
+          <span className="tank-action-divider" aria-hidden="true" />
           <button
             type="button"
             className="selection-toolbar-btn"

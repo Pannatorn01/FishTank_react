@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { t } from '@/lib/i18n';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { paintLayers } from '@/lib/pixelMath';
-import { getRepos, type TankState } from '@/lib/data';
+import { getRepos, type TankState, type TankSummary } from '@/lib/data';
 import * as storage from '@/lib/storage';
 import {
   clampTopLeftToShape as clampTopLeftToShapePure,
@@ -430,6 +430,8 @@ export class TankEngine {
     this.ready = true;
     this.resizeCanvas();
     this.reactNotify();
+    // Not awaited: the tank is already on screen, and the switcher can fill in a moment later.
+    void this.reloadTankList();
   }
 
   private async loadEverything(): Promise<void> {
@@ -1008,9 +1010,93 @@ export class TankEngine {
   /** Reloads instances/groups/tank size from localStorage, discarding any unsaved in-memory edits
    *  (including an unsaved resize) - prompts first if there's actually something to lose (mirrors
    *  the sprite editor's newSprite()). */
+  /** Every tank this browser holds, for the switcher. Empty until reloadTankList() has run, and empty
+   *  forever on a backend that only supports one (see StorageAdapter.supportsMultipleTanks). */
+  tanks: TankSummary[] = [];
+
+  get tankName(): string {
+    return this.tanks.find((t) => t.id === this.tankId)?.name ?? '';
+  }
+
+  get supportsMultipleTanks(): boolean {
+    return !this.readOnly && getRepos().tank.supportsMultiple;
+  }
+
+  async reloadTankList(): Promise<void> {
+    if (this.readOnly) return;
+    this.tanks = await getRepos().tank.list();
+    this.reactNotify();
+  }
+
+  /**
+   * Opens another tank.
+   *
+   * Unsaved work is the whole difficulty here: the tank is manual-save, so switching away from one
+   * with pending edits would throw them out. The confirmation is the same one Refresh asks, for the
+   * same reason, and a refusal leaves everything exactly as it was - including which tank is current,
+   * which is why the id is only written after the prompt is past.
+   */
+  async switchTank(id: string, confirmDiscard: () => boolean): Promise<boolean> {
+    if (this.readOnly || id === this.tankId) return false;
+    if (this.dirty && !confirmDiscard()) return false;
+    await getRepos().tank.setCurrentId(id);
+    await this.refresh(() => true);
+    await this.reloadTankList();
+    return true;
+  }
+
+  /** Creates a tank and opens it. Same discard prompt as switching, asked before anything is created:
+   *  a user who backs out should not be left with an empty tank they never wanted. */
+  async createTank(name: string, confirmDiscard: () => boolean): Promise<boolean> {
+    if (this.readOnly) return false;
+    if (this.dirty && !confirmDiscard()) return false;
+    const id = await getRepos().tank.create(name);
+    await getRepos().tank.setCurrentId(id);
+    await this.refresh(() => true);
+    await this.reloadTankList();
+    return true;
+  }
+
+  async renameTank(id: string, name: string): Promise<void> {
+    if (this.readOnly) return;
+    await getRepos().tank.rename(id, name);
+    await this.reloadTankList();
+  }
+
+  /**
+   * Deletes a tank, and everything in it, on this device and on the others.
+   *
+   * The storage layer refuses the last one. Deleting the tank currently open is allowed - it moves to
+   * another one - because the alternative is telling someone they must first switch away from the
+   * thing they are trying to get rid of.
+   */
+  async deleteTank(id: string, confirmDelete: () => boolean): Promise<{ ok: boolean; error?: unknown }> {
+    if (this.readOnly) return { ok: false };
+    if (this.tanks.length <= 1) return { ok: false, error: new Error('cannot delete the only tank') };
+    if (!confirmDelete()) return { ok: false };
+    try {
+      const wasCurrent = id === this.tankId;
+      await getRepos().tank.delete(id);
+      await this.reloadTankList();
+      if (wasCurrent) {
+        // Whatever the storage layer moved to; the deleted tank's unsaved edits go with it, which is
+        // what deleting it meant.
+        this.dirty = false;
+        await this.refresh(() => true);
+      }
+      return { ok: true };
+    } catch (err) {
+      console.warn('deleting the tank failed', err);
+      return { ok: false, error: err };
+    }
+  }
+
   async refresh(confirmDiscard: () => boolean): Promise<void> {
     if (this.dirty && !confirmDiscard()) return;
-    const { state } = await this.source.load();
+    // The id comes back too: reloading is also how switching tanks lands, and the engine has to end up
+    // pointing at whichever tank it just loaded rather than the one it was showing before.
+    const { tankId, state } = await this.source.load();
+    this.tankId = tankId;
     this.instances = state.instances.map((inst) => ({
       ...inst,
       groupId: inst.groupId ?? null,

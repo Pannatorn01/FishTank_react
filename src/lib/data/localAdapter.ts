@@ -32,6 +32,22 @@ export class LocalStorageAdapter implements StorageAdapter {
     // Nothing to switch to.
   }
 
+  /** One tank, always. Everything about this backend is a set of fixed keys (see storage.ts); a second
+   *  tank would need a key per tank, which is the shape IndexedDB is for. */
+  readonly supportsMultipleTanks = false;
+
+  async createTank(_name?: string): Promise<string> {
+    throw new Error('this browser can only store one tank');
+  }
+
+  async renameTank(_id?: string, _name?: string): Promise<void> {
+    throw new Error('this browser can only store one tank');
+  }
+
+  async deleteTank(_id?: string): Promise<void> {
+    throw new Error('this browser can only store one tank');
+  }
+
   async listTanks(): Promise<TankSummary[]> {
     return [{ id: SINGLE_TANK_ID, name: 'My Tank', updatedAt: storage.loadTankLastTick() ?? 0 }];
   }

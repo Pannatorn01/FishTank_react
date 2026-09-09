@@ -17,7 +17,10 @@ import {
 
 const MARK_SPRITES = 'sync.mark.sprites';
 const CLAIMED_BY = 'sync.claimedBy';
-const MARK_TANK = 'sync.mark.tank';
+/** One mark per tank, not one for all of them: a single key would carry the high-water mark of
+ *  whichever tank was open last, and opening another would then skip everything older than that -
+ *  silently, and only for people who own more than one tank. */
+const markTank = (tankId: string) => `sync.mark.tank.${tankId}`;
 const TABLE_SPRITES = 'sprites';
 const TABLE_TANKS = 'tanks';
 const TABLE_INSTANCES = 'tank_instances';
@@ -121,6 +124,13 @@ export class SyncEngine {
     await this.refreshPending();
   }
 
+  /** A tank deleted here has to be deleted on the other devices too - "stopped being uploaded" reads
+   *  to them as "not synced yet", which is how a deletion comes back to life. */
+  async queueTankDeletion(tankId: string): Promise<void> {
+    await this.local.outboxPut(makeEntry(TABLE_TANKS, tankId, 'delete', null));
+    await this.refreshPending();
+  }
+
   private async refreshPending(): Promise<void> {
     this.setStatus({ pending: (await this.local.outboxAll()).length });
   }
@@ -218,6 +228,14 @@ export class SyncEngine {
       return;
     }
     if (entry.table === TABLE_TANKS) {
+      if (entry.op === 'delete') {
+        // A tombstone, like every other deletion here: the row stays so other devices can learn about
+        // it, and its children go with it (schema.sql cascades on the real delete, which only an
+        // administrator ever does).
+        const now = Date.now();
+        await this.upsertPartial(TABLE_TANKS, { id: entry.recordId, updated_at: now, deleted_at: now });
+        return;
+      }
       await this.sendTank(entry.recordId, entry.payload as TankState);
       return;
     }
@@ -255,6 +273,13 @@ export class SyncEngine {
 
     const payload = [...rows, ...tombstones];
     if (payload.length > 0) await this.upsert(table, payload);
+  }
+
+  /** Updates only the columns given, leaving the rest of the row alone - used where the client knows
+   *  one fact about a row (that it is deleted) rather than its whole contents. */
+  private async upsertPartial(table: string, row: Record<string, unknown>): Promise<void> {
+    const { error } = await this.supabase.from(table).update(row).eq('id', row.id);
+    if (error) throw error;
   }
 
   private async upsert(table: string, rows: unknown[]): Promise<void> {
@@ -319,7 +344,7 @@ export class SyncEngine {
 
   private async pullTank(userId: string): Promise<void> {
     const tankId = await this.local.getCurrentTankId();
-    const mark = (await this.local.getMeta(MARK_TANK)) || EPOCH;
+    const mark = (await this.local.getMeta(markTank(tankId))) || EPOCH;
 
     const { data: tankRows, error: tankError } = await this.supabase
       .from(TABLE_TANKS)
@@ -356,7 +381,7 @@ export class SyncEngine {
     merged.roomInstances = merged.roomInstances.filter((r) => r.deletedAt === 0);
 
     await this.local.saveTankState(merged, tankId);
-    await this.local.setMetaValue(MARK_TANK, latestServerStamp(stamps, mark));
+    await this.local.setMetaValue(markTank(tankId), latestServerStamp(stamps, mark));
     this.onPulled?.('tank');
   }
 
