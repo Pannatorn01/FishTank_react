@@ -27,6 +27,14 @@ const env = Object.fromEntries(
 const URL = env.VITE_SUPABASE_URL;
 const KEY = env.VITE_SUPABASE_PUBLISHABLE_KEY || env.VITE_SUPABASE_ANON_KEY;
 
+const ANON_DISABLED_HINT = `Anonymous sign-ins are disabled on this project.
+
+These probes need throwaway accounts, so turn them on for the run and off again afterwards:
+  Supabase dashboard -> Authentication -> Sign In / Providers -> Allow anonymous sign-ins
+
+Leaving them on lets anyone who has the (public) project URL create users in it, which is why
+they are meant to be off except while testing.`;
+
 const results = [];
 function check(name, ok, detail) {
   results.push({ name, ok });
@@ -40,7 +48,23 @@ async function signInAnon() {
     body: JSON.stringify({ data: {} }),
   });
   const json = await res.json();
+  if (!json.access_token) {
+    console.error(explainSignInFailure(json));
+    process.exit(4);
+  }
   return { token: json.access_token, userId: json.user.id };
+}
+
+/** A dead end that is nobody's bug deserves an instruction, not a stack trace. */
+function explainSignInFailure(json) {
+  if (json.error_code === 'anonymous_provider_disabled') {
+    return `
+${ANON_DISABLED_HINT}
+`;
+  }
+  return `
+Could not sign in: ${JSON.stringify(json)}
+`;
 }
 
 function api(token) {

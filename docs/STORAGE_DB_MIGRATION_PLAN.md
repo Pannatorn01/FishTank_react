@@ -53,6 +53,13 @@
 [`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — **25/25 ผ่าน** และ
 [`scripts/auth-smoke.cjs`](../scripts/auth-smoke.cjs) — **9/9 ผ่าน** (รันคู่กับ `npm run dev`)
 
+### วิธีรันชุดทดสอบที่ต้องคุยกับ Supabase จริง
+
+`storage-smoke` / `auth-smoke` รันได้เสมอ (local ล้วน) แต่ `rls-smoke` / `sync-smoke` / `share-smoke` /
+`share-ui-smoke` ต้องสร้างบัญชีทิ้ง ๆ → ต้องเปิด **Authentication → Sign In / Providers → Allow anonymous
+sign-ins** ชั่วคราว **แล้วปิดกลับทันทีที่เทสต์เสร็จ** (เปิดค้าง = ใครมี URL โปรเจกต์ก็สร้าง user ได้)
+· ถ้าลืมเปิด สคริปต์จะบอกวิธีทำแล้วออกด้วย exit code 4 ไม่ใช่ stack trace
+
 ### บั๊กที่เจอตอนยิงกับ Supabase จริง (สรุปไว้เพื่อไม่ให้พลาดซ้ำ)
 
 | บั๊ก | อาการ | บทเรียน |

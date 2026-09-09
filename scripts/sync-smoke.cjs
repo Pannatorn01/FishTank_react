@@ -32,6 +32,14 @@ const killer = setTimeout(() => {
 }, 180000);
 killer.unref?.();
 
+const ANON_DISABLED_HINT = `Anonymous sign-ins are disabled on this project.
+
+These probes need throwaway accounts, so turn them on for the run and off again afterwards:
+  Supabase dashboard -> Authentication -> Sign In / Providers -> Allow anonymous sign-ins
+
+Leaving them on lets anyone who has the (public) project URL create users in it, which is why
+they are meant to be off except while testing.`;
+
 const results = [];
 function check(name, ok, detail) {
   results.push({ name, ok });
@@ -44,7 +52,7 @@ async function signInAnonymously(page) {
     const mod = await import('/src/lib/supabase.ts');
     const supabase = mod.getSupabase();
     const { data, error } = await supabase.auth.signInAnonymously();
-    if (error) throw new Error(error.message);
+    if (error) throw new Error(`ANON_SIGNIN_FAILED: ${error.message}`);
     return data.user.id;
   });
 }
@@ -254,6 +262,13 @@ async function serverRows(token, path) {
   clearTimeout(killer);
   process.exit(failed.length ? 1 : 0);
 })().catch((e) => {
+  // A run that fails only because throwaway accounts are switched off is not a bug in the app.
+  if (String(e && e.message).includes('ANON_SIGNIN_FAILED')) {
+    console.error(`
+${ANON_DISABLED_HINT}
+`);
+    process.exit(4);
+  }
   console.error('CRASH', e);
   process.exit(2);
 });
