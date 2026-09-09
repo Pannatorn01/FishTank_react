@@ -1,4 +1,5 @@
 import { collectLocalStorageDump, clearLocalStorageData } from '../storage';
+import { downloadBlob } from '../download';
 import { getAll, openDb } from './idb';
 
 const DB_NAME = 'fishtank';
@@ -38,14 +39,7 @@ export async function downloadDataBackup(): Promise<boolean> {
   if (!hasSomething) return false;
 
   const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `pixel-fish-tank-backup-${new Date().toISOString().slice(0, 10)}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  downloadBlob(blob, `pixel-fish-tank-backup-${new Date().toISOString().slice(0, 10)}.json`);
   return true;
 }
 

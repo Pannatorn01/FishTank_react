@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createPenTool } from '../tools/penTool';
-import { makeContext, makeFrame } from './testUtils';
-import type { PaintOp, ToolPointerEvent } from '../types';
-
-function ptr(x: number, y: number, extra: Partial<ToolPointerEvent> = {}): ToolPointerEvent {
-  return { cell: { x, y }, shiftKey: false, altKey: false, ctrlKey: false, button: 0, ...extra };
-}
+import { makeContext, makeFrame, ptr } from './testUtils';
+import type { PaintOp } from '../types';
 
 /** Applies a sequence of ops onto a plain Map, simulating what the engine's `applyToolPreview`/
  *  `commitGestureResult` do to the real frame - lets tests assert final per-cell state instead of

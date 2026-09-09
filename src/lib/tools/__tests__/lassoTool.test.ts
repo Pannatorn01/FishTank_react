@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createLassoTool } from '../tools/lassoTool';
-import { makeContext, makeFrame } from './testUtils';
+import { makeContext, makeFrame, ptr } from './testUtils';
 import type { ToolPointerEvent } from '../types';
-
-function ptr(x: number, y: number, extra: Partial<ToolPointerEvent> = {}): ToolPointerEvent {
-  return { cell: { x, y }, shiftKey: false, altKey: false, ctrlKey: false, button: 0, ...extra };
-}
 
 /** Traces a small square path so the resulting mask/outline is unambiguous to assert on. */
 function dragSquare(gesture: ReturnType<ReturnType<typeof createLassoTool>['beginGesture']>, ctx: ReturnType<typeof makeContext>, extra: Partial<ToolPointerEvent> = {}) {

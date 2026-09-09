@@ -1,20 +1,8 @@
-import { hexToRgb } from '../../pixelMath';
+import { colorsMatch } from '../../pixelMath';
 import type { Cell } from '../../types';
 import { mirrorPoints, withSelectionClip, type CellWriter } from '../paintPipeline';
 import { DirtyRectTracker } from '../dirtyRect';
 import type { Gesture, GestureResult, PaintOp, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '../types';
-
-/** Ports `colorsMatch` (usePixelEditor.ts:3574-3582; also duplicated in magicWandTool.ts - a third
- *  copy, same established precedent as elsewhere in this directory). */
-function colorsMatch(a: string | null, b: string | null, tolerance: number): boolean {
-  if (a === b) return true;
-  if (tolerance <= 0 || a === null || b === null) return false;
-  const [ar, ag, ab] = hexToRgb(a);
-  const [br, bg, bb] = hexToRgb(b);
-  const dist = Math.sqrt((ar - br) ** 2 + (ag - bg) ** 2 + (ab - bb) ** 2);
-  const maxDist = Math.sqrt(255 * 255 * 3);
-  return (dist / maxDist) * 100 <= tolerance;
-}
 
 /** Ports `isInsideSelection`/`paintAllowed` (usePixelEditor.ts:1876-1891). */
 function inSelection(x: number, y: number, ctx: ToolContext): boolean {

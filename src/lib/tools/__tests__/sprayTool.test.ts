@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createSprayTool } from '../tools/sprayTool';
-import { makeContext, makeFrame } from './testUtils';
-import type { ToolPointerEvent } from '../types';
-
-function ptr(x: number, y: number, extra: Partial<ToolPointerEvent> = {}): ToolPointerEvent {
-  return { cell: { x, y }, shiftKey: false, altKey: false, ctrlKey: false, button: 0, ...extra };
-}
+import { makeContext, makeFrame, ptr } from './testUtils';
 
 afterEach(() => {
   vi.restoreAllMocks();

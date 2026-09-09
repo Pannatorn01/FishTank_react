@@ -1,11 +1,8 @@
 import { normalizeBox } from '../../pixelMath';
 import type { Cell, SelectionBox, SelectionMode } from '../../types';
 import { rectMask, resolveMarqueeMode, settleSelection } from '../selectionMask';
+import { inBounds } from '../cellGeometry';
 import type { Gesture, GestureResult, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '../types';
-
-function inBounds(cell: Cell, ctx: ToolContext): boolean {
-  return cell.x >= 0 && cell.y >= 0 && cell.x < ctx.width && cell.y < ctx.height;
-}
 
 /**
  * Rectangular marquee gesture - ports the 'select' branches of onPointerDown/Move/Up

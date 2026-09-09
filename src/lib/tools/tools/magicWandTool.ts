@@ -1,18 +1,7 @@
-import { hexToRgb } from '../../pixelMath';
+import { colorsMatch } from '../../pixelMath';
 import type { Cell, SelectionMode } from '../../types';
 import { settleSelection } from '../selectionMask';
 import type { Gesture, GestureResult, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '../types';
-
-/** Ports `colorsMatch` (usePixelEditor.ts:3574-3582). */
-function colorsMatch(a: string | null, b: string | null, tolerance: number): boolean {
-  if (a === b) return true;
-  if (tolerance <= 0 || a === null || b === null) return false;
-  const [ar, ag, ab] = hexToRgb(a);
-  const [br, bg, bb] = hexToRgb(b);
-  const dist = Math.sqrt((ar - br) ** 2 + (ag - bg) ** 2 + (ab - bb) ** 2);
-  const maxDist = Math.sqrt(255 * 255 * 3);
-  return (dist / maxDist) * 100 <= tolerance;
-}
 
 /** Contiguous flood-select - ports `floodSelectMask` (usePixelEditor.ts:3666-3688), reading the frame
  *  through `ToolContext.getCell` (point reads) instead of a plain array. */

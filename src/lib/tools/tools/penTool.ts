@@ -2,19 +2,8 @@ import { bresenhamLine, ditherColorAt } from '../../pixelMath';
 import type { Cell } from '../../types';
 import { withSelectionClip, withSymmetry, type CellWriter } from '../paintPipeline';
 import { DirtyRectTracker } from '../dirtyRect';
+import { brushCellsAt } from '../cellGeometry';
 import type { Gesture, GestureResult, PaintOp, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '../types';
-
-/** Top-left-anchored square of side `brushSize` centered as closely as possible on (x, y) - ports
- *  `brushCellsAt` (usePixelEditor.ts:3276-3286). */
-function brushCellsAt(x: number, y: number, brushSize: number): Cell[] {
-  if (brushSize <= 1) return [{ x, y }];
-  const off = Math.floor((brushSize - 1) / 2);
-  const cells: Cell[] = [];
-  for (let dy = 0; dy < brushSize; dy++) {
-    for (let dx = 0; dx < brushSize; dx++) cells.push({ x: x - off + dx, y: y - off + dy });
-  }
-  return cells;
-}
 
 /** Freehand pen/eraser gesture. Paints progressively as the pointer moves (ToolPreview.ops, applied
  *  to the real frame immediately by the engine) rather than deferring everything to release - matches

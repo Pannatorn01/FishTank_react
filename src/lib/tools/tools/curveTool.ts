@@ -1,39 +1,9 @@
 import { bresenhamLine } from '../../pixelMath';
-import type { Cell, SymmetryMode } from '../../types';
-import { mirrorPoints, withSelectionClip, type CellWriter } from '../paintPipeline';
+import type { Cell } from '../../types';
+import { withSelectionClip, type CellWriter } from '../paintPipeline';
 import { DirtyRectTracker } from '../dirtyRect';
+import { mirrorExpand, thickenPath } from '../cellGeometry';
 import type { Gesture, GestureResult, PaintOp, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '../types';
-
-/** Top-left-anchored square of side `brushSize` centered as closely as possible on (x, y) - ports
- *  `brushCellsAt` (usePixelEditor.ts, also duplicated in penTool.ts/shapeTool.ts - small and stable
- *  enough that a shared import isn't worth it for a fourth caller). */
-function brushCellsAt(x: number, y: number, brushSize: number): Cell[] {
-  if (brushSize <= 1) return [{ x, y }];
-  const off = Math.floor((brushSize - 1) / 2);
-  const cells: Cell[] = [];
-  for (let dy = 0; dy < brushSize; dy++) {
-    for (let dx = 0; dx < brushSize; dx++) cells.push({ x: x - off + dx, y: y - off + dy });
-  }
-  return cells;
-}
-
-/** Thickens a 1px path to `brushSize` by stamping `brushCellsAt` at every point and deduping - ports
- *  the engine's own (now-removed) `thickenPath`, same as shapeTool.ts's own copy for Line. */
-function thickenPath(points: Cell[], brushSize: number): Cell[] {
-  if (brushSize <= 1) return points;
-  const seen = new Set<string>();
-  const cells: Cell[] = [];
-  points.forEach((p) => {
-    brushCellsAt(p.x, p.y, brushSize).forEach((c) => {
-      const key = `${c.x},${c.y}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        cells.push(c);
-      }
-    });
-  });
-  return cells;
-}
 
 /** Samples a quadratic bezier through p0/p1/p2 and connects the samples with bresenham lines so the
  *  curve has no gaps, then thickens the result to `brushSize` the same way a line does - ports the
@@ -62,25 +32,6 @@ function quadraticBezierCells(p0: Cell, p1: Cell, p2: Cell, brushSize: number): 
     return true;
   });
   return thickenPath(path, brushSize);
-}
-
-/** Mirror-expands a cell list, deduped - ports the engine's own (now-removed) `mirroredExpand`, same as
- *  shapeTool.ts's own private copy. Shapes/curve mirror the whole preview once up front, unlike Pen
- *  which mirrors per brush-stamped point. */
-function mirrorExpand(cells: Cell[], symmetry: SymmetryMode, axisX: number, axisY: number): Cell[] {
-  if (symmetry === 'none') return cells;
-  const seen = new Set<string>();
-  const out: Cell[] = [];
-  cells.forEach((c) => {
-    mirrorPoints(symmetry, axisX, axisY, c.x, c.y).forEach((m) => {
-      const key = `${m.x},${m.y}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push(m);
-      }
-    });
-  });
-  return out;
 }
 
 type Phase = 'drag-end' | 'bend-idle' | 'bend-dragging';

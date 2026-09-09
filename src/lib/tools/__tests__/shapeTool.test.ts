@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createShapeTool } from '../tools/shapeTool';
 import { bresenhamLine } from '../../pixelMath';
-import { makeContext, makeFrame } from './testUtils';
-import type { ToolPointerEvent } from '../types';
-
-function ptr(x: number, y: number, extra: Partial<ToolPointerEvent> = {}): ToolPointerEvent {
-  return { cell: { x, y }, shiftKey: false, altKey: false, ctrlKey: false, button: 0, ...extra };
-}
+import { makeContext, makeFrame, ptr } from './testUtils';
 
 describe('ShapeTool (rect)', () => {
   it('paints a single cell for a zero-size drag', () => {

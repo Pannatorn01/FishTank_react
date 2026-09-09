@@ -1,10 +1,7 @@
 import type { Cell } from '../../types';
 import { polygonMask, resolveMarqueeMode, settleSelection } from '../selectionMask';
+import { inBounds } from '../cellGeometry';
 import type { Gesture, GestureResult, SelectionMode, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '../types';
-
-function inBounds(cell: Cell, ctx: ToolContext): boolean {
-  return cell.x >= 0 && cell.y >= 0 && cell.x < ctx.width && cell.y < ctx.height;
-}
 
 /**
  * Freeform lasso gesture - ports the 'lasso' branches of onPointerDown/Move/Up

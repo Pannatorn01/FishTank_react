@@ -143,6 +143,26 @@ export function rgbToHex(r: number, g: number, b: number): string {
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
+/**
+ * Whether two cell colors count as "the same" at a given tolerance - the fuzzy comparison Fill and the
+ * Magic Wand both spread through. Tolerance is a percentage of the longest possible distance in RGB
+ * space (black to white), so the number in the UI means the same thing regardless of which colors are
+ * being compared.
+ *
+ * `null` (an empty cell) only ever matches another `null`, never a color, however high the tolerance:
+ * "empty" is not a dark color, and letting tolerance blur the two would make a fill on a transparent
+ * background swallow the artwork on it.
+ */
+export function colorsMatch(a: string | null, b: string | null, tolerance: number): boolean {
+  if (a === b) return true;
+  if (tolerance <= 0 || a === null || b === null) return false;
+  const [ar, ag, ab] = hexToRgb(a);
+  const [br, bg, bb] = hexToRgb(b);
+  const dist = Math.sqrt((ar - br) ** 2 + (ag - bg) ** 2 + (ab - bb) ** 2);
+  const maxDist = Math.sqrt(255 * 255 * 3);
+  return (dist / maxDist) * 100 <= tolerance;
+}
+
 export function inEllipseLocal(x: number, y: number, cx: number, cy: number, rx: number, ry: number): boolean {
   if (rx <= 0 || ry <= 0) return Math.round(x) === Math.round(cx) && Math.round(y) === Math.round(cy);
   const dx = (x - cx) / rx;

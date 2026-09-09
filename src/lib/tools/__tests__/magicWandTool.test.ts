@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createMagicWandTool, resolveWandCombine } from '../tools/magicWandTool';
-import { makeContext, makeFrame } from './testUtils';
-import type { ToolPointerEvent } from '../types';
-
-function ptr(x: number, y: number, extra: Partial<ToolPointerEvent> = {}): ToolPointerEvent {
-  return { cell: { x, y }, shiftKey: false, altKey: false, ctrlKey: false, button: 0, ...extra };
-}
+import { makeContext, makeFrame, ptr } from './testUtils';
 
 describe('resolveWandCombine', () => {
   it('alt-click always resolves to subtract, even with an add-sticky mode', () => {

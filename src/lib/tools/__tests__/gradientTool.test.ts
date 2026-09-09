@@ -1,12 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createGradientTool } from '../tools/gradientTool';
 import { hexToRgb, rgbToHex } from '../../pixelMath';
-import { makeContext, makeFrame } from './testUtils';
-import type { ToolPointerEvent } from '../types';
-
-function ptr(x: number, y: number, extra: Partial<ToolPointerEvent> = {}): ToolPointerEvent {
-  return { cell: { x, y }, shiftKey: false, altKey: false, ctrlKey: false, button: 0, ...extra };
-}
+import { makeContext, makeFrame, ptr } from './testUtils';
 
 describe('GradientTool', () => {
   it('blends color -> secondaryColor linearly along the drag axis', () => {

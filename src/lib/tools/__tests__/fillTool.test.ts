@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createFillTool } from '../tools/fillTool';
-import { makeContext, makeFrame } from './testUtils';
-import type { ToolPointerEvent } from '../types';
-
-function ptr(x: number, y: number, extra: Partial<ToolPointerEvent> = {}): ToolPointerEvent {
-  return { cell: { x, y }, shiftKey: false, altKey: false, ctrlKey: false, button: 0, ...extra };
-}
+import { makeContext, makeFrame, ptr } from './testUtils';
 
 describe('FillTool', () => {
   it('floods a contiguous same-color region', () => {

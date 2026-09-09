@@ -1,4 +1,10 @@
-import type { ToolContext } from '../types';
+import type { ToolContext, ToolPointerEvent } from '../types';
+
+/** A pointer event at a cell, with no modifier held - `extra` overrides whichever parts a test cares
+ *  about (`ptr(3, 4, { shiftKey: true })`). */
+export function ptr(x: number, y: number, extra: Partial<ToolPointerEvent> = {}): ToolPointerEvent {
+  return { cell: { x, y }, shiftKey: false, altKey: false, ctrlKey: false, button: 0, ...extra };
+}
 
 /** A minimal in-memory frame + ToolContext for tool unit tests - a flat `string | null` grid, no DOM. */
 export function makeFrame(width: number, height: number, fill: (x: number, y: number) => string | null = () => null) {

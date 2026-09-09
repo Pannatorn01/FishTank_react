@@ -1,7 +1,8 @@
 import { bresenhamLine, inEllipseLocal } from '../../pixelMath';
-import type { Cell, SymmetryMode } from '../../types';
-import { mirrorPoints, withSelectionClip, type CellWriter } from '../paintPipeline';
+import type { Cell } from '../../types';
+import { withSelectionClip, type CellWriter } from '../paintPipeline';
 import { DirtyRectTracker } from '../dirtyRect';
+import { mirrorExpand, thickenPath } from '../cellGeometry';
 import type { Gesture, GestureResult, PaintOp, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '../types';
 
 type Shape = 'rect' | 'ellipse' | 'line';
@@ -28,38 +29,6 @@ export function constrainToAngle(start: Cell, end: Cell): Cell {
   const angle = Math.round(Math.atan2(dy, dx) / step) * step;
   const dist = Math.round(Math.hypot(dx, dy));
   return { x: start.x + Math.round(Math.cos(angle) * dist), y: start.y + Math.round(Math.sin(angle) * dist) };
-}
-
-/** Top-left-anchored square of side `brushSize` centered as closely as possible on (x, y) - ports
- *  `brushCellsAt` (usePixelEditor.ts:3276-3286, also duplicated in penTool.ts - small and stable
- *  enough that a shared import isn't worth it for two callers). */
-function brushCellsAt(x: number, y: number, brushSize: number): Cell[] {
-  if (brushSize <= 1) return [{ x, y }];
-  const off = Math.floor((brushSize - 1) / 2);
-  const cells: Cell[] = [];
-  for (let dy = 0; dy < brushSize; dy++) {
-    for (let dx = 0; dx < brushSize; dx++) cells.push({ x: x - off + dx, y: y - off + dy });
-  }
-  return cells;
-}
-
-/** Thickens a 1px path to `brushSize` by stamping `brushCellsAt` at every point and deduping - ports
- *  `thickenPath` (usePixelEditor.ts:3054-3068, also still used there directly by curve - kept on the
- *  engine for that, this is Line's own copy). */
-function thickenPath(points: Cell[], brushSize: number): Cell[] {
-  if (brushSize <= 1) return points;
-  const seen = new Set<string>();
-  const cells: Cell[] = [];
-  points.forEach((p) => {
-    brushCellsAt(p.x, p.y, brushSize).forEach((c) => {
-      const key = `${c.x},${c.y}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        cells.push(c);
-      }
-    });
-  });
-  return cells;
 }
 
 /** Ports the rect/ellipse/line branches of `computeShapeCells` (usePixelEditor.ts:3070-3110). */
@@ -94,25 +63,6 @@ function shapeCells(shape: Shape, start: Cell, end: Cell, brushSize: number, fil
     }
   }
   return cells;
-}
-
-/** Mirror-expands a cell list, deduped - ports `mirroredExpand` (usePixelEditor.ts:3255-3269). Shapes
- *  mirror the whole preview once up front (unlike Pen, which mirrors per brush-stamped point), so the
- *  commit step just writes the already-mirrored list through a selection-clip, no further mirroring. */
-function mirrorExpand(cells: Cell[], symmetry: SymmetryMode, axisX: number, axisY: number): Cell[] {
-  if (symmetry === 'none') return cells;
-  const seen = new Set<string>();
-  const out: Cell[] = [];
-  cells.forEach((c) => {
-    mirrorPoints(symmetry, axisX, axisY, c.x, c.y).forEach((m) => {
-      const key = `${m.x},${m.y}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push(m);
-      }
-    });
-  });
-  return out;
 }
 
 class ShapeGesture implements Gesture {
