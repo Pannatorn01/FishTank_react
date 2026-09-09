@@ -364,8 +364,34 @@ export class SyncEngine {
     const nothingNew = (tankRows ?? []).length === 0 && instances.length === 0 && groups.length === 0 && room.length === 0;
     if (nothingNew) return;
 
-    const localState = await this.local.loadTankState(tankId);
     const remoteTank = (tankRows ?? [])[0] as TankRow | undefined;
+
+    /**
+     * The tank was deleted on another device.
+     *
+     * Merging its contents back would be the wrong answer twice over: this device would keep showing a
+     * tank the account no longer has, and its next save would upload it again - undoing a deletion the
+     * user meant. So it goes here too, and the app is told to move to another tank.
+     *
+     * Unsaved local work is the one thing that outranks this, and it is handled where the app hears
+     * about the pull (useTank's ft:tank-synced listener reloads only when the tank is not dirty):
+     * someone actively working in a tank keeps what they have until they decide otherwise.
+     */
+    if (remoteTank && remoteTank.deleted_at > 0) {
+      try {
+        await this.local.deleteTank(tankId);
+      } catch (e) {
+        // Refused because it is the only tank this device has. Leaving it is the right outcome - an
+        // app with no tank has nowhere to put anything - and the mark below still advances, so this
+        // does not repeat every sync.
+        console.warn('a tank deleted elsewhere is the only one here, keeping it', e);
+      }
+      await this.local.setMetaValue(markTank(tankId), latestServerStamp(stamps, mark));
+      this.onPulled?.('tank');
+      return;
+    }
+
+    const localState = await this.local.loadTankState(tankId);
     const merged: TankState = {
       // Tank settings are one record, so they move as one: the newer of the two wins outright rather
       // than being blended field by field into a shape neither device ever had.

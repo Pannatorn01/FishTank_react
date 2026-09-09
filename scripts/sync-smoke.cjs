@@ -246,6 +246,54 @@ async function serverRows(token, path) {
   const realErrors = errors.filter((e) => !/favicon|Failed to load resource|net::ERR_INTERNET_DISCONNECTED/i.test(e));
   check('no unexpected console errors', realErrors.length === 0, realErrors.slice(0, 3).join(' // '));
 
+  // ---- 5. a second tank, and deleting it (plan P4-4) ---------------------------------
+  // The only path in the sync engine that carries a *deletion* of something the user made on purpose.
+  // A tank that merely stops being uploaded reads to another device as "not synced yet", so this has
+  // to arrive as a tombstone or the tank comes back.
+  const madeTank = await page.evaluate(async () => {
+    const mod = await import('/src/lib/data/index.ts');
+    const repo = mod.getRepos().tank;
+    const id = await repo.create('Probe second tank');
+    await repo.setCurrentId(id);
+    await repo.save(await repo.load(id), id);
+    await mod.getSync()?.syncNow();
+    return id;
+  });
+  await page.waitForTimeout(2500);
+
+  const tanksAfterCreate = await serverRows(token, 'tanks?select=id,name,deleted_at');
+  check('a second tank reaches the server', tanksAfterCreate.some((t) => t.id === madeTank), JSON.stringify(tanksAfterCreate.map((t) => t.name)));
+
+  await page.evaluate(async (id) => {
+    const mod = await import('/src/lib/data/index.ts');
+    await mod.getRepos().tank.delete(id);
+    await mod.getSync()?.syncNow();
+  }, madeTank);
+  await page.waitForTimeout(2500);
+
+  const tanksAfterDelete = await serverRows(token, 'tanks?select=id,deleted_at');
+  const deletedRow = tanksAfterDelete.find((t) => t.id === madeTank);
+  check('deleting a tank reaches the server as a tombstone', !!deletedRow && deletedRow.deleted_at > 0, JSON.stringify(tanksAfterDelete));
+  check('the other tank is untouched by the deletion', tanksAfterDelete.some((t) => t.id !== madeTank && t.deleted_at === 0), JSON.stringify(tanksAfterDelete));
+
+  // A device that had the deleted tank open must lose it too - otherwise it keeps showing a tank the
+  // account no longer has, and its next save uploads it again, undoing the deletion.
+  const elsewhere = await page2.evaluate(async (id) => {
+    const mod = await import('/src/lib/data/index.ts');
+    const repo = mod.getRepos().tank;
+    // Stand this device on the tank that was just deleted on the other one.
+    await repo.create('Keeper');
+    await repo.setCurrentId(id);
+    await mod.getSync()?.syncNow();
+    const tanks = await repo.list();
+    return { ids: tanks.map((t) => t.id), current: await repo.currentId() };
+  }, madeTank);
+  check('a tank deleted elsewhere disappears from this device too', !elsewhere.ids.includes(madeTank), JSON.stringify(elsewhere));
+  check('that device is moved onto a tank that still exists', elsewhere.ids.includes(elsewhere.current), JSON.stringify(elsewhere));
+
+  const outboxAfterDelete = await outboxSize(page);
+  check('the deletion drains from the outbox', outboxAfterDelete === 0, `outbox=${outboxAfterDelete}`);
+
   // ---- cleanup: remove everything these probe accounts created ----------------------
   for (const table of ['tank_instances', 'tank_groups', 'room_instances', 'tanks', 'sprites']) {
     await fetch(`${SUPA}/rest/v1/${table}?id=neq.__none__`, {
