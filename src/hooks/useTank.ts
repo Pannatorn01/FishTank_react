@@ -4,6 +4,7 @@ import { t } from '@/lib/i18n';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { SceneExport } from '@/tank/export/sceneExport';
 import { decayHunger, decayWaterLevel, growAlgae } from '@/tank/sim/vitals';
+import { computeSchoolSteer, type SchoolSteer } from '@/tank/sim/schooling';
 // Re-exported, not redefined: useTank.test.ts and the Life panel have always imported these two
 // from here.
 export { HUNGER_FULL_TO_EMPTY_MS, STARVATION_DEATH_MS } from '@/tank/sim/vitals';
@@ -2211,202 +2212,205 @@ export class TankEngine {
     return true;
   }
 
+  /**
+   * One frame of tank life, in the order the phases have to happen: the slow clocks first (they can
+   * kill a fish, which everything after has to see), then the things falling through the water, then
+   * the schooling targets - which are read by, and so must be computed before, the per-instance
+   * movement that closes the frame.
+   */
   private update(dt: number): void {
     if (!this.canvas || !this.hasSized) return;
+    const elapsedMs = dt * 1000;
 
-    this.tickHunger(dt * 1000);
-    this.tickWaterLevel(dt * 1000);
-    this.tickAlgae(dt * 1000, this.wasteItems.length);
+    this.tickHunger(elapsedMs);
+    this.tickWaterLevel(elapsedMs);
+    this.tickAlgae(elapsedMs, this.wasteItems.length);
     this.ensureAlgaePatches();
-    this.tickBreeding(dt * 1000);
+    this.tickBreeding(elapsedMs);
 
+    this.stepPredator();
+    this.stepFood(dt);
+    this.stepPooping();
+    this.stepWaste(dt);
+
+    const schoolSteer = computeSchoolSteer(this.instances);
+    this.instances.forEach((inst) => this.stepInstance(inst, dt, schoolSteer));
+  }
+
+  /** A predator's visit is over: it takes a fish with it, or leaves empty-handed. */
+  private stepPredator(): void {
     if (this.predator && Date.now() >= this.predator.expiresAt) {
       this.stealRandomFish();
       this.predator = null;
     }
+  }
 
-    if (this.foodItems.length) {
-      // Rests just above the sand strip fish can't swim into (see swimBoundsFor's own sandH) rather
-      // than at the tank's literal bottom edge - a pellet that sinks past where any fish can ever
-      // reach it (in the center-of-sprite sense update()'s food-seeking targets) would sit there
-      // uneaten forever, permanently stuck a few pixels out of reach.
-      const sandH = Math.max(18, this.canvas.height * 0.08);
-      const floorY = this.canvas.height - sandH - 16;
-      this.foodItems.forEach((food) => {
-        food.y = Math.min(floorY, food.y + food.vy * dt);
-      });
-    }
-
-    if (this.poopDueAt.size) {
-      const now = Date.now();
-      this.poopDueAt.forEach((dueAt, id) => {
-        if (now < dueAt) return;
-        this.poopDueAt.delete(id);
-        const inst = this.instances.find((i) => i.id === id);
-        // A fish that died or was removed between eating and pooping just quietly never poops -
-        // there's no fish left for the waste to have come from.
-        if (!inst || inst.dead) return;
-        const { pw, ph } = this.spritePx(this.spriteFor(inst));
-        this.wasteItems.push({ id: storage.uid('waste'), x: inst.x + pw / 2, y: inst.y + ph / 2, createdAt: now });
-      });
-    }
-
-    if (this.wasteItems.length) {
-      // Unlike food, nothing needs to reach waste, so it just settles at the tank's own floor rather
-      // than the fish-reachable band food is kept within.
-      const floorY = this.canvas.height - 10;
-      this.wasteItems.forEach((w) => {
-        w.y = Math.min(floorY, w.y + WASTE_FALL_SPEED * dt);
-      });
-    }
-
-    // Schooling: fish belonging to a user-made group (see TankGroup) flock together, whatever their
-    // species - the user picked those members deliberately via the marquee-select + Group action.
-    // Each group steers toward a common heading and a common vertical centroid instead of each fish
-    // wandering independently. Computed once per frame from last frame's positions; good enough
-    // since it's just a steering target. Decorations in the group simply never enter the fish branch
-    // below, so they're unaffected by schooling but still move together (see onCanvasPointerMove).
-    const schoolsByGroup = new Map<string, Instance[]>();
-    this.instances.forEach((inst) => {
-      if (inst.kind !== 'fish' || !inst.groupId || inst.isDragging) return;
-      const list = schoolsByGroup.get(inst.groupId);
-      if (list) list.push(inst);
-      else schoolsByGroup.set(inst.groupId, [inst]);
+  private stepFood(dt: number): void {
+    if (!this.foodItems.length || !this.canvas) return;
+    // Rests just above the sand strip fish can't swim into (see swimBoundsFor's own sandH) rather
+    // than at the tank's literal bottom edge - a pellet that sinks past where any fish can ever
+    // reach it (in the center-of-sprite sense the food-seeking below targets) would sit there
+    // uneaten forever, permanently stuck a few pixels out of reach.
+    const sandH = Math.max(18, this.canvas.height * 0.08);
+    const floorY = this.canvas.height - sandH - 16;
+    this.foodItems.forEach((food) => {
+      food.y = Math.min(floorY, food.y + food.vy * dt);
     });
-    const schoolSteer = new Map<string, { dir: 1 | -1; centerY: number }>();
-    schoolsByGroup.forEach((members, groupId) => {
-      if (members.length < 2) return;
-      const dir: 1 | -1 = members.reduce((sum, inst) => sum + inst.dir, 0) >= 0 ? 1 : -1;
-      const centerY = members.reduce((sum, inst) => sum + inst.y, 0) / members.length;
-      schoolSteer.set(groupId, { dir, centerY });
+  }
+
+  /** Turns the pellets eaten a while ago into waste, now that enough time has passed. */
+  private stepPooping(): void {
+    if (!this.poopDueAt.size) return;
+    const now = Date.now();
+    this.poopDueAt.forEach((dueAt, id) => {
+      if (now < dueAt) return;
+      this.poopDueAt.delete(id);
+      const inst = this.instances.find((i) => i.id === id);
+      // A fish that died or was removed between eating and pooping just quietly never poops - there's
+      // no fish left for the waste to have come from.
+      if (!inst || inst.dead) return;
+      const { pw, ph } = this.spritePx(this.spriteFor(inst));
+      this.wasteItems.push({ id: storage.uid('waste'), x: inst.x + pw / 2, y: inst.y + ph / 2, createdAt: now });
     });
+  }
 
-    this.instances.forEach((inst) => {
-      const sprite = this.spriteFor(inst);
-      if (!sprite) return;
+  private stepWaste(dt: number): void {
+    if (!this.wasteItems.length || !this.canvas) return;
+    // Unlike food, nothing needs to reach waste, so it just settles at the tank's own floor rather
+    // than the fish-reachable band food is kept within.
+    const floorY = this.canvas.height - 10;
+    this.wasteItems.forEach((w) => {
+      w.y = Math.min(floorY, w.y + WASTE_FALL_SPEED * dt);
+    });
+  }
 
-      // Old-age death (P5 §6 item 1, docs/PIXI_MIGRATION_PLAN.md) - a real wall-clock comparison, not
-      // a dt-accumulated timer, so a fish that aged past its lifespan while the app was closed is
-      // caught the moment it's next simulated rather than needing any offline catch-up logic (see the
-      // `bornAt` doc comment in types.ts).
-      if (inst.kind === 'fish' && !inst.dead && Date.now() - inst.bornAt >= inst.lifespanMs) {
-        inst.dead = true;
-        inst.diedAt = Date.now();
-        inst.groupId = null;
-        this.persist();
-      }
-      if (inst.kind === 'fish' && inst.dead) {
-        // Floats straight up to the surface and stays there - no swimming, no frame animation, no
-        // bobbing (frozen pose reads as "dead", not "resting"). Left in place horizontally rather than
-        // drifting, since there's no current in this tank to drift on. Removed entirely by the user
-        // clicking it (see onCanvasPointerDown), not by any timer here.
-        if (!inst.isDragging) {
-          const bounds = this.swimBoundsFor(inst);
-          const dy = bounds.yMin - inst.y;
-          if (Math.abs(dy) > 0.5) inst.y += Math.sign(dy) * Math.min(Math.abs(dy), 20 * dt);
-        }
-        return;
-      }
+  /** One instance's frame: aging and death, then animation, then - for a live fish that isn't being
+   *  dragged - swimming. */
+  private stepInstance(inst: Instance, dt: number, schoolSteer: Map<string, SchoolSteer>): void {
+    const sprite = this.spriteFor(inst);
+    if (!sprite) return;
 
-      inst.frameTimer += dt;
-      const frameInterval = (sprite.frameMs || storage.DEFAULT_FRAME_MS) / 1000;
-      if (inst.frameTimer >= frameInterval) {
-        inst.frameTimer = 0;
-        inst.frameIndex = (inst.frameIndex + 1) % sprite.frames.length;
-      }
-      if (inst.isDragging) return;
-      inst.bobPhase += dt * 2;
-      if (inst.kind === 'fish') {
-        if (inst.vy === undefined) inst.vy = 6 + Math.random() * 12;
-        if (inst.targetY === undefined) inst.targetY = this.randomTargetY(this.spritePx(sprite).ph);
-        if (inst.schoolOffsetY === undefined) inst.schoolOffsetY = (Math.random() - 0.5) * 40;
-
+    // Old-age death (P5 §6 item 1, docs/PIXI_MIGRATION_PLAN.md) - a real wall-clock comparison, not
+    // a dt-accumulated timer, so a fish that aged past its lifespan while the app was closed is
+    // caught the moment it's next simulated rather than needing any offline catch-up logic (see the
+    // `bornAt` doc comment in types.ts).
+    if (inst.kind === 'fish' && !inst.dead && Date.now() - inst.bornAt >= inst.lifespanMs) {
+      inst.dead = true;
+      inst.diedAt = Date.now();
+      inst.groupId = null;
+      this.persist();
+    }
+    if (inst.kind === 'fish' && inst.dead) {
+      // Floats straight up to the surface and stays there - no swimming, no frame animation, no
+      // bobbing (frozen pose reads as "dead", not "resting"). Left in place horizontally rather than
+      // drifting, since there's no current in this tank to drift on. Removed entirely by the user
+      // clicking it (see onCanvasPointerDown), not by any timer here.
+      if (!inst.isDragging) {
         const bounds = this.swimBoundsFor(inst);
-        let steer = inst.groupId ? schoolSteer.get(inst.groupId) : undefined;
-        let schooling = !!steer;
+        const dy = bounds.yMin - inst.y;
+        if (Math.abs(dy) > 0.5) inst.y += Math.sign(dy) * Math.min(Math.abs(dy), 20 * dt);
+      }
+      return;
+    }
 
-        // Hunger (P5 §6 item 2) takes priority over schooling - a hungry fish breaks formation to go
-        // eat rather than waiting for the whole group to drift past a pellet. Reaching the food is
-        // just steering `dir`/`targetY` toward it and letting the ordinary movement code below (same
-        // x/y-approach logic driving every other fish) carry it there - no separate movement path
-        // needed for "seeking".
-        let seekingFood = false;
-        if (this.foodItems.length) {
-          const { pw: fpw, ph: fph } = this.spritePx(sprite);
-          const cx = inst.x + fpw / 2;
-          const cy = inst.y + fph / 2;
-          const food = this.nearestFood(cx, cy);
-          if (food) {
-            const dist = Math.hypot(food.x - cx, food.y - cy);
-            if (dist <= FOOD_EAT_RADIUS) {
-              this.eatFood(inst, food.id);
-            } else {
-              steer = undefined;
-              schooling = false;
-              seekingFood = true;
-              // Hysteresis, not a straight "always face the food" - recomputing `dir` from scratch
-              // every frame flips it back and forth rapidly the moment the fish is hovering near the
-              // food's x (any tiny frame-to-frame jitter crosses back and forth over cx===food.x),
-              // which reads as a fast side-to-side shudder rather than swimming. Only correcting
-              // course once actually FOOD_SEEK_DEADZONE past the food lets the fish's current heading
-              // carry it through in one smooth diagonal pass - overshoot a little, then the normal
-              // wall-bounce/course-correct below turns it back - exactly the "dive in at an angle,
-              // swim back, repeat" pattern a real fish approaching food would show, not a vertical drop.
-              const dxToFood = food.x - cx;
-              if (Math.abs(dxToFood) > FOOD_SEEK_DEADZONE) inst.dir = dxToFood > 0 ? 1 : -1;
-              inst.targetY = Math.max(bounds.yMin, Math.min(bounds.yMax, food.y - fph / 2));
-            }
-          }
-        }
-        if (steer) {
-          inst.dir = steer.dir;
-          inst.targetY = Math.max(bounds.yMin, Math.min(bounds.yMax, steer.centerY + inst.schoolOffsetY));
-        }
+    inst.frameTimer += dt;
+    const frameInterval = (sprite.frameMs || storage.DEFAULT_FRAME_MS) / 1000;
+    if (inst.frameTimer >= frameInterval) {
+      inst.frameTimer = 0;
+      inst.frameIndex = (inst.frameIndex + 1) % sprite.frames.length;
+    }
+    if (inst.isDragging) return;
+    inst.bobPhase += dt * 2;
+    if (inst.kind === 'fish') {
+      if (inst.vy === undefined) inst.vy = 6 + Math.random() * 12;
+      if (inst.targetY === undefined) inst.targetY = this.randomTargetY(this.spritePx(sprite).ph);
+      if (inst.schoolOffsetY === undefined) inst.schoolOffsetY = (Math.random() - 0.5) * 40;
 
-        // Clamp first in case the zone shrank (or moved) since last frame and this fish is now
-        // outside it - otherwise it'd sail straight past the new wall before ever "bouncing".
-        inst.x = Math.min(Math.max(inst.x, bounds.xMin), bounds.xMax);
-        inst.x += inst.vx * inst.dir * dt;
-        if (inst.x <= bounds.xMin) {
-          inst.x = bounds.xMin;
-          inst.dir = 1;
-          if (!schooling && !seekingFood) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
-        }
-        if (inst.x >= bounds.xMax) {
-          inst.x = bounds.xMax;
-          inst.dir = -1;
-          if (!schooling && !seekingFood) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
-        }
+      const bounds = this.swimBoundsFor(inst);
+      let steer = inst.groupId ? schoolSteer.get(inst.groupId) : undefined;
+      let schooling = !!steer;
 
-        const dy = inst.targetY - inst.y;
-        if (Math.abs(dy) < 2) {
-          // Reaching the food's depth is not "arrived, pick something new" the way it is for an
-          // ordinary wandering fish - staying level with it (not re-randomizing away) is what lets
-          // the eat-radius check above actually connect the next time this fish's x sweeps back
-          // across the food's x, instead of the fish darting off to some unrelated new depth right
-          // as it gets close.
-          if (!schooling && !seekingFood) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
-        } else {
-          inst.y += Math.sign(dy) * Math.min(Math.abs(dy), inst.vy * dt);
-        }
-
-        // The rectangular `bounds` above (zone, sand strip, canvas edges) don't know about a
-        // non-rectangular tank shape's corner/edge cut - refine against it last so a fish heading
-        // into a rounded/oval corner bounces off the actual visible glass instead of swimming
-        // halfway into it. A no-op for 'rectangle' (clampCenterToShape degrades to the same edge
-        // clamp bounds already enforced), so skipped there to avoid the extra work every frame.
-        if (this.tankShape !== 'rectangle') {
-          const { pw, ph } = this.spritePx(sprite);
-          const refined = this.clampTopLeftToShape(inst.x, inst.y, pw, ph, this.canvas!.width, this.canvas!.height);
-          if (refined.moved) {
-            inst.x = refined.x;
-            inst.y = refined.y;
-            inst.dir = inst.dir === 1 ? -1 : 1;
-            if (!schooling) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
+      // Hunger (P5 §6 item 2) takes priority over schooling - a hungry fish breaks formation to go
+      // eat rather than waiting for the whole group to drift past a pellet. Reaching the food is
+      // just steering `dir`/`targetY` toward it and letting the ordinary movement code below (same
+      // x/y-approach logic driving every other fish) carry it there - no separate movement path
+      // needed for "seeking".
+      let seekingFood = false;
+      if (this.foodItems.length) {
+        const { pw: fpw, ph: fph } = this.spritePx(sprite);
+        const cx = inst.x + fpw / 2;
+        const cy = inst.y + fph / 2;
+        const food = this.nearestFood(cx, cy);
+        if (food) {
+          const dist = Math.hypot(food.x - cx, food.y - cy);
+          if (dist <= FOOD_EAT_RADIUS) {
+            this.eatFood(inst, food.id);
+          } else {
+            steer = undefined;
+            schooling = false;
+            seekingFood = true;
+            // Hysteresis, not a straight "always face the food" - recomputing `dir` from scratch
+            // every frame flips it back and forth rapidly the moment the fish is hovering near the
+            // food's x (any tiny frame-to-frame jitter crosses back and forth over cx===food.x),
+            // which reads as a fast side-to-side shudder rather than swimming. Only correcting
+            // course once actually FOOD_SEEK_DEADZONE past the food lets the fish's current heading
+            // carry it through in one smooth diagonal pass - overshoot a little, then the normal
+            // wall-bounce/course-correct below turns it back - exactly the "dive in at an angle,
+            // swim back, repeat" pattern a real fish approaching food would show, not a vertical drop.
+            const dxToFood = food.x - cx;
+            if (Math.abs(dxToFood) > FOOD_SEEK_DEADZONE) inst.dir = dxToFood > 0 ? 1 : -1;
+            inst.targetY = Math.max(bounds.yMin, Math.min(bounds.yMax, food.y - fph / 2));
           }
         }
       }
-    });
+      if (steer) {
+        inst.dir = steer.dir;
+        inst.targetY = Math.max(bounds.yMin, Math.min(bounds.yMax, steer.centerY + inst.schoolOffsetY));
+      }
+
+      // Clamp first in case the zone shrank (or moved) since last frame and this fish is now
+      // outside it - otherwise it'd sail straight past the new wall before ever "bouncing".
+      inst.x = Math.min(Math.max(inst.x, bounds.xMin), bounds.xMax);
+      inst.x += inst.vx * inst.dir * dt;
+      if (inst.x <= bounds.xMin) {
+        inst.x = bounds.xMin;
+        inst.dir = 1;
+        if (!schooling && !seekingFood) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
+      }
+      if (inst.x >= bounds.xMax) {
+        inst.x = bounds.xMax;
+        inst.dir = -1;
+        if (!schooling && !seekingFood) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
+      }
+
+      const dy = inst.targetY - inst.y;
+      if (Math.abs(dy) < 2) {
+        // Reaching the food's depth is not "arrived, pick something new" the way it is for an
+        // ordinary wandering fish - staying level with it (not re-randomizing away) is what lets
+        // the eat-radius check above actually connect the next time this fish's x sweeps back
+        // across the food's x, instead of the fish darting off to some unrelated new depth right
+        // as it gets close.
+        if (!schooling && !seekingFood) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
+      } else {
+        inst.y += Math.sign(dy) * Math.min(Math.abs(dy), inst.vy * dt);
+      }
+
+      // The rectangular `bounds` above (zone, sand strip, canvas edges) don't know about a
+      // non-rectangular tank shape's corner/edge cut - refine against it last so a fish heading
+      // into a rounded/oval corner bounces off the actual visible glass instead of swimming
+      // halfway into it. A no-op for 'rectangle' (clampCenterToShape degrades to the same edge
+      // clamp bounds already enforced), so skipped there to avoid the extra work every frame.
+      if (this.tankShape !== 'rectangle') {
+        const { pw, ph } = this.spritePx(sprite);
+        const refined = this.clampTopLeftToShape(inst.x, inst.y, pw, ph, this.canvas!.width, this.canvas!.height);
+        if (refined.moved) {
+          inst.x = refined.x;
+          inst.y = refined.y;
+          inst.dir = inst.dir === 1 ? -1 : 1;
+          if (!schooling) inst.targetY = this.randomTargetYInBounds(bounds.yMin, bounds.yMax);
+        }
+      }
+    }
   }
 
   /** Returns an offscreen canvas holding bgSprite painted at dw×dh (see the bgCache* fields' doc
