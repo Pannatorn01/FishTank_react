@@ -39,9 +39,12 @@ export function SharedTankView({ tankId, slug, onClose }: { tankId: string; slug
     }
   };
 
+  // No `setTank('loading')` here: App renders this with a key derived from tankId+slug, so opening a
+  // different shared tank remounts rather than reusing this one, and `tank` starts at 'loading' again
+  // on its own. Resetting it in the effect instead would paint one frame of the *previous* tank before
+  // correcting itself - the same mistake the tank-size fields had.
   useEffect(() => {
     let cancelled = false;
-    setTank('loading');
     void fetchSharedTank(tankId, slug)
       .then((result) => {
         if (!cancelled) setTank(result);

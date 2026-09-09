@@ -177,7 +177,15 @@ export default function App() {
       {shared ? (
         <main>
           <Suspense fallback={<p className="tab-panel-loading">{t('app.loading')}</p>}>
-            <SharedTankView tankId={shared.tankId} slug={shared.slug} onClose={closeShared} />
+            {/* Keyed so opening a different shared tank mounts a fresh view rather than reusing this
+                one - which is what lets SharedTankView start at 'loading' without resetting itself in
+                an effect (and showing the previous tank for a frame while it does). */}
+            <SharedTankView
+              key={`${shared.tankId}|${shared.slug ?? ''}`}
+              tankId={shared.tankId}
+              slug={shared.slug}
+              onClose={closeShared}
+            />
           </Suspense>
         </main>
       ) : (

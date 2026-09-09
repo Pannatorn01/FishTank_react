@@ -21,10 +21,16 @@ const entryId = (entry: GalleryTank) => entry.id;
  * shared directly with you land in exactly the same read-only view (SharedTankView).
  */
 export function TankGalleryDialog({ open, onClose, onError }: { open: boolean; onClose: () => void; onError: (msg: string) => void }) {
+  // Mounted only while open - see GalleryDialog for why.
+  if (!open) return null;
+  return <TankGalleryDialogBody onClose={onClose} onError={onError} />;
+}
+
+function TankGalleryDialogBody({ onClose, onError }: { onClose: () => void; onError: (msg: string) => void }) {
   const { t } = useLanguage();
   const { session, available } = useAuth();
 
-  const { items, more, loadMore } = useGalleryPage(open, listTankGallery, onError);
+  const { items, more, loadMore } = useGalleryPage(listTankGallery, onError);
   const report = useContentReport('tank', entryId, onError);
 
   if (!open) return null;

@@ -20,12 +20,19 @@ const entryId = (entry: GallerySprite) => entry.sprite.id;
  * reporting need an account, because both write something that has to belong to someone.
  */
 export function GalleryDialog({ open, onClose, onError }: { open: boolean; onClose: () => void; onError: (msg: string) => void }) {
+  // The body is mounted only while the dialog is open, so every visit starts from a clean listing
+  // and an empty 'already copied' set without anything having to reset itself.
+  if (!open) return null;
+  return <GalleryDialogBody onClose={onClose} onError={onError} />;
+}
+
+function GalleryDialogBody({ onClose, onError }: { onClose: () => void; onError: (msg: string) => void }) {
   const { t } = useLanguage();
   const { session, available } = useAuth();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [added, setAdded] = useState<Set<string>>(new Set());
 
-  const { items, more, loadMore } = useGalleryPage(open, listGallery, onError);
+  const { items, more, loadMore } = useGalleryPage(listGallery, onError);
   const report = useContentReport('sprite', entryId, onError);
 
   const fork = useCallback(

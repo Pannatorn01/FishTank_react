@@ -50,9 +50,11 @@ export function TankSharePanel({ engine }: { engine: TankEngine }) {
 
   const reload = useCallback(async () => {
     if (!tankId || !session) return;
-    setError(null);
     try {
       const state = await loadShareState(tankId);
+      // Cleared here rather than before the request: a previous error stays on screen until fresh data
+      // actually arrives, instead of blanking and then reappearing if the reload fails too.
+      setError(null);
       // No row on the server yet: this tank has only ever existed in this browser. Nothing is wrong,
       // there is simply nothing to share until it has been uploaded once.
       setShare(state ?? 'absent');
@@ -65,6 +67,9 @@ export function TankSharePanel({ engine }: { engine: TankEngine }) {
   }, [tankId, session]);
 
   useEffect(() => {
+    // Same as useGallery: the reads happen over the network and every setState in reload() is after
+    // an await. Nothing here runs synchronously during the effect.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void reload();
   }, [reload]);
 
