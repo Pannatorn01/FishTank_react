@@ -39,6 +39,7 @@ import { createSprayTool } from '@/lib/tools/tools/sprayTool';
 import { createCurveTool } from '@/lib/tools/tools/curveTool';
 import { polygonMask, resolveMarqueeMode, settleSelection, shiftMask } from '@/lib/tools/selectionMask';
 import { CanvasViewport, type ViewMetrics } from '@/lib/canvasViewport';
+import { AnimationPreview } from '@/lib/animationPreview';
 import { DEFAULT_PALETTE_COLORS, Palette } from '@/lib/palette';
 // Re-exported, not redefined: ColorPalette.tsx has always imported the presets from here.
 export { PRESET_PALETTES } from '@/lib/palette';
@@ -73,13 +74,6 @@ export const ONION_DEFAULT_OPACITY = 0.45;
 export const ONION_MIN_OPACITY = 0.1;
 const ONION_TINT_BEFORE = '#ff4d4d';
 const ONION_TINT_AFTER = '#4d94ff';
-const PREVIEW_CELL_PX_BASE = 96;
-/** Above this many cells, the preview panel stops repainting *during* a stroke and waits for the stroke
- *  to end (see schedulePreviewRepaint). A preview repaint costs a full compositeToBitmap over every
- *  layer at the sprite's native resolution - nothing on a 32x32 fish, but hundreds of ms on a
- *  background-sized canvas (see restartPreviewTimer's doc comment for that profile). Small sprites, the
- *  overwhelmingly common case here, still update live mid-stroke. */
-const PREVIEW_LIVE_CELL_LIMIT = 128 * 128;
 export const MAX_BRUSH_SIZE = 20;
 /** Tools that share the brush-size stepper (see CanvasStatusBar's `showBrushOptions` / PixelCanvas's
  *  brush-footprint preview) and one shared size (see brushSizes/brushSizeToolKey), so switching between
@@ -176,8 +170,8 @@ type Snapshot = HistorySnapshot;
 
 /** Exported for unit tests (src/hooks/__tests__/usePixelEditor.test.ts), the same way `TankEngine` is -
  *  app code gets its instance from the `usePixelEditor()` hook, never constructs one directly. Every
- *  DOM-touching method guards on a null `canvas`/`previewCanvas`, so a bare `new PixelEditorEngine()`
- *  is a usable headless engine. */
+ *  DOM-touching method - here and in the viewport/preview it owns - guards on a null canvas, so a bare
+ *  `new PixelEditorEngine()` is a usable headless engine. */
 export class PixelEditorEngine {
   canvas: HTMLCanvasElement | null = null;
   ctx: CanvasRenderingContext2D | null = null;
@@ -189,17 +183,22 @@ export class PixelEditorEngine {
     () => this.reactNotify()
   );
 
+  /** The looping animation panel beside the editor (src/lib/animationPreview.ts). It keeps its own
+   *  frame cursor - the point of the panel is to watch the animation run while editing one frame of
+   *  it - and needs to know when a stroke is in progress so it can stay out of the way on a large
+   *  canvas. */
+  private readonly preview = new AnimationPreview(
+    () => this.current,
+    () => this.painting
+  );
+
   /** The editor's color lists and their persistence (src/lib/palette.ts). */
   private readonly colors = new Palette(() => this.reactNotify());
 
-  previewCanvas: HTMLCanvasElement | null = null;
-  previewCtx: CanvasRenderingContext2D | null = null;
-  /** Scratch off-screen canvas for compositeToBitmap - reused (resized in place) across calls rather
-   *  than allocated fresh each time, since drawGrid() calls it on every pointer move while painting. */
-  private spriteBitmap: HTMLCanvasElement | null = null;
   /** Snapshot of everything except the in-flight move/resize/rotate preview, taken once when that
-   *  gesture starts (see cacheGestureBaseBitmap) - a separate canvas from spriteBitmap above, which
-   *  tickPreview() also writes to on its own timer and would otherwise race with a gesture in progress.
+   *  gesture starts (see cacheGestureBaseBitmap). Its own canvas, deliberately not shared with the one
+   *  AnimationPreview composites into: that one is repainted on its own timer, and sharing it would let
+   *  a preview tick scribble over a gesture in progress.
    *  drawGrid() blits this with one drawImage() on every pointer move during the gesture instead of
    *  re-running paintLayers() over every layer - the base scene hasn't changed (only the dragged
    *  region's on-screen position has), so redoing that full paint on every single move was the actual
@@ -298,9 +297,6 @@ export class PixelEditorEngine {
    *  'original' keeps their real colors and only fades them, which reads better on a sprite whose own
    *  palette is already red/blue heavy. */
   onionColorMode: OnionColorMode = 'tint';
-  /** Shows the composited preview tiled 3x3 instead of once, to spot seams on a 'background'-type
-   *  sprite meant to repeat (see tickPreview/PreviewPanel.tsx). */
-  tiledPreview = false;
   /** Shared brush size across BRUSH_SIZE_TOOLS (see brushSizeToolKey/BRUSH_SIZE_TOOLS), persisted so a
    *  size picked in one session survives a reload. */
   private brushSizes: Record<string, number> = {};
@@ -375,7 +371,6 @@ export class PixelEditorEngine {
   undoStack: HistoryEntry[] = [];
   redoStack: HistoryEntry[] = [];
   private historyPending: Snapshot | null = null;
-  previewFrame = 0;
   dirty = false;
   /** Set when the very first write to localStorage failed, i.e. nothing this session can be persisted.
    *  The editor stays fully usable (drawing is all in memory) - the UI just warns that work will not
@@ -388,11 +383,6 @@ export class PixelEditorEngine {
   /** Bumped only when a *different* sprite becomes current (new/load), never on save-in-place. */
   loadToken = 0;
 
-  private previewTimer: ReturnType<typeof setInterval> | null = null;
-  /** Set by schedulePreviewRepaint whenever the sprite's pixels change, cleared once the pending rAF
-   *  actually repaints - see that method for why the repaint is deferred to a frame boundary. */
-  private previewDirty = false;
-  private previewRepaintRafId: number | null = null;
   private reactNotify: () => void = () => {};
   private notifyRafId: number | null = null;
   private windowListeners: Array<() => void> = [];
@@ -421,7 +411,7 @@ export class PixelEditorEngine {
     };
     this.centerSymmetryAxis();
 
-    this.restartPreviewTimer();
+    this.preview.restart();
 
     const endGesture = () => this.onPointerUp();
     const forceEndGesture = () => {
@@ -541,11 +531,7 @@ export class PixelEditorEngine {
   }
 
   destroy(): void {
-    if (this.previewTimer) clearInterval(this.previewTimer);
-    if (this.previewRepaintRafId !== null) {
-      cancelAnimationFrame(this.previewRepaintRafId);
-      this.previewRepaintRafId = null;
-    }
+    this.preview.destroy();
     if (this.gestureTimer) clearInterval(this.gestureTimer);
     // Reset to null, not just cancelled - React 18 StrictMode's dev-mode double-invoke (mount →
     // cleanup → mount again) means a fresh init() can follow this destroy() in the same tick. Its
@@ -562,8 +548,8 @@ export class PixelEditorEngine {
 
   private refresh(): void {
     this.drawGrid();
-    this.syncPreviewTimer();
-    this.schedulePreviewRepaint();
+    this.preview.syncTimer();
+    this.preview.scheduleRepaint();
     this.reactNotify();
   }
 
@@ -578,12 +564,7 @@ export class PixelEditorEngine {
   }
 
   attachPreviewCanvas(el: HTMLCanvasElement | null): void {
-    const isNew = el !== null && el !== this.previewCanvas;
-    this.previewCanvas = el;
-    this.previewCtx = el ? el.getContext('2d') : null;
-    // A freshly attached canvas is blank until something paints it, and for a single-frame sprite no
-    // timer ever will - paint it once here so the panel isn't empty until the first edit.
-    if (isNew) this.paintPreview();
+    this.preview.attach(el);
   }
 
   setActive(active: boolean): void {
@@ -790,12 +771,16 @@ export class PixelEditorEngine {
     });
   }
 
+  get tiledPreview(): boolean {
+    return this.preview.tiled;
+  }
+
   setTiledPreview(v: boolean): void {
-    this.tiledPreview = v;
+    this.preview.tiled = v;
     // Repainted explicitly: this toggle changes how the preview is drawn without changing a single
     // pixel of the sprite, so none of the content-change paths that call schedulePreviewRepaint()
     // (refresh/redrawRegions) run for it.
-    this.paintPreview();
+    this.preview.paint();
     this.reactNotify();
   }
 
@@ -2335,7 +2320,7 @@ export class PixelEditorEngine {
     } else if (result.dirtyRects.length) {
       this.redrawRegions(result.dirtyRects);
     } else {
-      this.flushPreviewRepaint();
+      this.preview.flush();
       this.reactNotify();
     }
   }
@@ -2523,7 +2508,7 @@ export class PixelEditorEngine {
     // drawing tool commits through `activeGesture` above. Nothing here touches a pixel; the deferred
     // preview repaint that schedulePreviewRepaint() skips mid-stroke on a large sprite gets to run.
     this.eraseOverride = false;
-    this.flushPreviewRepaint();
+    this.preview.flush();
     this.reactNotify();
   }
 
@@ -2677,7 +2662,7 @@ export class PixelEditorEngine {
         if (c.x >= 0 && c.y >= 0 && c.x < width && c.y < height) ctx.fillRect(c.x, c.y, 1, 1);
       });
     }
-    this.schedulePreviewRepaint();
+    this.preview.scheduleRepaint();
     this.reactNotify();
   }
 
@@ -2723,31 +2708,6 @@ export class PixelEditorEngine {
 
   // --- rendering ---
 
-  /** Composites layers at their native, unscaled 1px-per-cell resolution onto a reused off-screen
-   *  canvas - used only by tickPreview() now (a small, fixed-size preview panel that isn't a hot
-   *  path), which still needs a scale-up blit since its own canvas is a different, unrelated size
-   *  from the sprite. The main editing canvas doesn't need this indirection any more: it's now
-   *  native-resolution itself (see recomputeCanvasSize), so drawGrid() paints directly onto it. */
-  private compositeToBitmap(layers: Layer[], width: number, height: number, alphaMultiplier = 1): HTMLCanvasElement {
-    if (!this.spriteBitmap) this.spriteBitmap = document.createElement('canvas');
-    const bmp = this.spriteBitmap;
-    if (bmp.width !== width || bmp.height !== height) {
-      bmp.width = width;
-      bmp.height = height;
-    }
-    const bctx = bmp.getContext('2d')!;
-    bctx.clearRect(0, 0, width, height);
-    paintLayers(bctx, layers, width, height, 1, alphaMultiplier);
-    return bmp;
-  }
-
-  /** Paints only the sprite content, at native 1px-per-cell resolution (this <canvas> is exactly
-   *  width×height pixels - see recomputeCanvasSize). Grid lines, symmetry guides, the selection-draft
-   *  marquee, and the curve control handle used to be drawn here too, but at native resolution
-   *  there's no room to draw a hairline *between* cells or a fixed-size handle glyph - they're a DOM
-   *  overlay now (PixelSelectionOverlay.tsx), which also means their live updates during a drag now
-   *  need a reactNotify()/refresh() to reach that overlay - see the pointer handlers that touch
-   *  selectionDraft/curveControl for where that was added. */
   /** Composites one onion-skin frame onto the reused onionBitmap scratch canvas and blits it onto
    *  `targetCtx` at `alpha`. `tintColor` recolors it first (via 'source-atop', which only touches
    *  already-opaque pixels, leaving transparent ones transparent) - null keeps the frame's own colors,
@@ -2895,120 +2855,14 @@ export class PixelEditorEngine {
     }
   }
 
-  /**
-   * Re-armed whenever the current sprite's frameMs changes, or a different sprite becomes current.
-   * Renders once immediately (so the thumbnail reflects the new sprite right away instead of waiting
-   * up to frameMs for the first tick) and only schedules repeat ticks when there's more than one frame
-   * to animate between - a single-frame sprite's composited bitmap can never change, so ticking it
-   * anyway was pure waste. That waste wasn't just cosmetic: tickPreview composites the sprite at full
-   * resolution (see compositeToBitmap/paintLayers) regardless of the small 160x160 thumbnail it's drawn
-   * into, so on a large single-frame 'background' sprite (up to 1400x900 - the common case, since a
-   * background is rarely animated) each tick cost ~1750ms on a 3-layer checkerboard-content canvas -
-   * longer than the default 350ms tick period itself, so the timer was re-firing back-to-back
-   * essentially continuously, starving the main thread for as long as that sprite stayed open for
-   * editing (independent of anything else this file does - discovered profiling shape preview/undo-redo
-   * on exactly this kind of sprite, where it made even unrelated, otherwise-instant calls crawl).
-   */
-  private restartPreviewTimer(): void {
-    if (this.previewTimer) clearInterval(this.previewTimer);
-    this.previewTimer = null;
-    // paintPreview(), not tickPreview(): restarting the timer (changing speed, adding a frame, loading
-    // a sprite) shouldn't itself advance the animation by one frame.
-    this.paintPreview();
-    if (this.current.frames.length > 1) {
-      this.previewTimer = setInterval(() => this.tickPreview(), this.current.frameMs);
-    }
-  }
-
   setFrameSpeed(fps: number): void {
     const clampedFps = Math.min(storage.MAX_FRAME_FPS, Math.max(storage.MIN_FRAME_FPS, fps));
     const frameMs = Math.round(1000 / clampedFps);
     if (frameMs === this.current.frameMs) return;
     this.pushUndo();
     this.current.frameMs = frameMs;
-    this.restartPreviewTimer();
+    this.preview.restart();
     this.refresh();
-  }
-
-  /** Advances to the next frame, then paints it - the animation timer's tick (see
-   *  restartPreviewTimer). Painting the frame that's already showing is paintPreview()'s job, not this
-   *  one's: they used to be a single method, which is why a single-frame sprite (no timer, so nothing
-   *  ever called it) showed a preview that never updated no matter how much was drawn. */
-  private tickPreview(): void {
-    if (!this.previewCanvas || !this.previewCtx) return;
-    this.previewFrame = (this.previewFrame + 1) % this.current.frames.length;
-    this.paintPreview();
-  }
-
-  /**
-   * Repaints the preview panel with whatever frame it's currently showing, at most once per animation
-   * frame. Called on every content change (see refresh/redrawRegions), which during a fast stroke means
-   * many times between two browser paints - hence the dirty flag instead of painting inline.
-   *
-   * On a large canvas the repaint itself is the expensive part (a full compositeToBitmap over every
-   * layer - see PREVIEW_LIVE_CELL_LIMIT), so past that size it's held back until the stroke finishes
-   * rather than competing with the drawing it's meant to be previewing; onPointerUp re-schedules, so
-   * the deferred repaint still lands the moment the gesture ends.
-   */
-  private schedulePreviewRepaint(): void {
-    if (!this.previewCanvas || !this.previewCtx) return;
-    this.previewDirty = true;
-    if (this.previewRepaintRafId !== null) return;
-    this.previewRepaintRafId = requestAnimationFrame(() => {
-      this.previewRepaintRafId = null;
-      if (!this.previewDirty) return;
-      if (this.painting && this.current.width * this.current.height > PREVIEW_LIVE_CELL_LIMIT) return;
-      this.previewDirty = false;
-      this.paintPreview();
-    });
-  }
-
-  /** Starts or stops the animation timer so it always matches the current frame count. Checked on every
-   *  refresh() rather than from each of addFrame/dupFrame/delFrame/moveFrame: those four all reach
-   *  refresh(), and none of them used to restart the timer, so adding a 2nd frame to a single-frame
-   *  sprite left the preview frozen on frame 1 forever - it animated only if some *other* action (a
-   *  speed change, a reload) happened to restart the timer afterwards. Comparing against the timer's
-   *  own existence makes this idempotent, so the common no-op refresh costs one comparison. */
-  private syncPreviewTimer(): void {
-    if (this.current.frames.length > 1 === (this.previewTimer !== null)) return;
-    this.restartPreviewTimer();
-  }
-
-  /** Re-arms a preview repaint that schedulePreviewRepaint() skipped because a stroke was in progress
-   *  - a no-op when nothing has actually changed, so ending a gesture that painted nothing (a stray
-   *  click, a cancelled shape) doesn't cost a full recomposite on a large sprite. */
-  private flushPreviewRepaint(): void {
-    if (this.previewDirty) this.schedulePreviewRepaint();
-  }
-
-  private paintPreview(): void {
-    if (!this.previewCanvas || !this.previewCtx) return;
-    const frames = this.current.frames;
-    // Clamped rather than assumed in range: frames can shrink under the preview (deleting a frame, or
-    // loading a shorter sprite) between one paint and the next.
-    if (this.previewFrame >= frames.length) this.previewFrame = 0;
-    const { width, height } = this.current;
-    const cellPx = PREVIEW_CELL_PX_BASE / Math.max(width, height);
-    const ctx = this.previewCtx;
-    ctx.clearRect(0, 0, this.previewCanvas.width, this.previewCanvas.height);
-    ctx.imageSmoothingEnabled = false;
-    const bmp = this.compositeToBitmap(frames[this.previewFrame], width, height);
-    if (this.tiledPreview) {
-      const tileCellPx = cellPx / 3;
-      const tileW = width * tileCellPx;
-      const tileH = height * tileCellPx;
-      for (let ty = -1; ty <= 1; ty++) {
-        for (let tx = -1; tx <= 1; tx++) {
-          const dx = this.previewCanvas.width / 2 + tx * tileW - tileW / 2;
-          const dy = this.previewCanvas.height / 2 + ty * tileH - tileH / 2;
-          ctx.drawImage(bmp, 0, 0, width, height, dx, dy, tileW, tileH);
-        }
-      }
-      return;
-    }
-    const dx = (this.previewCanvas.width - width * cellPx) / 2;
-    const dy = (this.previewCanvas.height - height * cellPx) / 2;
-    ctx.drawImage(bmp, 0, 0, width, height, dx, dy, width * cellPx, height * cellPx);
   }
 
   // --- undo/redo ---
@@ -3051,7 +2905,7 @@ export class PixelEditorEngine {
     this.activeLayerIndex = Math.min(s.activeLayerIndex, this.current.frames[this.frameIndex].length - 1);
     this.resetTransientAfterHistory();
     this.recomputeCanvasSize();
-    this.restartPreviewTimer();
+    this.preview.restart();
   }
 
   pushUndo(): void {
@@ -3120,7 +2974,7 @@ export class PixelEditorEngine {
     this.activeLayerIndex = Math.min(entry.activeLayerIndex, layers.length - 1);
     applyRegion(layers, entry.box, this.current.width, dir === 'inverse' ? entry.before : entry.after);
     this.resetTransientAfterHistory();
-    this.restartPreviewTimer();
+    this.preview.restart();
     this.redrawRegions([entry.box]);
   }
 
@@ -3208,7 +3062,7 @@ export class PixelEditorEngine {
     this.current = sprite;
     this.frameIndex = 0;
     this.activeLayerIndex = 0;
-    this.previewFrame = 0;
+    this.preview.frame = 0;
     this.selection = null;
     this.lassoPoints = null;
     this.selectionMask = null;
@@ -3224,7 +3078,7 @@ export class PixelEditorEngine {
     this.loadToken += 1;
     this.centerSymmetryAxis();
     this.recomputeCanvasSize();
-    this.restartPreviewTimer();
+    this.preview.restart();
     this.refresh();
   }
 
