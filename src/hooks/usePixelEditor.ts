@@ -38,6 +38,10 @@ import { createGradientTool, gradientT } from '@/lib/tools/tools/gradientTool';
 import { createSprayTool } from '@/lib/tools/tools/sprayTool';
 import { createCurveTool } from '@/lib/tools/tools/curveTool';
 import { polygonMask, resolveMarqueeMode, settleSelection, shiftMask } from '@/lib/tools/selectionMask';
+import { CanvasViewport, type ViewMetrics } from '@/lib/canvasViewport';
+// Re-exported rather than redefined: the zoom presets belong to the viewport now, and
+// CanvasStatusBar.tsx has always imported them from here.
+export { ZOOM_LEVELS } from '@/lib/canvasViewport';
 import { rotatedMask, rotatedRegionCells, resizedBox, scaledRegionCells, type ColoredCell } from '@/lib/selectionTransform';
 import type { Gesture, GestureResult, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '@/lib/tools/types';
 import type {
@@ -71,27 +75,6 @@ export const DEFAULT_PALETTE_COLORS = [
 
 const FRAME_LIMIT = 15;
 const LAYER_LIMIT = storage.LAYER_LIMIT;
-const BASE_CELL_PX = 16;
-/** Quick-pick presets for the zoom field's dropdown - purely UI shortcuts now, not the internal
- *  representation of zoom (see zoomScale/setZoom): zoom is a continuous float that can land anywhere,
- *  including values none of these name. */
-export const ZOOM_LEVELS = [0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 5, 8];
-export const MIN_ZOOM_SCALE = 0.05;
-export const MAX_ZOOM_SCALE = 32;
-/** Caps a zoomed-in canvas's on-screen (CSS) size, regardless of the sprite's own dimensions - see
- *  maxZoomScale. Large enough to let a small sprite zoom in a lot, small enough that scrolling a
- *  zoomed-in huge canvas doesn't hand the browser an absurdly large layout box. */
-const MAX_RENDERED_CANVAS_PX = 8000;
-/** Multiplicative step for the zoom +/- buttons and the base of the scroll-wheel zoom curve (see
- *  PixelCanvas.tsx) - a ratio, not a fixed amount, so a step feels proportionate at any zoom level
- *  (50%→60% and 400%→480% are both "one click") instead of mattering a lot at low zoom and nothing at
- *  high zoom the way a fixed +0.1 would. */
-export const ZOOM_BUTTON_STEP = 1.2;
-/** How much of the canvas must stay inside .pixel-canvas-wrap after any pan (screen px, per axis) -
- *  or the whole canvas, when it's smaller than that. Panning is otherwise free-form (no scroll
- *  container clamps it any more, see clampPan), and without a stop the canvas can be flung out of
- *  view entirely with nothing on screen to say where it went. */
-const PAN_EDGE_MARGIN_PX = 56;
 /** Onion skin: most frames shown per direction, and the nearest frame's default alpha. */
 export const ONION_MAX_DEPTH = 3;
 export const ONION_DEFAULT_OPACITY = 0.45;
@@ -206,6 +189,14 @@ type Snapshot = HistorySnapshot;
 export class PixelEditorEngine {
   canvas: HTMLCanvasElement | null = null;
   ctx: CanvasRenderingContext2D | null = null;
+  /** Zoom, pan and the canvas element's on-screen size (src/lib/canvasViewport.ts). Reads the
+   *  sprite's dimensions through a callback rather than being handed them, since the sprite can be
+   *  resized or replaced underneath it. */
+  private readonly viewport = new CanvasViewport(
+    () => ({ width: this.current.width, height: this.current.height }),
+    () => this.reactNotify()
+  );
+
   previewCanvas: HTMLCanvasElement | null = null;
   previewCtx: CanvasRenderingContext2D | null = null;
   /** Scratch off-screen canvas for compositeToBitmap - reused (resized in place) across calls rather
@@ -367,31 +358,6 @@ export class PixelEditorEngine {
   gradientStart: Cell | null = null;
   gradientEnd: Cell | null = null;
   gradientPreview: ColoredCell[] | null = null;
-  /** Continuous zoom factor (1 = 100%) - not locked to ZOOM_LEVELS's fixed steps, which remain only as
-   *  quick-pick presets in the status bar. Clamped to [minZoomScale(), maxZoomScale()] by setZoom;
-   *  also set directly (via defaultZoomForSize) wherever the canvas's own width/height changes -
-   *  resize, trim, or loading/creating/importing a sprite - since a zoom level picked for one sprite's
-   *  dimensions can otherwise overflow .pixel-canvas-wrap for a differently-sized one it carries over
-   *  to, with no visible sign beyond a stray scrollbar (place-items:center hides the clipped edges). */
-  zoomScale = 1;
-  /** The view offset (screen px), applied as a transform on .pixel-canvas-inner on top of the CSS
-   *  centering .pixel-canvas-wrap gives it. This is now the *only* way the view moves: the wrap used to
-   *  be overflow:auto and pan was split between native scrollLeft/scrollTop and this transform, which
-   *  meant a scrollbar appearing or disappearing mid-stroke resized the wrap's content box and visibly
-   *  jumped the canvas out from under the cursor. The wrap is overflow:hidden now (see index.css) and
-   *  every pan - hand-drag, wheel, scrollbar, zoom anchoring - goes through panBy/clampPan instead, so
-   *  nothing about the view depends on layout that can change while drawing. Reset to 0 wherever the
-   *  view should snap back to a plain default (zoomToFit, a resized canvas, a different sprite) rather
-   *  than carry over a stale offset from whatever was on screen before. */
-  panX = 0;
-  panY = 0;
-  /** The pan currently written into .pixel-canvas-inner's transform, which is what the canvas's measured
-   *  rect reflects. Distinct from panX/panY, which are already the *next* value by the time clampPan
-   *  measures: subtracting the new pan from a rect still showing the old one made viewMetrics' `restX`
-   *  drift by exactly one pan step, so a fast drag stopped short of the real clamp. Only applyPanToDom
-   *  writes these, and it's the only thing that writes the transform. */
-  private appliedPanX = 0;
-  private appliedPanY = 0;
   /** True for the duration of a middle-mouse-button drag, panning the view via the wrap's native scroll
    *  regardless of the active tool - see onPointerDown/Move/Up. Deliberately doesn't reuse `painting`
    *  (and isn't itself gated by it): this needs to work mid-stroke, mid-shape-drag, etc. without
@@ -616,6 +582,7 @@ export class PixelEditorEngine {
   attachCanvas(el: HTMLCanvasElement | null): void {
     this.canvas = el;
     this.ctx = el ? el.getContext('2d') : null;
+    this.viewport.attach(this.canvas, this.ctx);
     if (el) {
       this.recomputeCanvasSize();
       this.drawGrid();
@@ -635,63 +602,40 @@ export class PixelEditorEngine {
     this.active = active;
   }
 
-  effectiveCellPx(): number {
-    return BASE_CELL_PX * this.zoomScale;
+  // How much of the sprite is on screen, and where. Zoom, pan and the canvas element's own CSS
+  // size live in src/lib/canvasViewport.ts, which knows nothing about pixels, layers or frames.
+  // The delegating members below are the names the editor components already call.
+
+  get zoomScale(): number {
+    return this.viewport.scale;
   }
 
-  /** A canvas's max zoom scales down as its own dimensions grow, so the on-screen size (width×cellPx)
-   *  never blows past a sane pixel count regardless of how large the sprite is - a tiny sprite can
-   *  zoom in much further (up to MAX_ZOOM_SCALE) than a background-sized one. Never below 4x even for
-   *  a canvas at MAX_BACKGROUND_GRID_SIZE, so "zoom in" is never fully dead on a huge canvas. */
+  get panX(): number {
+    return this.viewport.panX;
+  }
+
+  get panY(): number {
+    return this.viewport.panY;
+  }
+
+  effectiveCellPx(): number {
+    return this.viewport.cellPx();
+  }
+
   maxZoomScale(): number {
-    const maxDim = Math.max(this.current.width, this.current.height);
-    return Math.max(4, Math.min(MAX_ZOOM_SCALE, MAX_RENDERED_CANVAS_PX / (maxDim * BASE_CELL_PX)));
+    return this.viewport.maxScale();
   }
 
   minZoomScale(): number {
-    return MIN_ZOOM_SCALE;
+    return this.viewport.minScale();
   }
 
   recomputeCanvasSize(): void {
-    if (!this.canvas) return;
-    const { width, height } = this.current;
-    // The canvas's own bitmap is native resolution - exactly 1 pixel per cell (e.g. 1400×900, not
-    // 1400×900 *cellPx*) - with CSS doing the zoom (updateCanvasCssSize, plus .pixelated's
-    // image-rendering: pixelated for a crisp, un-blurred scale-up). Zooming or scrolling a huge
-    // canvas is then a free GPU compositor operation, not a JS re-render: the old approach (bitmap
-    // sized to width*cellPx) meant a background-sized canvas at typical zoom was allocating tens of
-    // millions of physical pixels, all of which had to be re-cleared and re-blitted on every single
-    // pointer move while painting - that's what made painting on a large canvas visibly lag. Grid
-    // lines, symmetry guides, the selection-draft marquee, and the curve control handle all moved to
-    // a DOM overlay (PixelSelectionOverlay.tsx) as a consequence: at 1px-per-cell there's no room to
-    // draw a hairline *between* cells, or a fixed-size (e.g. 6px) handle glyph, on this canvas itself.
-    // Skipped when the sprite's own dimensions haven't changed (see setZoom) - assigning canvas.width/
-    // height always resets the bitmap to transparent regardless of whether the value actually differs,
-    // so doing it on every zoom tick would force a full repaint for a change that never touches a
-    // single pixel of actual content, only the CSS scale.
-    if (this.canvas.width !== width || this.canvas.height !== height) {
-      this.canvas.width = width;
-      this.canvas.height = height;
-      // Resizing width/height (above) resets all context state, including this - must be re-applied
-      // every time, not just once at creation.
-      if (this.ctx) this.ctx.imageSmoothingEnabled = false;
-    }
-    this.updateCanvasCssSize();
-  }
-
-  /** Just the on-screen (CSS) size - the half of recomputeCanvasSize that a pure zoom change (sprite
-   *  dimensions unchanged) actually needs, without also touching (and clearing) the canvas bitmap. */
-  private updateCanvasCssSize(): void {
-    if (!this.canvas) return;
-    const { width, height } = this.current;
-    const cellPx = this.effectiveCellPx();
-    this.canvas.style.width = `${width * cellPx}px`;
-    this.canvas.style.height = `${height * cellPx}px`;
-    this.canvas.style.backgroundSize = `${cellPx * 2}px ${cellPx * 2}px`;
+    this.viewport.syncCanvasSize();
   }
 
   zoomLabel(): string {
-    return `${Math.round(this.zoomScale * 100)}%`;
+    return this.viewport.label();
   }
 
   canUndo(): boolean {
@@ -1049,204 +993,36 @@ export class PixelEditorEngine {
     this.reactNotify();
   }
 
-  /**
-   * Sets a new continuous zoom scale, clamped to [minZoomScale(), maxZoomScale()] - the single place
-   * that ever changes zoomScale. When `anchor` (client coords, e.g. the cursor position) is given, the
-   * content point under it is kept at the same screen position ("zoom to cursor") by measuring where
-   * that point actually rendered before and after the resize, then correcting the gap through panX/panY
-   * (see absorbPanCorrection) - the transform on .pixel-canvas-inner that is now the only thing moving
-   * the view. Measuring the canvas's actual rendered rect, rather than computing where it "should" be,
-   * means this stays correct whether the current position comes from CSS centering, a prior pan, or
-   * both: getBoundingClientRect() always reports the final on-screen result of everything together.
-   *
-   * Deliberately does NOT call recomputeCanvasSize()/drawGrid(): a zoom change never touches the
-   * sprite's own dimensions or pixel content, only how large it's drawn on screen and where the DOM
-   * selection/grid overlay (which reads effectiveCellPx() at React render time) sits - so only the CSS
-   * size, the pan correction, and a reactNotify() are needed, not a full canvas-bitmap reset and repaint.
-   * That distinction is what keeps continuous scroll-zoom smooth: see PixelCanvas.tsx's wheel handler,
-   * the only caller that can invoke this many times in a single animation frame.
-   */
   setZoom(scale: number, anchor?: { clientX: number; clientY: number }): void {
-    const clamped = Math.min(this.maxZoomScale(), Math.max(this.minZoomScale(), scale));
-    if (clamped === this.zoomScale) return;
-    const rectBefore = anchor && this.canvas ? this.canvas.getBoundingClientRect() : null;
-    this.zoomScale = clamped;
-    this.updateCanvasCssSize();
-    if (rectBefore && anchor && this.canvas && rectBefore.width > 0 && rectBefore.height > 0) {
-      // Where the cursor sits as a fraction across the canvas's old on-screen box - fraction, not an
-      // absolute cell/px position, so it's meaningful before and after the size actually changes.
-      const fracX = (anchor.clientX - rectBefore.left) / rectBefore.width;
-      const fracY = (anchor.clientY - rectBefore.top) / rectBefore.height;
-      const rectAfter = this.canvas.getBoundingClientRect();
-      const naturalX = rectAfter.left + fracX * rectAfter.width;
-      const naturalY = rectAfter.top + fracY * rectAfter.height;
-      // That same fraction now naturally renders at (naturalX, naturalY) - wherever CSS centering/
-      // scroll/the previous panX,panY happened to land it - which has drifted from the cursor by
-      // exactly (naturalX - anchor.clientX, naturalY - anchor.clientY); absorbPanCorrection closes that
-      // gap.
-      this.absorbPanCorrection(naturalX - anchor.clientX, naturalY - anchor.clientY);
-    }
-    this.reactNotify();
+    this.viewport.setScale(scale, anchor);
   }
 
-  /**
-   * Applies a (dx, dy) screen-px correction - "content needs to shift left/up by this much to bring the
-   * zoom anchor back under the cursor" - straight to panX/panY, then clamps.
-   *
-   * This used to be far more involved: with the wrap as an overflow:auto scroll container it had to
-   * decide, per axis, whether to spend the correction on native scrollLeft/scrollTop or on the
-   * transform, because CSS grid centering pins scroll at 0 whenever the canvas fits, while a transform
-   * and native scroll both inflate a scroll container's overflow area independently and the browser
-   * reconciles neither - two separate feedback loops that each produced real anchor drift. Making the
-   * wrap overflow:hidden and moving the view entirely into the transform (see panX/panY) deletes both
-   * problems rather than balancing them.
-   */
-  private absorbPanCorrection(dx: number, dy: number): void {
-    this.panX -= dx;
-    this.panY -= dy;
-    this.clampPan();
-    this.applyPanToDom();
+  viewMetrics(): ViewMetrics | null {
+    return this.viewport.metrics();
   }
 
-  /**
-   * Wrap (viewport) and canvas geometry that the pan clamp and the overlay scrollbars both work from,
-   * all in the wrap's padding-box coordinates. `restX`/`restY` are where the canvas's top-left corner
-   * sits with pan at 0 - measured (current rect minus the pan currently in the transform), not derived
-   * from the CSS.
-   *
-   * Measured because deriving it is wrong in exactly the case that matters: .pixel-canvas-wrap centers
-   * with grid `place-items: center`, which suggests an oversized canvas rests at (wrapW - canvasW) / 2,
-   * overflowing equally on both sides. It doesn't - a grid item larger than its area resolves to the
-   * content box's start edge instead, so its resting offset is 0, not a large negative number. Assuming
-   * the centered value made the pan clamp wrong by exactly that difference in *opposite* directions on
-   * the two edges: one direction stopped while the canvas still filled the whole viewport, the other let
-   * it be dragged entirely off screen. Measuring is also robust to any future change in how the wrap
-   * lays its content out, which deriving would silently break again.
-   *
-   * Null before the canvas is attached.
-   */
-  viewMetrics(): {
-    wrapW: number;
-    wrapH: number;
-    canvasW: number;
-    canvasH: number;
-    restX: number;
-    restY: number;
-  } | null {
-    const wrap = this.canvas?.parentElement?.parentElement as HTMLElement | null;
-    if (!wrap || !this.canvas) return null;
-    const wrapRect = wrap.getBoundingClientRect();
-    const canvasRect = this.canvas.getBoundingClientRect();
-    return {
-      wrapW: wrap.clientWidth,
-      wrapH: wrap.clientHeight,
-      canvasW: canvasRect.width,
-      canvasH: canvasRect.height,
-      // clientLeft/clientTop are the border widths - subtracting them puts these in the same padding-box
-      // coordinates as clientWidth/clientHeight above, which is also what `position: absolute` uses for
-      // the overlay scrollbars.
-      restX: canvasRect.left - wrapRect.left - wrap.clientLeft - this.appliedPanX,
-      restY: canvasRect.top - wrapRect.top - wrap.clientTop - this.appliedPanY,
-    };
-  }
-
-  /** Keeps at least PAN_EDGE_MARGIN_PX of canvas inside the wrap on each axis (or the whole canvas, when
-   *  it's smaller than that margin). Written in terms of the measured resting offset from viewMetrics -
-   *  see there for why that isn't computed from the wrap's centering. */
-  private clampPan(): void {
-    const m = this.viewMetrics();
-    if (!m) return;
-    const axis = (pan: number, wrap: number, size: number, rest: number): number => {
-      if (wrap <= 0) return pan;
-      const margin = Math.min(PAN_EDGE_MARGIN_PX, size);
-      // Leading edge no further right than wrapW - margin; trailing edge no further left than margin.
-      return Math.min(wrap - margin - rest, Math.max(margin - size - rest, pan));
-    };
-    this.panX = axis(this.panX, m.wrapW, m.canvasW, m.restX);
-    this.panY = axis(this.panY, m.wrapH, m.canvasH, m.restY);
-  }
-
-  /** Writes panX/panY to .pixel-canvas-inner synchronously instead of waiting for React's next render.
-   *  A hand-drag or wheel-pan fires many times between two renders, and the transform is the only thing
-   *  those change - going through React for each one would add a render per pointermove for no reason
-   *  (PixelCanvas.tsx renders the same value from state on its own next render, so the two agree). */
-  private applyPanToDom(): void {
-    const inner = this.canvas?.parentElement as HTMLElement | null;
-    if (!inner) return;
-    inner.style.transform = this.panX || this.panY ? `translate(${this.panX}px, ${this.panY}px)` : '';
-    this.appliedPanX = this.panX;
-    this.appliedPanY = this.panY;
-  }
-
-  /** Snaps the view back to its default position. Every "the view should start fresh" site goes through
-   *  this rather than assigning panX/panY directly, so the transform (and appliedPanX/Y with it) can
-   *  never be left describing a pan that's already been zeroed. */
-  private clearPan(): void {
-    this.panX = 0;
-    this.panY = 0;
-    this.applyPanToDom();
-  }
-
-  /** Moves the view by (dx, dy) screen px - the single entry point for hand-drag, wheel-pan and the
-   *  overlay scrollbars. `notify` is opt-in because the two drag paths repaint the transform themselves
-   *  and have nothing else on screen to update. */
   panBy(dx: number, dy: number, notify = false): void {
-    if (!dx && !dy) return;
-    this.panX += dx;
-    this.panY += dy;
-    this.clampPan();
-    this.applyPanToDom();
-    if (notify) this.reactNotify();
+    this.viewport.panBy(dx, dy, notify);
   }
 
-  /** Recentres the view without changing zoom - the escape hatch when the canvas has been panned
-   *  somewhere unhelpful. */
   resetPan(): void {
-    this.clearPan();
-    this.reactNotify();
-  }
-
-  /** Multiplicative zoom-button step (see ZOOM_BUTTON_STEP), anchored at the wrap's own visible center
-   *  so the view stays centered on whatever's already on screen instead of jumping toward the origin. */
-  private zoomAtViewportCenter(scale: number): void {
-    const wrap = this.canvas?.parentElement?.parentElement as HTMLElement | null;
-    if (!wrap) {
-      this.setZoom(scale);
-      return;
-    }
-    const rect = wrap.getBoundingClientRect();
-    this.setZoom(scale, { clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2 });
+    this.viewport.resetPan();
   }
 
   zoomIn(): void {
-    this.zoomAtViewportCenter(this.zoomScale * ZOOM_BUTTON_STEP);
+    this.viewport.zoomIn();
   }
 
   zoomOut(): void {
-    this.zoomAtViewportCenter(this.zoomScale / ZOOM_BUTTON_STEP);
+    this.viewport.zoomOut();
   }
 
-  /** Sets a continuous zoom scale that shows the whole canvas inside .pixel-canvas-wrap without
-   *  scrolling - unlike ZOOM_LEVELS' largest preset step, which still isn't nearly small enough for a
-   *  large canvas (e.g. a 1400×900 background). Reads the wrap element's current size straight from
-   *  the DOM (via this.canvas's own parents) rather than needing a ResizeObserver plumbed in from the
-   *  component - this is a one-shot fit-right-now action, not an ambient always-fit mode, so there's
-   *  nothing to keep in sync between clicks. */
   zoomToFit(): void {
-    const wrap = this.canvas?.parentElement?.parentElement;
-    if (!wrap) return;
-    const cs = getComputedStyle(wrap);
-    const availW = wrap.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
-    const availH = wrap.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    if (availW <= 0 || availH <= 0) return;
-    const { width, height } = this.current;
-    const scale = Math.min(availW / (width * BASE_CELL_PX), availH / (height * BASE_CELL_PX));
-    this.clearPan();
-    this.setZoom(scale);
+    this.viewport.zoomToFit();
   }
 
-  private defaultZoomForSize(maxDim: number): number {
-    return Math.min(this.maxZoomScale(), maxDim >= 32 ? 0.75 : 1);
+  private clearPan(): void {
+    this.viewport.clearPan();
   }
 
   /**
@@ -1284,7 +1060,7 @@ export class PixelEditorEngine {
     }
     this.current.width = clampedWidth;
     this.current.height = clampedHeight;
-    this.zoomScale = this.defaultZoomForSize(Math.max(clampedWidth, clampedHeight));
+    this.viewport.resetScaleFor(Math.max(clampedWidth, clampedHeight));
     this.clearPan();
     this.frameIndex = Math.min(this.frameIndex, this.current.frames.length - 1);
     this.selection = null;
@@ -1333,7 +1109,7 @@ export class PixelEditorEngine {
     );
     this.current.width = newWidth;
     this.current.height = newHeight;
-    this.zoomScale = this.defaultZoomForSize(Math.max(newWidth, newHeight));
+    this.viewport.resetScaleFor(Math.max(newWidth, newHeight));
     this.clearPan();
     this.selection = null;
     this.lassoPoints = null;
@@ -3468,7 +3244,7 @@ export class PixelEditorEngine {
     this.selectionMask = null;
     this.moveBuffer = null;
     this.clearPan();
-    this.zoomScale = this.defaultZoomForSize(Math.max(sprite.width, sprite.height));
+    this.viewport.resetScaleFor(Math.max(sprite.width, sprite.height));
     // Before the undo stacks are emptied: a pending curve draft is rolled back through them.
     this.clearCurveState();
     this.undoStack = [];
