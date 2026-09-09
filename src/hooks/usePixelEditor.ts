@@ -39,6 +39,9 @@ import { createSprayTool } from '@/lib/tools/tools/sprayTool';
 import { createCurveTool } from '@/lib/tools/tools/curveTool';
 import { polygonMask, resolveMarqueeMode, settleSelection, shiftMask } from '@/lib/tools/selectionMask';
 import { CanvasViewport, type ViewMetrics } from '@/lib/canvasViewport';
+import { DEFAULT_PALETTE_COLORS, Palette } from '@/lib/palette';
+// Re-exported, not redefined: ColorPalette.tsx has always imported the presets from here.
+export { PRESET_PALETTES } from '@/lib/palette';
 // Re-exported rather than redefined: the zoom presets belong to the viewport now, and
 // CanvasStatusBar.tsx has always imported them from here.
 export { ZOOM_LEVELS } from '@/lib/canvasViewport';
@@ -61,17 +64,6 @@ import type {
   ToolName,
 } from '@/lib/types';
 
-/** A couple of built-in underwater-themed preset palettes for the top palette row (see
- *  applyPresetPalette/ColorPalette.tsx) - a quick starting point distinct from a user's own saved
- *  colors, not persisted themselves (only the result of applying one, via paletteColors, is). */
-export const PRESET_PALETTES: Record<string, string[]> = {
-  reef: ['#04293a', '#064663', '#158fad', '#41c9e2', '#78e08f', '#f6b93b', '#e58e26', '#e55039', '#fad390', '#f8c291'],
-  deepSea: ['#020409', '#04081a', '#0a2472', '#1450a3', '#247ba0', '#2ec4b6', '#70c1b3', '#b2dbbf', '#231651', '#f4f4f4'],
-};
-
-export const DEFAULT_PALETTE_COLORS = [
-  '#1a1a1a', '#ffffff', '#e74c3c', '#ff7043', '#f5c518', '#8bc34a', '#1e88e5', '#5e35b1',
-];
 
 const FRAME_LIMIT = 15;
 const LAYER_LIMIT = storage.LAYER_LIMIT;
@@ -197,6 +189,9 @@ export class PixelEditorEngine {
     () => this.reactNotify()
   );
 
+  /** The editor's color lists and their persistence (src/lib/palette.ts). */
+  private readonly colors = new Palette(() => this.reactNotify());
+
   previewCanvas: HTMLCanvasElement | null = null;
   previewCtx: CanvasRenderingContext2D | null = null;
   /** Scratch off-screen canvas for compositeToBitmap - reused (resized in place) across calls rather
@@ -220,8 +215,6 @@ export class PixelEditorEngine {
   activeLayerIndex = 0;
   tool: ToolName = 'pen';
   color = DEFAULT_PALETTE_COLORS[3];
-  paletteColors: string[] = [];
-  savedColors: string[] = [];
   painting = false;
   /** Where the last freehand pen/eraser stroke ended, kept *across* strokes so a following Shift+click
    *  can draw a straight line from there - the Photoshop/Aseprite convention for chaining segments
@@ -291,9 +284,6 @@ export class PixelEditorEngine {
    *  gradient tool (see gradientCellsPreview) and as a "dither brush" texture for pen/spray/shapes
    *  (read into ToolContext; see paintPipeline.ts). */
   ditherEnabled = false;
-  /** Colors a user has pinned in the saved-colors row (see ColorPalette.tsx) - survive
-   *  clearUnusedColors regardless of use. Persisted separately from savedColors (see storage.ts). */
-  pinnedColors: Set<string> = new Set();
   /** How many frames *before* the active one onion skin shows, and how many *after* - independently,
    *  because the two are useful for different things (checking a hand-off from the previous frame vs.
    *  drawing toward the next one) and a single shared "depth" could only ever do both at once. 0 turns
@@ -538,9 +528,7 @@ export class PixelEditorEngine {
     }
 
     const prefs = await prefsRepo.load();
-    this.paletteColors = prefs.paletteColors ?? [...DEFAULT_PALETTE_COLORS];
-    this.savedColors = prefs.savedColors;
-    this.pinnedColors = new Set(prefs.pinnedColors);
+    this.colors.hydrate(prefs);
     this.canvasBackground = prefs.canvasBackground ?? 'checker-dark';
     if (prefs.onion) {
       this.onionSkin = prefs.onion.enabled;
@@ -681,78 +669,60 @@ export class PixelEditorEngine {
     this.reactNotify();
   }
 
+  // The color lists themselves - the fixed top row, the artist's saved colors and which of those are
+  // pinned - plus their persistence live in src/lib/palette.ts. These delegate so the editor
+  // components keep calling the names they already use.
+
+  get paletteColors(): string[] {
+    return this.colors.palette;
+  }
+
+  get savedColors(): string[] {
+    return this.colors.saved;
+  }
+
+  get pinnedColors(): ReadonlySet<string> {
+    return this.colors.pinned;
+  }
+
   removePaletteColor(color: string): void {
-    if (!this.paletteColors.includes(color)) return;
-    this.paletteColors = this.paletteColors.filter((c) => c !== color);
-    getRepos().prefs.set({ paletteColors: this.paletteColors });
-    this.reactNotify();
+    this.colors.removeFromPalette(color);
   }
 
   addSavedColor(color: string): void {
-    if (this.savedColors.includes(color)) return;
-    this.savedColors = [...this.savedColors, color];
-    getRepos().prefs.set({ savedColors: this.savedColors });
-    this.reactNotify();
+    this.colors.addSaved(color);
   }
 
   removeSavedColor(color: string): void {
-    if (!this.savedColors.includes(color)) return;
-    this.savedColors = this.savedColors.filter((c) => c !== color);
-    if (this.pinnedColors.has(color)) {
-      const next = new Set(this.pinnedColors);
-      next.delete(color);
-      this.pinnedColors = next;
-      getRepos().prefs.set({ pinnedColors: [...next] });
-    }
-    getRepos().prefs.set({ savedColors: this.savedColors });
-    this.reactNotify();
+    this.colors.removeSaved(color);
   }
 
   isPinnedColor(color: string): boolean {
-    return this.pinnedColors.has(color);
+    return this.colors.isPinned(color);
   }
 
   togglePinColor(color: string): void {
-    const next = new Set(this.pinnedColors);
-    if (next.has(color)) next.delete(color);
-    else next.add(color);
-    this.pinnedColors = next;
-    getRepos().prefs.set({ pinnedColors: [...next] });
-    this.reactNotify();
+    this.colors.togglePin(color);
   }
 
-  /** Drag-to-reorder for the saved-colors row (see ColorPalette.tsx) - same splice-and-reinsert shape
-   *  as moveLayer/moveFrame elsewhere in this file. */
   reorderSavedColor(from: number, to: number): void {
-    if (from === to || from < 0 || to < 0 || from >= this.savedColors.length || to >= this.savedColors.length) return;
-    const next = [...this.savedColors];
-    const [moved] = next.splice(from, 1);
-    next.splice(to, 0, moved);
-    this.savedColors = next;
-    getRepos().prefs.set({ savedColors: this.savedColors });
-    this.reactNotify();
+    this.colors.reorderSaved(from, to);
   }
 
-  /** Drops every saved color that's neither pinned nor actually painted anywhere in the current
-   *  sprite - a one-click way to prune a savedColors list that otherwise only ever grows. */
-  clearUnusedColors(): void {
+  /** Which colors the current sprite actually paints with - what `clearUnusedColors` prunes against.
+   *  Computed here rather than in Palette, since it is a question about the sprite. */
+  private usedColors(): Set<string> {
     const used = new Set<string>();
     this.current.frames.forEach((layers) => layers.forEach((layer) => layer.cells.forEach((c) => c && used.add(c))));
-    const next = this.savedColors.filter((c) => this.pinnedColors.has(c) || used.has(c));
-    if (next.length === this.savedColors.length) return;
-    this.savedColors = next;
-    getRepos().prefs.set({ savedColors: this.savedColors });
-    this.reactNotify();
+    return used;
   }
 
-  /** Overwrites the top (fixed-position) palette row with one of PRESET_PALETTES - a quick underwater-
-   *  themed starting point, distinct from the user's own growing savedColors list. */
+  clearUnusedColors(): void {
+    this.colors.clearUnused(this.usedColors());
+  }
+
   applyPresetPalette(name: string): void {
-    const preset = PRESET_PALETTES[name];
-    if (!preset) return;
-    this.paletteColors = [...preset];
-    getRepos().prefs.set({ paletteColors: this.paletteColors });
-    this.reactNotify();
+    this.colors.applyPreset(name);
   }
 
   setShapeFilled(v: boolean): void {
