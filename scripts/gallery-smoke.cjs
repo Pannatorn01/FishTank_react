@@ -201,7 +201,13 @@ function spriteBody(id, name, extra = {}) {
   check('the hidden flag is what changed', ownerStillHasIt.body?.[0]?.hidden_by_admin === true);
 
   // ---- cleanup ----------------------------------------------------------------------
-  await A(`sprites?id=eq.${publicId}`, { method: 'DELETE' });
+  const deletedWhileForked = await A(`sprites?id=eq.${publicId}`, { method: 'DELETE' });
+  // An author must be able to delete their own sprite even while someone else's copy points at it -
+  // the copy keeps its pixels and loses only the note about where they came from.
+  check('a sprite can be deleted even after someone forked it', deletedWhileForked.status < 400, `HTTP ${deletedWhileForked.status}`);
+  const orphaned = await V(`sprites?id=eq.${forkId}&select=id,forked_from`);
+  check('the copy survives its origin being deleted', orphaned.body?.length === 1 && orphaned.body[0].forked_from === null, JSON.stringify(orphaned.body));
+
   await A(`sprites?id=eq.${privateId}`, { method: 'DELETE' });
   await V(`sprites?id=eq.${forkId}`, { method: 'DELETE' });
   const leftover = await A(`sprites?id=like.probe_*&select=id`);

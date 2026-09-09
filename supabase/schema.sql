@@ -579,6 +579,16 @@ grant execute on function public.get_shared_tank(text, text) to anon, authentica
 -- moderation any more, but because nothing lists tanks, and "public" without a listing is only an
 -- unlisted tank with a guessable address. That is a worse offer than the one it replaces.
 
+-- Provenance must never stop someone deleting their own work. `forked_from` points at the sprite a
+-- copy came from, and as a plain reference it made that original undeletable for as long as anyone
+-- else's copy existed - the author would be told "no", with no way to find out why or who by. Losing
+-- the note about where a copy came from is a far smaller thing than that, so the reference gives way.
+-- (The app deletes by tombstone, so this only bites on a hard delete - which is exactly what an
+-- administrator does from supabase/moderation.sql.)
+alter table public.sprites drop constraint if exists sprites_forked_from_fkey;
+alter table public.sprites add constraint sprites_forked_from_fkey
+  foreign key (forked_from) references public.sprites(id) on delete set null;
+
 -- A report is one person saying one thing about one item, once. The primary key is what enforces
 -- "once": without it, a single person could file the same complaint until the auto-hide below fired.
 create table if not exists public.content_reports (

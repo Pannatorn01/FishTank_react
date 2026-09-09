@@ -53,6 +53,19 @@
 [`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — **25/25 ผ่าน** และ
 [`scripts/auth-smoke.cjs`](../scripts/auth-smoke.cjs) — **9/9 ผ่าน** (รันคู่กับ `npm run dev`)
 
+### ผลทดสอบ P6-4/P6-5 กับโปรเจกต์จริง (2026-09-09)
+
+| ชุด | ผล | ครอบอะไร |
+|-----|-----|---------|
+| `gallery-smoke.cjs` | **25/25** | สิ่งที่ database ยอม (HTTP ล้วน 4 บัญชีจริง) |
+| `gallery-ui-smoke.cjs` | **14/14** | แอปเรียกใช้จริงไหม (Playwright + stub) |
+| `rls` / `share` / `sync` / `share-ui` | 18/18 · 30/30 · 20/20 · 14/14 | ของเดิมไม่พังจากการเปลี่ยน |
+| unit + build | 259 ผ่าน · build ผ่าน | |
+
+**บั๊กที่เจอเพราะยิงของจริง:** `forked_from` เป็น FK ธรรมดา → **เจ้าของลบ sprite ตัวเองไม่ได้ถ้ามีคนก๊อปไป**
+(ในแอปไม่เจอเพราะลบเป็น tombstone แต่แอดมินที่ลบจริงจาก moderation.sql ชนเต็ม ๆ) · แก้เป็น `on delete set null`
+— การจดที่มาต้องไม่มีอำนาจขวางคนลบงานของตัวเอง
+
 ### P6-4/P6-5 — สิ่งที่ตัดสินใจไว้ (อ่านก่อนแก้)
 
 - **gallery มีเฉพาะ sprite ไม่มีตู้** · ตู้ยังเป็น private/unlisted เท่านั้น ไม่ใช่เพราะ moderation แล้ว
