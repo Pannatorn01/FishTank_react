@@ -1878,6 +1878,30 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 /* Top-right so it never collides with the Pixi-drawn cleanliness bar in the top-left corner of the
  * same scene (see roomScene.ts's cleanlinessBar). */
 .life-refill-button { position: absolute; top: 10px; right: 10px; }
+/* Room-scene picker - bottom-right, the one free corner: the cleanliness bar owns the top-left, the
+ * refill button the top-right, and the Feed/Scrub tools the bottom-left. */
+.life-room-picker {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 0.68rem;
+  border-radius: 4px;
+}
+.life-room-picker select {
+  max-width: 160px;
+  font: inherit;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 3px;
+  padding: 2px 4px;
+}
 /* Top-center, clear of the cleanliness bar (top-left, Pixi-drawn) and the refill button (top-right) -
  * moved up here (was bottom-center) once the tools row below needed the bottom edge for itself. */
 .life-hint {

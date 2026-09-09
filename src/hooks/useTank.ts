@@ -271,6 +271,11 @@ export class TankEngine {
    *  the fish - null means the default gradient. Like tankShape, takes effect immediately but only
    *  reaches localStorage via the manual Save button. */
   backgroundSpriteId: string | null = null;
+  /** Which 'background'-type sprite Life mode paints as the room behind the tank - the wall, window
+   *  and table the glass stands on - or null for roomScene.ts's built-in gradient. Separate from
+   *  backgroundSpriteId because the two are different pictures shown at the same time: that one goes
+   *  inside the water, this one goes around the tank. */
+  roomBackgroundSpriteId: string | null = null;
   /** Free-transform (move/scale/rotate) placement of the background sprite - see BackgroundTransform.
    *  Reset to a centered, native-size default whenever a *different* background sprite is picked
    *  (setTankBackgroundSprite), then only ever changed by dragging its on-canvas handles. */
@@ -452,6 +457,7 @@ export class TankEngine {
     this.tankCornerRadiusFrac = state.cornerRadiusFrac;
     this.tankOvalTopCutFrac = state.ovalTopCutFrac;
     this.backgroundSpriteId = state.backgroundSpriteId;
+    this.roomBackgroundSpriteId = state.roomBackgroundSpriteId;
     this.backgroundTransform = state.backgroundTransform;
     this.waterLevel = state.waterLevel;
     this.algae = state.algae;
@@ -860,6 +866,17 @@ export class TankEngine {
     this.reactNotify();
   }
 
+  /** Picks the room backdrop Life mode paints behind the tank, or null for the built-in gradient.
+   *  Unlike setTankBackgroundSprite there is no transform to reset: the room art is always stretched
+   *  to cover the whole viewport (see roomScene.ts's fitRoomBackground), so there is nothing for the
+   *  user to place by hand and nothing to lose by re-picking the same one. */
+  setRoomBackgroundSprite(id: string | null): void {
+    if (this.roomBackgroundSpriteId === id) return;
+    this.roomBackgroundSpriteId = id;
+    this.dirty = true;
+    this.reactNotify();
+  }
+
   /** Shows/activates the background's move/resize/rotate handles on the tank canvas - see
    *  backgroundEditing. Called from TankBackgroundPanel while its tab is the visible one. */
   setBackgroundEditing(editing: boolean): void {
@@ -941,6 +958,10 @@ export class TankEngine {
       this.backgroundSpriteId = null;
       this.dirty = true;
     }
+    if (this.roomBackgroundSpriteId === spriteId) {
+      this.roomBackgroundSpriteId = null;
+      this.dirty = true;
+    }
     this.pruneEmptyGroups();
     this.persist();
   }
@@ -977,6 +998,7 @@ export class TankEngine {
       cornerRadiusFrac: this.tankCornerRadiusFrac,
       ovalTopCutFrac: this.tankOvalTopCutFrac,
       backgroundSpriteId: this.backgroundSpriteId,
+      roomBackgroundSpriteId: this.roomBackgroundSpriteId,
       backgroundTransform: this.backgroundTransform,
       waterLevel: this.waterLevel,
       algae: this.algae,
@@ -1111,6 +1133,7 @@ export class TankEngine {
     this.tankCornerRadiusFrac = state.cornerRadiusFrac;
     this.tankOvalTopCutFrac = state.ovalTopCutFrac;
     this.backgroundSpriteId = state.backgroundSpriteId;
+    this.roomBackgroundSpriteId = state.roomBackgroundSpriteId;
     this.backgroundTransform = state.backgroundTransform;
     this.selectedId = null;
     this.marqueeIds = null;

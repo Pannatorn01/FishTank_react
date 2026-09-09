@@ -69,6 +69,7 @@ export class LocalStorageAdapter implements StorageAdapter {
       cornerRadiusFrac: storage.loadTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC) ?? 0.22,
       ovalTopCutFrac: storage.loadTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC) ?? 0.28,
       backgroundSpriteId: storage.loadTankBackgroundSpriteId(),
+      roomBackgroundSpriteId: storage.loadLifeRoomBackgroundSpriteId(),
       backgroundTransform: storage.loadTankBackgroundTransform() ?? { x: 0, y: 0, scale: 1, rotation: 0 },
       waterLevel: storage.loadTankWaterLevel() ?? 1,
       algae: storage.loadTankAlgae() ?? 0,
@@ -85,6 +86,7 @@ export class LocalStorageAdapter implements StorageAdapter {
     storage.saveTankShapeParam(storage.KEY_TANK_CORNER_RADIUS_FRAC, state.cornerRadiusFrac);
     storage.saveTankShapeParam(storage.KEY_TANK_OVAL_TOP_CUT_FRAC, state.ovalTopCutFrac);
     storage.saveTankBackgroundSpriteId(state.backgroundSpriteId);
+    storage.saveLifeRoomBackgroundSpriteId(state.roomBackgroundSpriteId);
     storage.saveTankBackgroundTransform(state.backgroundTransform);
     storage.saveTankWaterLevel(state.waterLevel);
     storage.saveTankAlgae(state.algae);

@@ -11,6 +11,9 @@ const en: Dict = {
   'life.scrubTool': 'Scrub',
   'life.scrubToolTitle': 'Select, then drag back and forth across the glass to wipe algae off',
   'life.hint': 'Select Feed or Scrub, then use it on the tank • tap a piece of waste to collect it',
+  'life.roomScene': 'Room',
+  'life.roomSceneNone': 'Plain wall',
+  'life.roomSceneTitle': 'Pick the room the tank stands in - any background-type sprite from your library',
 
   'tool.pen.desc': 'Pen — draw pixels one at a time (B) • Shift+click to draw a straight line from where you last drew • hold Alt to pick a color • right-click to erase',
   'tool.line.desc': 'Line — drag to draw a straight line (L) • hold Shift to snap to 0/45/90° • hold Alt to pick a color • right-click to erase • Esc while dragging cancels the shape',

@@ -15,6 +15,7 @@ import type {
   UiTheme,
 } from './types';
 import { decodeFrame, encodeFrame, isRleFrame, type RleFrame } from './pixelCodec';
+import { PIXELLAB_PACK } from './data/pixellabPack';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
@@ -29,6 +30,10 @@ export const TANK_SHAPES: TankShape[] = ['rectangle', 'rounded', 'oval'];
 /** Which 'background'-type Sprite (drawn in the pixel editor, see SpriteType) is painted behind the
  *  fish instead of the default gradient - null means the default gradient. */
 const KEY_TANK_BACKGROUND_SPRITE_ID = 'fishtank.tankBackgroundSpriteId.v1';
+/** Life mode's room backdrop - the wall/window/table the tank stands in front of. A separate key
+ *  from KEY_TANK_BACKGROUND_SPRITE_ID because they are two different pictures: that one is painted
+ *  inside the water behind the fish, this one is the room around the glass. */
+const KEY_LIFE_ROOM_BACKGROUND_SPRITE_ID = 'fishtank.lifeRoomBackgroundSpriteId.v1';
 /** Free-transform (move/scale/rotate) placement of the background sprite - see BackgroundTransform. */
 const KEY_TANK_BACKGROUND_TRANSFORM = 'fishtank.tankBackgroundTransform.v2';
 const KEY_SAVED_COLORS = 'fishtank.savedColors.v1';
@@ -616,6 +621,21 @@ export function saveTankBackgroundSpriteId(id: string | null): void {
   else localStorage.removeItem(KEY_TANK_BACKGROUND_SPRITE_ID);
 }
 
+/** null means "use Life mode's built-in wall/floor gradient" - see roomScene.ts. */
+export function loadLifeRoomBackgroundSpriteId(): string | null {
+  try {
+    return localStorage.getItem(KEY_LIFE_ROOM_BACKGROUND_SPRITE_ID);
+  } catch (e) {
+    console.warn('loadLifeRoomBackgroundSpriteId failed', e);
+    return null;
+  }
+}
+
+export function saveLifeRoomBackgroundSpriteId(id: string | null): void {
+  if (id) writeKey(KEY_LIFE_ROOM_BACKGROUND_SPRITE_ID, id);
+  else localStorage.removeItem(KEY_LIFE_ROOM_BACKGROUND_SPRITE_ID);
+}
+
 export function loadTankBackgroundTransform(): BackgroundTransform | null {
   try {
     const raw = localStorage.getItem(KEY_TANK_BACKGROUND_TRANSFORM);
@@ -959,7 +979,25 @@ export function buildDefaultSprites(): Sprite[] {
       ],
       frameMs: DEFAULT_FRAME_MS,
     },
+    ...buildPackSprites(),
   ];
+}
+
+/** The PixelLab art pack (see data/pixellabPack.ts) as real sprites, seeded alongside the two
+ *  procedural samples above so a first run opens on a library worth looking at rather than one
+ *  goldfish. Decoded here rather than shipped as flat cell arrays because the pack's two scenes are
+ *  320x200 and 348x224 - as plain JSON that is megabytes, and run-length encoded it is not. */
+function buildPackSprites(): Sprite[] {
+  return PIXELLAB_PACK.map((entry) => ({
+    ...newRecordMeta(),
+    id: uid('sprite'),
+    name: entry.name,
+    type: entry.type,
+    width: entry.width,
+    height: entry.height,
+    frames: entry.frames.map((frame) => [makeLayer(decodeFrame(frame))]),
+    frameMs: DEFAULT_FRAME_MS,
+  }));
 }
 
 /** Every localStorage key this app writes - kept as one list so backup/reset (see below) can't drift
@@ -977,6 +1015,7 @@ const ALL_STORAGE_KEYS = [
   KEY_TANK_ALGAE,
   KEY_TANK_SHAPE,
   KEY_TANK_BACKGROUND_SPRITE_ID,
+  KEY_LIFE_ROOM_BACKGROUND_SPRITE_ID,
   KEY_TANK_BACKGROUND_TRANSFORM,
   KEY_SAVED_COLORS,
   KEY_PINNED_COLORS,

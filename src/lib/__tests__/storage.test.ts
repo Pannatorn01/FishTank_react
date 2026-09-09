@@ -358,3 +358,25 @@ describe('gallery fields (P6-4)', () => {
     expect(storage.normalizeSprite(odd).visibility).toBe('private');
   });
 });
+
+/** Life mode's room backdrop is a second, independent background choice (see roomScene.ts). The risk
+ *  worth a test is not the write but the two ways it can be confused with the water backdrop: sharing
+ *  its key, or being wiped by a reset that does not know about it. */
+describe('the Life room backdrop', () => {
+  it('round-trips independently of the water background', () => {
+    storage.saveTankBackgroundSpriteId('water_bg');
+    storage.saveLifeRoomBackgroundSpriteId('room_bg');
+    expect(storage.loadTankBackgroundSpriteId()).toBe('water_bg');
+    expect(storage.loadLifeRoomBackgroundSpriteId()).toBe('room_bg');
+  });
+
+  it('reads back as null once cleared', () => {
+    storage.saveLifeRoomBackgroundSpriteId('room_bg');
+    storage.saveLifeRoomBackgroundSpriteId(null);
+    expect(storage.loadLifeRoomBackgroundSpriteId()).toBeNull();
+  });
+
+  it('is null on a browser that never chose one', () => {
+    expect(storage.loadLifeRoomBackgroundSpriteId()).toBeNull();
+  });
+});

@@ -554,6 +554,7 @@ describe('read-only engine (a shared tank)', () => {
       cornerRadiusFrac: 0.22,
       ovalTopCutFrac: 0.28,
       backgroundSpriteId: null,
+      roomBackgroundSpriteId: null,
       backgroundTransform: { x: 0, y: 0, scale: 1, rotation: 0 },
       waterLevel: 1,
       algae: 0,

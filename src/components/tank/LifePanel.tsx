@@ -107,9 +107,28 @@ export function LifePanel({ engine, active }: { engine: TankEngine; active: bool
     sceneRef.current?.setArmedTool(next);
   }
 
+  // Any 'background'-type sprite can be the room, exactly as any of them can be the water backdrop -
+  // there is no separate "room art" sprite kind to teach the editor about, and the two pictures are
+  // picked independently (see TankEngine.roomBackgroundSpriteId).
+  const roomChoices = engine.sprites.filter((s) => s.type === 'background');
+
   return (
     <div className="life-layout">
       <div ref={hostRef} className="life-pixi-host" />
+      <label className="life-room-picker" title={t('life.roomSceneTitle')}>
+        <span>{t('life.roomScene')}</span>
+        <select
+          value={engine.roomBackgroundSpriteId ?? ''}
+          onChange={(e) => engine.setRoomBackgroundSprite(e.target.value || null)}
+        >
+          <option value="">{t('life.roomSceneNone')}</option>
+          {roomChoices.map((sprite) => (
+            <option key={sprite.id} value={sprite.id}>
+              {sprite.name}
+            </option>
+          ))}
+        </select>
+      </label>
       {/* Water level (P5 §6 item 4) - a plain DOM button rather than a Pixi-drawn one, matching every
        *  other action button in this app (Save, zoom, etc.) - simpler than hand-rolling hit-testing
        *  and a hover/pressed state inside the Pixi scene for something that isn't part of the tank

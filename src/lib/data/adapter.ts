@@ -23,6 +23,9 @@ export interface TankState {
   cornerRadiusFrac: number;
   ovalTopCutFrac: number;
   backgroundSpriteId: string | null;
+  /** Life mode's room backdrop (roomScene.ts), null for its built-in gradient. Distinct from
+   *  backgroundSpriteId, which is the picture inside the water. */
+  roomBackgroundSpriteId: string | null;
   backgroundTransform: BackgroundTransform;
   waterLevel: number;
   algae: number;

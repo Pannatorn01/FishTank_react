@@ -329,7 +329,10 @@ function tankRecord(id: string, name: string, state: TankState): TankRecord {
  *  accident just because it round-tripped through a store keyed by id. */
 function stripRecordFields(record: TankRecord): TankState {
   const { id: _id, name: _name, updatedAt: _updatedAt, ...state } = record;
-  return state;
+  // roomBackgroundSpriteId arrived after the first tanks were written, so a record saved before it
+  // existed has no such key at all - default it here rather than letting `undefined` reach the engine
+  // and read as "no backdrop chosen yet" only by accident.
+  return { ...state, roomBackgroundSpriteId: state.roomBackgroundSpriteId ?? null };
 }
 
 function emptyTankState(): TankState {
@@ -343,6 +346,7 @@ function emptyTankState(): TankState {
     cornerRadiusFrac: 0.22,
     ovalTopCutFrac: 0.28,
     backgroundSpriteId: null,
+    roomBackgroundSpriteId: null,
     backgroundTransform: { x: 0, y: 0, scale: 1, rotation: 0 },
     waterLevel: 1,
     algae: 0,
