@@ -826,3 +826,28 @@ before being caught. Reading the tank out of IndexedDB uses `record.instances`, 
 broken refactor. And adding a fish does **not** persist; only Save does, and Save disables itself once
 nothing is pending, so a flush has to make the tank dirty first. The existing `tanks-ui-smoke.cjs` had
 both details right all along.
+
+## Closing the schooling gap (2026-09-09)
+
+The previous pass left one thing recorded as unverified: the marquee -> Group -> `update()` path, the
+only place schooling actually runs. A browser script could not drive the marquee, so the gap was noted
+and left.
+
+It did not need a browser. `useTank.test.ts`'s existing headless harness already calls `groupMarquee()`
+and `update()` directly, which is the same path the UI takes with no DOM in the way. Seven tests now
+cover it: a common heading, steering to the group's mean depth, members holding a formation instead of
+stacking, a scattered school converging over 120 frames, an ungrouped fish being left alone, a dragged
+member not dragging the school with it, and a group dissolving to one member when the other dies.
+
+Three failed on first run and the code was right both times it looked wrong. `groupMarquee` calls
+`reflowSchoolOffsets`, which assigns each member an evenly spaced slot, so the hand-set `schoolOffsetY`
+values in the fixtures were being overwritten. The tell was `300 - 55.845 = 244.155` in the failure
+output - a suspiciously exact relationship, not noise. The tests read the assigned offsets back now and
+assert the relationship (targetY = the school's mean depth + this fish's own slot), which is both
+correct and better than the magic numbers it replaced.
+
+**Worth copying: the tests were then checked against deliberate breakage rather than trusted for
+passing.** Three mutants, each caught: never computing the steer (5 tests fail), counting a dragged
+fish in it - the cursor-chasing bug the exclusion exists to prevent (3 fail), and applying the steer
+without the per-fish offset so the school stacks onto one depth (3 fail). A test suite that passes
+proves nothing on its own; one that fails when you break the thing it names proves something.
