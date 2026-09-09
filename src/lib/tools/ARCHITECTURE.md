@@ -729,3 +729,52 @@ Two cautions for anyone writing more of these. The palette script's first versio
 nothing to nothing - it reads the computed background color now. And the existing `scripts/*-ui-smoke.
 cjs` hardcode port 5173: with a stale dev server already on that port, they silently test whatever is
 running there rather than your changes.
+
+## Sixth pass: TankEngine's turn (2026-09-09)
+
+Same treatment as the editor engine, on the other 2,800-line class.
+
+**`src/tank/export/sceneExport.ts` (`SceneExport`)** - the still PNG, the animated GIF and the WebM
+recording, ~180 lines plus the two fields tracking whether either long-running one is busy. All three
+are the same idea at different sample rates (ask for a frame at time t, do something with it), so the
+class takes exactly that as a callback and knows nothing about fish, sprites or room decorations.
+`compositeScene` deliberately stays on the engine - it reads the tank's own state throughout, and it is
+the thing being handed over as the callback.
+
+This one fixed a leak on the way past: `destroy()` never stopped a video recording in progress, so
+unmounting the tank panel mid-recording left the redraw interval firing against a canvas nothing was
+showing - and since nothing called `stop()`, the recorder's `onstop` never fired either, so the leak did
+not even buy a downloaded file. `SceneExport.destroy()` clears the timer and detaches the handlers
+before stopping, and the engine calls it.
+
+**`src/tank/sim/vitals.ts`** - hunger decay and starvation, water evaporation, algae growth, and the six
+constants that tune them. Pure functions over a number or a list of fish, now beside the other pure tank
+logic (`algae.ts`, `geometry.ts`). All three take an elapsed *duration* rather than reading a clock,
+which is the whole reason one animation frame and one "the app was closed for three days" gap can go
+through the same code instead of a separate catch-up path that could drift from the live one - a shape
+that was previously restated on each of the three methods and is now documented once.
+
+`decayHunger` still mutates the instances in place. That is not an oversight: it runs every frame over
+every fish, and the renderers read those same objects, so reallocating them per frame would be slower
+*and* hand the renderer new identities to chase.
+
+`tickBreeding` stayed put - it spawns instances, pushes undo and reads the canvas, so it is not the same
+kind of thing as the three clocks at all.
+
+Adds `tank/sim/__tests__/vitals.test.ts` (9 tests) for the two that had no direct coverage, previously
+reachable only through a live engine. Both are checked to reach the same value in one lump sum as in
+many small steps - the property the elapsed-duration shape exists for - plus their clamps, and that a
+backwards clock jump cannot refill the tank or un-grow the algae. The existing hunger/starvation tests
+reach `tickHunger` by name and pass unchanged through the delegating wrapper, which is what shows the
+extracted function is equivalent.
+
+`useTank.ts`: 2879 -> 2751 lines. Verified with `tsc -b`, 303 tests, `npm run build`, and the browser
+scripts: `tanks-ui-smoke` 20/20, exports 10/10 (a PNG of 47KB and a GIF of 505KB really come back, both
+buttons disable while the GIF encodes on the main thread and return afterwards), viewport 13/13,
+preview 5/5.
+
+A note for whoever automates more of this: two of these passes were nearly broken by a scripted edit
+rather than by the refactor itself. A regex of the form `/(\/\*\*[\s\S]*?\*\/)?\s*const X = .../` looks
+like it swallows the doc comment above a constant; the lazy quantifier happily matched from ~150 lines
+higher up and deleted everything in between, and it only surfaced because `tsc` failed loudly. Anchor on
+exact text, and check what the edit actually removed.
