@@ -276,10 +276,38 @@
  * Button). Pressed state (button tag only, so non-button pixel-raised elements aren't affected by
  * :active) inverts the edges and nudges the box down-right so it visually sinks in.
  */
-.pixel-raised {
+/**
+ * The raised pixel-art bevel: a dark 2px border with the top and left edges lit, which is what makes
+ * every control in this app look like a physical button. It was written out in twelve separate rules,
+ * `.pixel-raised` among them - one grouped rule now, so a change to the look reaches all of them.
+ *
+ * Placed here, at the first of those twelve, deliberately: everything that overrides these edges (the
+ * pressed state, `.pixel-inset`, the active tool button) is defined further down the file and so still
+ * comes after, and still wins.
+ */
+.pixel-raised,
+.title-bar-dots > span,
+.preview-canvas,
+.swatch,
+.gradient-target-swatch,
+.panel-title-add,
+.tank-size-group input,
+.selection-toolbar-btn,
+.swim-toolbar-btn,
+.delete-selected-btn,
+.tank-palette-item {
   border: 2px solid var(--bevel-dark);
   border-top-color: var(--bevel-light);
   border-left-color: var(--bevel-light);
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid var(--bevel-dark);
+  border-top-color: var(--bevel-light);
+  border-left-color: var(--bevel-light);
+}
+
+.pixel-raised {
   transition: transform 80ms steps(1), border-color 80ms steps(1);
 }
 button.pixel-raised:not(:disabled):hover {
@@ -390,9 +418,6 @@ button.pixel-raised:not(:disabled):active {
 ::-webkit-scrollbar-track { background: var(--pixel-bg-deep); }
 ::-webkit-scrollbar-thumb {
   background: var(--pixel-panel-hover);
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
 }
 ::-webkit-scrollbar-corner { background: var(--pixel-bg-deep); }
 
@@ -602,9 +627,6 @@ body, #root { height: 100%; margin: 0; }
   width: 10px;
   height: 10px;
   background: var(--pixel-panel-hover);
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
 }
 .title-bar-dots > span:last-child { background: var(--pixel-accent); }
 
@@ -1437,9 +1459,6 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
   background-color: #2b2b2b;
   background-image: repeating-conic-gradient(#3a3a3a 0% 25%, #2b2b2b 0% 50%);
   background-size: 8px 8px;
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
 }
 .preview-speed { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 4px; font-size: 0.66rem; }
 .preview-speed input { width: 3.2rem; height: 1.3rem; font-family: "VT323", monospace; font-size: 0.9rem; padding: 0 3px; border-width: 2px; }
@@ -1461,9 +1480,6 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 .swatch {
   width: 100%;
   aspect-ratio: 1;
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
   padding: 0;
   cursor: pointer;
   outline: none;
@@ -1475,9 +1491,6 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 .gradient-target-swatch {
   width: 22px;
   height: 22px;
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
   padding: 0;
   cursor: pointer;
   box-sizing: border-box;
@@ -1634,9 +1647,6 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
   height: 1.3rem;
   flex-shrink: 0;
   padding: 0;
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
   background: var(--pixel-panel-hover);
   color: var(--pixel-text-strong);
   cursor: pointer;
@@ -1989,9 +1999,6 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
   text-align: center;
   background: var(--pixel-field-bg);
   color: var(--pixel-field-text);
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
   padding: 0 2px;
 }
 
@@ -2002,9 +2009,6 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 .selection-toolbar-btn {
   background: var(--pixel-dark-3);
   color: var(--pixel-bevel-light);
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
   width: 34px;
   height: 34px;
   font-size: 0.85rem;
@@ -2015,9 +2019,6 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 .swim-toolbar-btn {
   background: var(--pixel-dark-3);
   color: var(--pixel-bevel-light);
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
   width: 28px;
   height: 28px;
   font-size: 0.75rem;
@@ -2031,9 +2032,6 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 .delete-selected-btn {
   background: var(--pixel-accent);
   color: var(--pixel-text-strong);
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
   padding: 8px 12px;
   font-size: 0.78rem;
   cursor: pointer;
@@ -2139,9 +2137,6 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
   padding: 3px;
   min-width: 0;
   background: var(--pixel-panel-hover);
-  border: 2px solid var(--bevel-dark);
-  border-top-color: var(--bevel-light);
-  border-left-color: var(--bevel-light);
   cursor: grab;
   touch-action: none;
   user-select: none;
