@@ -45,6 +45,10 @@ export function spriteToRow(sprite: Sprite): SpriteRow {
     height: sprite.height,
     frame_ms: sprite.frameMs,
     frames: encoded.frames,
+    // Both travel with the sprite: publishing on one device has to be visible on the next, and a copy
+    // should still say where it came from after a sync.
+    visibility: sprite.visibility === 'public' ? 'public' : 'private',
+    forked_from: sprite.forkedFrom ?? null,
     updated_at: sprite.updatedAt,
     deleted_at: sprite.deletedAt,
   };
@@ -59,6 +63,8 @@ export function rowToSprite(row: SpriteRow): Sprite {
     height: row.height,
     frameMs: row.frame_ms,
     frames: row.frames,
+    visibility: row.visibility === 'public' ? 'public' : 'private',
+    forkedFrom: row.forked_from ?? null,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
     rev: row.rev ?? 0,

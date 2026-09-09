@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { GalleryDialog } from '@/components/editor/GalleryDialog';
+import { useAuth } from '@/hooks/useAuth';
+import { setSpriteVisibility } from '@/lib/data/gallery';
 import { useLanguage } from '@/lib/i18n';
 import { paintLayers } from '@/lib/pixelMath';
 import type { Sprite, SpriteType } from '@/lib/types';
@@ -51,6 +54,9 @@ export function SpriteLibrary({
   onError: (msg: string) => void;
 }) {
   const { t } = useLanguage();
+  const { session, available } = useAuth();
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [publishing, setPublishing] = useState<string | null>(null);
   const [tab, setTab] = useState<SpriteType | 'all'>('all');
 
   const counts = useMemo(() => {
@@ -62,6 +68,20 @@ export function SpriteLibrary({
   }, [engine.sprites]);
 
   const shown = tab === 'all' ? engine.sprites : engine.sprites.filter((s) => s.type === tab);
+
+  const togglePublished = async (sprite: Sprite) => {
+    setPublishing(sprite.id);
+    try {
+      await setSpriteVisibility(sprite, sprite.visibility === 'public' ? 'private' : 'public');
+      // The repository wrote it; the editor's own copy of the library is refreshed the same way a sync
+      // refreshes it, so the badge updates without a reload.
+      window.dispatchEvent(new CustomEvent('ft:sprites-updated'));
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPublishing(null);
+    }
+  };
 
   return (
     <div className="library">
@@ -93,6 +113,11 @@ export function SpriteLibrary({
             <span className="library-tab-count">{counts[type]}</span>
           </button>
         ))}
+        {available && (
+          <button type="button" className="library-tab library-gallery-tab" onClick={() => setGalleryOpen(true)}>
+            <i className="fa-solid fa-images" aria-hidden="true" /> {t('gallery.open')}
+          </button>
+        )}
       </div>
       <div className="library-grid">
         <button
@@ -119,10 +144,27 @@ export function SpriteLibrary({
             >
               <i className="fa-solid fa-xmark" />
             </button>
+            {/* Publishing needs an account, so the control only appears once there is one to publish
+                to - an offer nobody can accept is worse than no offer. */}
+            {session && (
+              <button
+                type="button"
+                className={`library-publish${sprite.visibility === 'public' ? ' is-public' : ''}`}
+                disabled={publishing === sprite.id}
+                title={sprite.visibility === 'public' ? t('gallery.unpublishTitle') : t('gallery.publishTitle')}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void togglePublished(sprite);
+                }}
+              >
+                <i className={`fa-solid fa-${sprite.visibility === 'public' ? 'earth-asia' : 'lock'}`} />
+              </button>
+            )}
           </div>
         ))}
         {shown.length === 0 && <p className="library-empty">{t('library.empty')}</p>}
       </div>
+      <GalleryDialog open={galleryOpen} onClose={() => setGalleryOpen(false)} onError={onError} />
     </div>
   );
 }

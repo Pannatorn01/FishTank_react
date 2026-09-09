@@ -53,6 +53,19 @@
 [`scripts/storage-smoke.cjs`](../scripts/storage-smoke.cjs) — **25/25 ผ่าน** และ
 [`scripts/auth-smoke.cjs`](../scripts/auth-smoke.cjs) — **9/9 ผ่าน** (รันคู่กับ `npm run dev`)
 
+### P6-4/P6-5 — สิ่งที่ตัดสินใจไว้ (อ่านก่อนแก้)
+
+- **gallery มีเฉพาะ sprite ไม่มีตู้** · ตู้ยังเป็น private/unlisted เท่านั้น ไม่ใช่เพราะ moderation แล้ว
+  แต่เพราะ**ยังไม่มีหน้ารายการตู้** — `public` ที่ไม่มีที่ให้ browse ก็คือ unlisted ที่เดา id ได้ ซึ่งแย่กว่าเดิม
+- **fork = คัดลอก ไม่ใช่ลิงก์** · ต้นฉบับถูกแก้/ถอด/ลบทีหลัง สำเนาไม่กระทบ และสำเนาเป็นของผู้คัดลอกจริง ๆ
+  (sync/publish/ลบได้เหมือน sprite ที่วาดเอง) · เก็บแค่ `forkedFrom` ไว้บอกที่มา
+- **auto-hide ที่ 3 คน** — ยอมรับตรง ๆ ว่าเป็นเครื่องมือหยาบ: 3 บัญชีที่นัดกันซ่อนอะไรก็ได้ · เลือกแบบนี้เพราะ
+  ทางเลือกของโปรเจกต์ที่มีแอดมินคนเดียวคือ "ของที่ถูกรายงานค้างอยู่จนกว่าจะมีคนมาอ่านคิว" ซึ่งแย่กว่า ·
+  การซ่อน**ย้อนกลับได้** และ**ไม่แตะงานของเจ้าของ** (sprite ยังอยู่ใน library/ตู้ และ sync ตามปกติ)
+- **ผู้รายงานไม่เคยรู้ผล** — ไม่บอกว่ามีคนรายงานไปกี่คนแล้ว เพราะนั่นคือตัวเลขที่คนนัดกันถล่มอยากเห็น
+- **ไม่มีหน้า admin ในแอป** — ต้องมีระบบ role + การให้/ถอน/ตรวจสอบสิทธิ์ ซึ่งพังได้แรงกว่าปัญหาที่มันแก้
+  สำหรับโปรเจกต์ที่แอดมินคนเดียวและเปิด SQL editor อยู่แล้ว
+
 ### วิธีรันชุดทดสอบที่ต้องคุยกับ Supabase จริง
 
 `storage-smoke` / `auth-smoke` รันได้เสมอ (local ล้วน) แต่ `rls-smoke` / `sync-smoke` / `share-smoke` /
@@ -672,5 +685,5 @@ create policy read_used_in_shared on sprites for select using (
 - [x] **P6-1** guest mode — `localUserId` มีตั้งแต่ P4 · ปุ่ม "Back up my work" เป็นข้อเสนอ ไม่ใช่ประตู · ไม่มี modal บังคับตอนโหลด (มีเทสต์คุม)
 - [x] **P6-2** magic link ([`useAuth.ts`](../src/hooks/useAuth.ts) + [`AccountMenu.tsx`](../src/components/AccountMenu.tsx)) + flow ถามตอนล็อกอินครั้งแรกว่าจะอัปโหลดงานในเครื่องไหม · `claimLocalWork()` ผ่าน outbox (ขัดจังหวะแล้วทำต่อได้ · รันซ้ำได้) · **เขียนธง `claimedBy` ต่อเมื่อ outbox ว่างจริง** · ไม่ลบข้อมูล local เลย · (Google login ยังไม่ทำ — magic link พอสำหรับตอนนี้)
 - [x] **P6-3** แชร์ตู้ — `visibility` + `tank_shares` + `tank_invites` + หน้าดูตู้คนอื่นแบบอ่านอย่างเดียว · UI อยู่ในแท็บ **Share** ของ sidebar ([`TankSharePanel.tsx`](../src/components/tank/TankSharePanel.tsx)) · ตัวดู [`SharedTankView.tsx`](../src/components/tank/SharedTankView.tsx) + [`SharedTankCanvas.tsx`](../src/components/tank/SharedTankCanvas.tsx) · ทุกอย่างที่คุยกับ Supabase เรื่องแชร์อยู่ใน [`sharing.ts`](../src/lib/data/sharing.ts) ที่เดียว · รายละเอียดการตัดสินใจอยู่ที่ §4 P6.3 ด้านล่าง · **ยิงกับโปรเจกต์จริงแล้ว (2026-09-09)**: [`share-smoke.cjs`](../scripts/share-smoke.cjs) **30/30** (HTTP ล้วน — สิ่งที่ database ยอม) · [`share-ui-smoke.cjs`](../scripts/share-ui-smoke.cjs) **14/14** (Playwright — แอปเรียกใช้จริงไหม เจ้าของเปิดลิงก์ได้ คนแปลกหน้าเปิดแล้วแก้ไม่ได้ และตู้คนอื่นไม่ตกลง IndexedDB ของผู้ชม) · `rls-smoke` 18/18 · `sync-smoke` **20/20** (เพิ่ม 3 ข้อคุม room decor/group ที่เคยไม่มีใครดู)
-- [ ] **P6-4** sprite gallery (`visibility = 'public'`) + ปุ่ม fork (คัดลอกจริง + `forked_from`)
-- [ ] **P6-5** ปุ่มรายงาน + ธง `hidden_by_admin` + หน้ารายการที่ถูกรายงาน — ก่อนเปิด public ทุกชนิด
+- [x] **P6-4** sprite gallery — [`gallery.ts`](../src/lib/data/gallery.ts) + [`GalleryDialog.tsx`](../src/components/editor/GalleryDialog.tsx) · publish/unpublish จากการ์ดใน library · fork = **คัดลอกจริง** (id ใหม่ · private เสมอ · `forkedFrom` บอกที่มา) · `gallery_sprites()` เป็น SECURITY DEFINER ที่**ไม่คืน `user_id`** ออกมาเลย
+- [x] **P6-5** ปุ่มรายงานอยู่บนทุกการ์ดใน gallery · ตาราง `content_reports` (1 คน 1 รายงานต่อชิ้น) · **auto-hide เมื่อมีคนรายงาน 3 คนที่ต่างกัน** · คิวตรวจสอบคือ [`supabase/moderation.sql`](../supabase/moderation.sql) (รันใน SQL editor — ไม่ทำหน้า admin ในแอป เพราะต้องมีระบบ role ซึ่งเสี่ยงกว่าปัญหาที่มันแก้)

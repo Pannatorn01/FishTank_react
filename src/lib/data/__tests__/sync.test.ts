@@ -123,6 +123,23 @@ describe('row mapping', () => {
     expect(restored.frames[0][0].cells).toEqual(['#fff', null, null, '#000']);
   });
 
+  it('carries gallery state both ways, defaulting to private', () => {
+    const published: Sprite = { ...sprite(), visibility: 'public', forkedFrom: 'sprite_origin' };
+    const row = spriteToRow(published);
+    expect(row.visibility).toBe('public');
+    expect(row.forked_from).toBe('sprite_origin');
+
+    const restored = rowToSprite(row);
+    expect(restored.visibility).toBe('public');
+    expect(restored.forkedFrom).toBe('sprite_origin');
+
+    // A record that predates the gallery reads as private and not a copy, never as undefined - the
+    // library badge and the publish toggle both read these without a fallback of their own.
+    const legacy = rowToSprite({ ...spriteToRow(sprite()), visibility: undefined, forked_from: undefined });
+    expect(legacy.visibility).toBe('private');
+    expect(legacy.forkedFrom).toBeNull();
+  });
+
   it('sends frames encoded, and never sends user_id or rev', () => {
     const row = spriteToRow(sprite()) as unknown as Record<string, unknown>;
     expect(JSON.stringify(row.frames)).toContain('rle1');

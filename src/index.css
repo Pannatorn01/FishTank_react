@@ -2211,3 +2211,92 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 /* Someone else's tank cannot be resized by dragging its corner - `resize` is set on .tank-frame for
    the owner's view, and leaving it on here would offer a gesture whose result is thrown away. */
 .tank-frame-readonly { resize: none; }
+
+
+/* Community gallery (GalleryDialog.tsx). A plain overlay rather than the AlertDialog used elsewhere:
+   this is a browsable grid that wants the whole screen, not a question with two answers. */
+.gallery-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+}
+.gallery-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(900px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 16px;
+  background: var(--pixel-bg);
+  border: 2px solid var(--border, #444);
+}
+.gallery-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.gallery-header h2 { margin: 0; font-size: 0.9rem; }
+.gallery-hint { margin: 0; padding: 12px 0; font-size: 0.78rem; opacity: 0.8; }
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+}
+.gallery-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border, #444);
+}
+.gallery-name {
+  max-width: 100%;
+  font-size: 0.7rem;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gallery-actions { display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%; }
+.gallery-report {
+  padding: 2px 4px;
+  font: inherit;
+  font-size: 0.64rem;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0.65;
+}
+.gallery-report:hover:not(:disabled) { opacity: 1; color: #a83232; }
+.gallery-report:disabled { cursor: default; opacity: 0.4; }
+.gallery-more { display: flex; justify-content: center; }
+.gallery-report-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  font-size: 0.75rem;
+  border: 1px solid var(--border, #444);
+}
+.gallery-report-form p { margin: 0; }
+.gallery-report-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* The little lock/globe on a library card (SpriteLibrary.tsx) - published state at a glance. */
+.library-publish {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  padding: 2px 4px;
+  font-size: 0.6rem;
+  color: inherit;
+  background: rgba(0, 0, 0, 0.35);
+  border: none;
+  cursor: pointer;
+  opacity: 0.5;
+}
+.library-publish:hover:not(:disabled) { opacity: 1; }
+.library-publish.is-public { opacity: 1; color: #4ade80; }

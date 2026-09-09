@@ -568,3 +568,110 @@ grant execute on function public.tank_share_list(text) to authenticated;
 grant execute on function public.claim_tank_invites() to authenticated;
 grant execute on function public.tanks_shared_with_me() to authenticated;
 grant execute on function public.get_shared_tank(text, text) to anon, authenticated;
+
+-- ================================================================ P6-4/P6-5: gallery and moderation
+--
+-- These two ship together, deliberately. A listing anyone can browse and a way to report what is in it
+-- are the same feature: publishing without reporting hands strangers a megaphone with nobody at the
+-- other end, and the plan says neither goes out alone (§4 P6.4/P6.5).
+--
+-- Scope: sprites only. A tank can still be private or unlisted, never public - not because of
+-- moderation any more, but because nothing lists tanks, and "public" without a listing is only an
+-- unlisted tank with a guessable address. That is a worse offer than the one it replaces.
+
+-- A report is one person saying one thing about one item, once. The primary key is what enforces
+-- "once": without it, a single person could file the same complaint until the auto-hide below fired.
+create table if not exists public.content_reports (
+  target_type text not null,
+  target_id   text not null,
+  reporter_id uuid not null references auth.users(id) on delete cascade default auth.uid(),
+  reason      text not null default '',
+  created_at  timestamptz not null default now(),
+  resolved_at timestamptz,
+  primary key (target_type, target_id, reporter_id),
+  constraint content_reports_target_check check (target_type in ('sprite', 'tank'))
+);
+create index if not exists content_reports_open_idx on public.content_reports (target_type, target_id)
+  where resolved_at is null;
+
+alter table public.content_reports enable row level security;
+
+-- You may file a report and see your own. You may not see anyone else's, or count them: knowing how
+-- close an item is to being hidden is exactly what someone organising a pile-on would want.
+drop policy if exists content_reports_insert on public.content_reports;
+create policy content_reports_insert on public.content_reports
+  for insert with check (reporter_id = auth.uid());
+
+drop policy if exists content_reports_read_own on public.content_reports;
+create policy content_reports_read_own on public.content_reports
+  for select using (reporter_id = auth.uid());
+
+-- Nobody gets update or delete: a report is a record of something having been said, and resolving one
+-- is an administrator's job, done with the service key (see supabase/moderation.sql).
+
+/**
+ * Hides an item once enough different people have reported it.
+ *
+ * This is a blunt instrument and worth being honest about: three coordinated accounts can hide
+ * anything, and nothing here can tell a pile-on from a consensus. It is here because the alternative
+ * for a project with one part-time administrator is worse - reported content staying up until someone
+ * happens to read a queue. Hiding is reversible, costs the owner a gallery listing rather than their
+ * work (the sprite stays in their library and in their tanks, and syncs as it always did), and every
+ * report is kept so a human can look at what actually happened.
+ *
+ * The threshold is deliberately low for the same reason: a small project has few eyes.
+ */
+create or replace function public.autohide_reported() returns trigger
+language plpgsql security definer set search_path = public as $fn$
+declare
+  reporters integer;
+begin
+  select count(*) into reporters
+  from public.content_reports r
+  where r.target_type = new.target_type and r.target_id = new.target_id and r.resolved_at is null;
+
+  if reporters >= 3 then
+    if new.target_type = 'sprite' then
+      update public.sprites set hidden_by_admin = true where id = new.target_id;
+    else
+      update public.tanks set hidden_by_admin = true where id = new.target_id;
+    end if;
+  end if;
+  return new;
+end;
+$fn$;
+
+drop trigger if exists content_reports_autohide on public.content_reports;
+create trigger content_reports_autohide after insert on public.content_reports
+  for each row execute function public.autohide_reported();
+
+/**
+ * The gallery listing.
+ *
+ * A function rather than a plain select so the rows can be trimmed: the sprites table carries
+ * `user_id`, and a browsable listing has no reason to hand every visitor the account id behind every
+ * drawing. What comes back is what it takes to draw a thumbnail and copy it.
+ *
+ * `before` pages backwards through `server_updated_at`, which is monotonic on the server (unlike the
+ * client's updated_at - see the note above bump_rev), so paging cannot skip or repeat rows the way
+ * an offset would while people keep publishing.
+ */
+create or replace function public.gallery_sprites(lim integer default 60, before timestamptz default null)
+returns table (
+  id text, name text, type text, width int, height int, frame_ms int, frames jsonb,
+  forked_from text, server_updated_at timestamptz
+)
+language sql stable security definer set search_path = public as $fn$
+  select s.id, s.name, s.type, s.width, s.height, s.frame_ms, s.frames, s.forked_from, s.server_updated_at
+  from public.sprites s
+  where s.visibility = 'public'
+    and s.deleted_at = 0
+    and not s.hidden_by_admin
+    and (before is null or s.server_updated_at < before)
+  order by s.server_updated_at desc
+  limit least(greatest(lim, 1), 100);
+$fn$;
+
+revoke all on function public.gallery_sprites(integer, timestamptz) from public;
+-- Browsing does not require an account; copying and reporting do (RLS decides both).
+grant execute on function public.gallery_sprites(integer, timestamptz) to anon, authenticated;

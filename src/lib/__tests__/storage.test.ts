@@ -42,6 +42,9 @@ function validSprite(overrides: Partial<Sprite> = {}): Sprite {
     height,
     frames: [[storage.makeLayer(storage.emptyFrame(width, height))]],
     frameMs: storage.DEFAULT_FRAME_MS,
+    // The shape normalizeSprite guarantees on load, so a round-trip compares like with like.
+    visibility: 'private',
+    forkedFrom: null,
     ...overrides,
   };
 }
@@ -332,5 +335,26 @@ describe('malformed preference values (shape checks)', () => {
     expect(storage.loadBrushSizes()).toEqual({});
     localStorage.setItem('fishtank.brushSizes.v1', JSON.stringify({ pen: 4 }));
     expect(storage.loadBrushSizes()).toEqual({ pen: 4 });
+  });
+});
+
+describe('gallery fields (P6-4)', () => {
+  it('normalizeSprite fills in visibility and forkedFrom for records that predate them', () => {
+    const legacy = { id: 'old', name: 'Old', type: 'fish', width: 2, height: 1, frames: [[null, '#fff']] } as unknown as Sprite;
+    const normalized = storage.normalizeSprite(legacy);
+    expect(normalized.visibility).toBe('private');
+    expect(normalized.forkedFrom).toBeNull();
+  });
+
+  it('keeps a published sprite published across a save and load', () => {
+    storage.saveSprites([validSprite({ visibility: 'public', forkedFrom: 'sprite_source' })]);
+    const loaded = storage.loadSprites()![0];
+    expect(loaded.visibility).toBe('public');
+    expect(loaded.forkedFrom).toBe('sprite_source');
+  });
+
+  it('treats an unrecognised visibility as private rather than trusting it', () => {
+    const odd = { ...validSprite(), visibility: 'everyone' } as unknown as Sprite;
+    expect(storage.normalizeSprite(odd).visibility).toBe('private');
   });
 });

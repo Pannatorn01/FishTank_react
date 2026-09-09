@@ -231,6 +231,10 @@ export function normalizeSprite(sprite: Sprite): Sprite {
     height,
     frames,
     frameMs: sprite.frameMs || DEFAULT_FRAME_MS,
+    // Filled in rather than left undefined so every consumer can read them without a fallback of its
+    // own; both describe a sprite's relationship to the gallery, which older records predate.
+    visibility: sprite.visibility === 'public' ? 'public' : 'private',
+    forkedFrom: sprite.forkedFrom ?? null,
   };
 }
 

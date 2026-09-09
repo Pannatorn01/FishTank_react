@@ -22,6 +22,7 @@ export type Frame = CellColor[];
  *  drag's start point (the center) out to its end point (the edge). */
 export type GradientType = 'linear' | 'radial';
 export type SpriteType = 'fish' | 'object' | 'room' | 'background';
+export type SpriteVisibility = 'private' | 'public';
 export type SwimSpeed = 'slow' | 'medium' | 'fast' | 'veryFast';
 /** The tank's swim-area silhouette: 'rectangle' is the classic box, 'rounded' cuts its four corners
  *  on a radius, 'oval' inscribes an ellipse in the tank's bounding box (a round bowl look). Affects
@@ -61,6 +62,13 @@ export interface Sprite extends RecordMeta {
   frames: Layer[][];
   /** Milliseconds each frame stays on screen during animation (editor preview and the tank). */
   frameMs: number;
+  /** 'public' means listed in the gallery for anyone to copy (plan P6.4). Optional because it only
+   *  means anything once there is a project to publish to; absent reads as 'private', and
+   *  normalizeSprite fills it in on load so the UI can rely on it. */
+  visibility?: SpriteVisibility;
+  /** The gallery sprite this one was copied from, if any. A copy, never a link: the original can be
+   *  edited, unpublished or deleted afterwards and this sprite is unaffected. */
+  forkedFrom?: string | null;
 }
 
 export type ToolName =
