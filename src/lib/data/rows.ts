@@ -103,7 +103,11 @@ export function childToRow(tankId: string, record: Child): ChildRow {
   return {
     id,
     tank_id: tankId,
-    sprite_id: 'spriteId' in record ? (record as Instance).spriteId : null,
+    // Omitted entirely, not sent as null, for a record that has no sprite. Groups live in a table with
+    // no sprite_id column, and PostgREST rejects the whole request for naming a column that does not
+    // exist - which is a rejection the outbox can only retry, forever. (Room decor does have a sprite,
+    // and the column it needs was added in supabase/schema.sql's P6-3 section for the same reason.)
+    ...('spriteId' in record ? { sprite_id: (record as Instance).spriteId } : {}),
     // The meta fields live in columns, so they are stripped from the payload rather than stored twice
     // and given the chance to disagree.
     data: data as Record<string, unknown>,

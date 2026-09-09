@@ -6,8 +6,9 @@ import { TankBackgroundPanel } from './TankBackgroundPanel';
 import { TankCanvas } from './TankCanvas';
 import { TankLayers } from './TankLayers';
 import { TankPalette } from './TankPalette';
+import { TankSharePanel } from './TankSharePanel';
 
-type SidebarTab = 'layers' | 'palette' | 'background';
+type SidebarTab = 'layers' | 'palette' | 'background' | 'share';
 
 export function TankPanel({ engine }: { engine: TankEngine }) {
   const { t } = useLanguage();
@@ -42,13 +43,23 @@ export function TankPanel({ engine }: { engine: TankEngine }) {
           >
             <i className="fa-solid fa-image" /> {t('tank.tabBackground')}
           </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={sidebarTab === 'share' ? 'default' : 'secondary'}
+            onClick={() => setSidebarTab('share')}
+          >
+            <i className="fa-solid fa-share-nodes" /> {t('tank.tabShare')}
+          </Button>
         </div>
         {sidebarTab === 'layers' ? (
           <TankLayers engine={engine} />
         ) : sidebarTab === 'palette' ? (
           <TankPalette engine={engine} />
-        ) : (
+        ) : sidebarTab === 'background' ? (
           <TankBackgroundPanel engine={engine} />
+        ) : (
+          <TankSharePanel engine={engine} />
         )}
       </div>
     </div>

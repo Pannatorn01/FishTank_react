@@ -1,6 +1,6 @@
 # แผนย้ายชั้นเก็บข้อมูล: localStorage → Storage Adapter → Database
 
-> Created: 2026-09-08 · Updated: 2026-09-08 · Status: **P0–P4 เสร็จ · P5 เขียนโค้ดครบแล้วแต่ยังไม่ได้ทดสอบกับ Supabase จริง (P5-5) · P6 (auth) เป็นงานถัดไป** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
+> Created: 2026-09-08 · Updated: 2026-09-09 · Status: **P0–P5 เสร็จ (ทดสอบกับโปรเจกต์จริงแล้ว) · P6-1/6-2/6-3 เสร็จและทดสอบกับโปรเจกต์จริงแล้ว · เหลือ P6-4 (sprite gallery + fork) และ P6-5 (moderation)** · ข้อตัดสินใจหลักล็อกครบแล้ว (§0)
 > ที่มา: audit โค้ดจริง ไม่ใช่การเดา
 > ทุกข้ออ้างอิง `ไฟล์:บรรทัด` ณ commit `86efa06` — ถ้าบรรทัดเลื่อน ให้ grep ชื่อฟังก์ชันที่ระบุไว้แทน
 >
@@ -457,6 +457,24 @@ src/lib/supabase.ts               createClient() ที่เดียวใน�
 - หน้าดูตู้ของคนอื่น = โหมด read-only จริง ๆ: ซ่อนปุ่ม Save/แก้ไข และ **ห้ามให้ข้อมูลของคนอื่นเข้ามาปนใน IndexedDB
   ของเรา** — แยก store `remoteTanks` ที่ล้างทิ้งได้ ไม่เข้า sync loop
 - sprite ที่ตู้สาธารณะใช้ต้องดูได้ด้วย ไม่งั้นตู้จะโล่ง → policy ของ `sprites` ต้องยอมให้อ่าน sprite ที่ถูกอ้างโดยตู้ที่เปิดสาธารณะ (ดู §5)
+
+**สิ่งที่ทำจริง (2026-09-09) และเหตุผลที่ต่างจากแผนเดิม**
+
+| หัวข้อ | ที่ทำ | ทำไม |
+| --- | --- | --- |
+| ลิงก์ของตู้ `unlisted` | เพิ่มคอลัมน์ `tanks.share_slug` (สุ่ม 128 บิตจาก `crypto.getRandomValues`) · ลิงก์คือ `?tank=<id>&k=<slug>` · **ถอด `unlisted` ออกจาก policy ที่อ่านตรงจากตาราง** — เข้าได้ทางเดียวคือ RPC `get_shared_tank(t_id, slug)` | `uid('tank')` = เวลา + สุ่ม base36 6 ตัว (~2³¹) เดาได้ ไม่ใช่ความลับ · ถ้าปล่อยให้ id เปิดตู้ได้ "ใครมีลิงก์ก็ดูได้" จะกลายเป็น "ใครเดา id ถูกก็ดูได้" |
+| แชร์ด้วยอีเมล | RPC `share_tank(t_id, email)` (SECURITY DEFINER) · ถ้าอีเมลนั้นยังไม่มีบัญชี เก็บไว้ที่ตาราง `tank_invites` แล้ว `claim_tank_invites()` แปลงเป็น share จริงตอนล็อกอินครั้งแรก | `auth.users` อ่านจาก browser ไม่ได้และไม่ควรอ่านได้ · **ฟังก์ชันไม่บอกว่าอีเมลนั้นมีบัญชีหรือไม่** ไม่งั้นใครก็ใช้มันเช็กได้ว่าอีเมลไหนสมัครไว้แล้ว — UI จึงพูดประโยคเดียวทั้งสองกรณี |
+| ตู้คนอื่นใน IndexedDB | **ไม่เขียนลงเลย** — ไม่มี store `remoteTanks` ตามแผน · ดึงมาทั้งก้อนตอนเปิด เก็บไว้ในหน่วยความจำ หายไปพร้อมแท็บ | ข้อกำหนดคือ "ต้องล้างทิ้งได้" · การไม่เขียนคือการรับประกันเดียวกันโดยไม่มีอะไรให้ล้าง — และทำให้คำถาม "ปลาคนอื่นหลุดเข้าคลังเราไหม" ตอบได้ด้วยโครงสร้าง ไม่ใช่ด้วยความหวัง |
+| read-only จริงแค่ไหน | `TankEngine` รับ `{ source, readOnly }` · `save()` ปฏิเสธ · `refreshPalette()` ไม่แตะคลัง local · หน้าตัวดู (`SharedTankCanvas`) ไม่มีปุ่ม ไม่มี pointer handler และ room decor อยู่หลัง `pointer-events: none` | เอนจินกันไว้อยู่แล้ว แต่ปุ่มที่กดแล้วโดนปฏิเสธ แย่กว่าปุ่มที่ไม่มี · ปลายังว่ายอยู่ (เป็นแค่ตัวเลขในหน่วยความจำ) เพราะรูปนิ่งของตู้ไม่ได้บอกอะไรเลยว่าเจ้าของทำอะไรไว้ |
+| `public` | **ยังไม่เปิดใน UI** — schema/policy รองรับแล้ว แต่ panel มีแค่ "เฉพาะฉัน" กับ "ใครมีลิงก์" | ตามที่ §6.4 เขียนไว้เอง: ห้ามเปิดสาธารณะก่อนมีปุ่มรายงาน + `hidden_by_admin` + หน้ารายการที่ถูกรายงาน (P6-5) |
+
+**บั๊กที่เจอระหว่างทำ (ข้อ 1-2 จากการอ่านโค้ด · ข้อ 3 เจอตอนยิงกับโปรเจกต์จริง — ทั้งสามยืนยันกับ DB จริงแล้ว):**
+
+1. **room decor และ group ไม่เคยขึ้น server เลย** — `childToRow()` ใส่คีย์ `sprite_id` ให้ทุก child row แต่ตาราง `tank_groups` และ `room_instances` ไม่มีคอลัมน์นั้น · PostgREST ปฏิเสธทั้งคำขอเมื่อเจอคอลัมน์ที่ไม่มีอยู่ → entry ค้างใน outbox แล้ว retry ตลอดไป · แก้สองทาง: เพิ่มคอลัมน์ `sprite_id` ให้ `room_instances` (มันชี้ไปที่ sprite จริง ๆ และ policy ต้องใช้) และให้ `childToRow()` **ไม่ส่งคีย์นี้เลย** สำหรับ record ที่ไม่มี sprite
+2. **delta pull ดึงของคนอื่นเข้าคลังตัวเอง** — `pullSprites()` เดิม `select('*')` ไม่กรอง `user_id` · ก่อนมีการแชร์ RLS ทำให้เห็นแค่ของตัวเองอยู่แล้ว แต่ทันทีที่แชร์ตู้ได้ sprite ของตู้นั้นจะอ่านได้ด้วย (นั่นคือเจตนา) แล้วไหลเข้า IndexedDB ของผู้ชม ปนกับงานตัวเอง แยกไม่ออก และอัปโหลดกลับไม่ได้ตลอดกาล · แก้ด้วย `.eq('user_id', <uid ตัวเอง>)` ทั้ง sprite และ tank
+3. **`get_shared_tank()` คืนตู้ private ให้คนที่ไม่ได้ล็อกอินเลย** — เจอจาก `share-smoke.cjs` ตอนยิงกับโปรเจกต์จริง (ยืนยันซ้ำด้วยการสร้างตู้ private จริงแล้วอ่านโดยไม่ส่ง token: ได้ชื่อตู้ ปลา และ sprite ของเจ้าของมาครบ) · สาเหตุคือ three-valued logic: ไม่มี session → `auth.uid()` เป็น NULL → `tank.user_id = auth.uid()` เป็น NULL ไม่ใช่ false → `NULL or false or false or false` = NULL → **`if not NULL then` ไม่เข้า branch ไหนเลย** ฟังก์ชันจึงหลุดผ่านการ์ดไปคืนตู้ · แก้ด้วย `coalesce(..., false)` ทั้งตัวเปรียบเทียบและตัวการ์ด · บทเรียนที่กว้างกว่านั้น: ใน `USING` ของ policy หรือใน `WHERE` นั้น NULL = ปฏิเสธโดยอัตโนมัติ แต่ใน `if` ของ plpgsql NULL ไม่ใช่ทั้งจริงและเท็จ — boolean ที่ประกอบเองต้องทำให้ total ก่อนถึงจะเชื่อได้ · **นี่คือเหตุผลที่ต้องยิงของจริง**: unit test ผ่านหมด 254 ตัว build ผ่าน และไม่มีอะไรจับข้อนี้ได้เลย
+
+**ยังไม่ได้ทำ / รู้ตัวว่าเหลือ:** `get_shared_tank` ไม่มี realtime — ผู้ชมต้องกดเข้าใหม่ถึงจะเห็นของที่เจ้าของเพิ่งเซฟ · แชร์ตู้ได้เฉพาะตู้ที่ backup แล้ว (ตู้ guest ล้วนยังไม่มีแถวบน server ให้แชร์) · `tank_share_list` คืนอีเมลของ viewer เป็น null ถ้าบัญชีนั้นไม่มีอีเมล (บัญชี anonymous ที่ใช้ตอนเทสต์)
 **6.4 Sprite gallery + fork**
 - `sprites.visibility = 'public'` = ขึ้น gallery ให้คนอื่นเห็นและก๊อปไปใช้ได้ (แยกจากการแชร์ตู้ — แชร์ sprite เดี่ยว ๆ ได้)
 - **fork = คัดลอกจริง ไม่ใช่การอ้างอิง**: สร้าง sprite ใหม่ `id = uid('sprite')`, `user_id = ฉัน`,
@@ -646,6 +664,6 @@ create policy read_used_in_shared on sprites for select using (
 - [ ] **P5-6** ตัดสินใจว่า sprite ต้องย้ายไป Supabase Storage ไหม (ใช้ตัวเลขจริงจาก P2)
 - [x] **P6-1** guest mode — `localUserId` มีตั้งแต่ P4 · ปุ่ม "Back up my work" เป็นข้อเสนอ ไม่ใช่ประตู · ไม่มี modal บังคับตอนโหลด (มีเทสต์คุม)
 - [x] **P6-2** magic link ([`useAuth.ts`](../src/hooks/useAuth.ts) + [`AccountMenu.tsx`](../src/components/AccountMenu.tsx)) + flow ถามตอนล็อกอินครั้งแรกว่าจะอัปโหลดงานในเครื่องไหม · `claimLocalWork()` ผ่าน outbox (ขัดจังหวะแล้วทำต่อได้ · รันซ้ำได้) · **เขียนธง `claimedBy` ต่อเมื่อ outbox ว่างจริง** · ไม่ลบข้อมูล local เลย · (Google login ยังไม่ทำ — magic link พอสำหรับตอนนี้)
-- [ ] **P6-3** `visibility` + `tank_shares` + หน้าดูตู้คนอื่นแบบ read-only (store `remoteTanks` แยก)
+- [x] **P6-3** แชร์ตู้ — `visibility` + `tank_shares` + `tank_invites` + หน้าดูตู้คนอื่นแบบอ่านอย่างเดียว · UI อยู่ในแท็บ **Share** ของ sidebar ([`TankSharePanel.tsx`](../src/components/tank/TankSharePanel.tsx)) · ตัวดู [`SharedTankView.tsx`](../src/components/tank/SharedTankView.tsx) + [`SharedTankCanvas.tsx`](../src/components/tank/SharedTankCanvas.tsx) · ทุกอย่างที่คุยกับ Supabase เรื่องแชร์อยู่ใน [`sharing.ts`](../src/lib/data/sharing.ts) ที่เดียว · รายละเอียดการตัดสินใจอยู่ที่ §4 P6.3 ด้านล่าง · **ยิงกับโปรเจกต์จริงแล้ว (2026-09-09)**: [`share-smoke.cjs`](../scripts/share-smoke.cjs) **30/30** (HTTP ล้วน — สิ่งที่ database ยอม) · [`share-ui-smoke.cjs`](../scripts/share-ui-smoke.cjs) **14/14** (Playwright — แอปเรียกใช้จริงไหม เจ้าของเปิดลิงก์ได้ คนแปลกหน้าเปิดแล้วแก้ไม่ได้ และตู้คนอื่นไม่ตกลง IndexedDB ของผู้ชม) · `rls-smoke` 18/18 · `sync-smoke` **20/20** (เพิ่ม 3 ข้อคุม room decor/group ที่เคยไม่มีใครดู)
 - [ ] **P6-4** sprite gallery (`visibility = 'public'`) + ปุ่ม fork (คัดลอกจริง + `forked_from`)
 - [ ] **P6-5** ปุ่มรายงาน + ธง `hidden_by_admin` + หน้ารายการที่ถูกรายงาน — ก่อนเปิด public ทุกชนิด

@@ -184,7 +184,7 @@ export class SyncEngine {
     this.setStatus({ state: 'syncing', lastError: null });
     try {
       await this.flush();
-      await this.pull();
+      await this.pull(data.session.user.id);
       this.setStatus({ state: 'idle', lastSyncedAt: Date.now() });
     } catch (e) {
       console.warn('sync failed', e);
@@ -264,10 +264,20 @@ export class SyncEngine {
 
   // ------------------------------------------------------------------ pull
 
-  private async pull(): Promise<void> {
+  /**
+   * `userId` is not decoration: every pull is scoped to the signed-in user's own rows.
+   *
+   * Row-level security decides what this client *may* read, and once tanks can be shared that is
+   * deliberately more than what it should *store* - a sprite becomes readable to everyone a tank was
+   * shared with (schema.sql: sprites_shared_read). An unscoped pull would fold those into this
+   * browser's own library, where they are indistinguishable from the user's own work, get re-queued by
+   * the merge, and then fail to upload forever because they belong to someone else. Someone else's
+   * tank is read on demand and kept in memory instead (see lib/data/sharing.ts).
+   */
+  private async pull(userId: string): Promise<void> {
     this.lastChildRows = [];
-    await this.pullSprites();
-    await this.pullTank();
+    await this.pullSprites(userId);
+    await this.pullTank(userId);
   }
 
   /**
@@ -282,11 +292,12 @@ export class SyncEngine {
    * It is the newest value actually seen, not "now", so a row written while this pull was in flight is
    * still picked up next time.
    */
-  private async pullSprites(): Promise<void> {
+  private async pullSprites(userId: string): Promise<void> {
     const mark = (await this.local.getMeta(MARK_SPRITES)) || EPOCH;
     const { data, error } = await this.supabase
       .from(TABLE_SPRITES)
       .select('*')
+      .eq('user_id', userId)
       .gt('server_updated_at', mark)
       .order('server_updated_at', { ascending: true });
     if (error) throw error;
@@ -306,7 +317,7 @@ export class SyncEngine {
     this.onPulled?.('sprites');
   }
 
-  private async pullTank(): Promise<void> {
+  private async pullTank(userId: string): Promise<void> {
     const tankId = await this.local.getCurrentTankId();
     const mark = (await this.local.getMeta(MARK_TANK)) || EPOCH;
 
@@ -314,6 +325,7 @@ export class SyncEngine {
       .from(TABLE_TANKS)
       .select('*')
       .eq('id', tankId)
+      .eq('user_id', userId)
       .gt('server_updated_at', mark);
     if (tankError) throw tankError;
 

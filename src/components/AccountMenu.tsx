@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { sendMagicLink, signOut, useAuth } from '@/hooks/useAuth';
 import { getSync } from '@/lib/data';
+import { claimTankInvites } from '@/lib/data/sharing';
 import { useLanguage } from '@/lib/i18n';
 
 type Phase = 'closed' | 'email' | 'sent' | 'claim' | 'claiming' | 'claimed';
@@ -40,6 +41,10 @@ export function AccountMenu() {
     if (!session) return;
     let cancelled = false;
     void (async () => {
+      // Anyone who shared a tank with this address before it had an account has been waiting in
+      // tank_invites; signing in is what turns those into real shares (plan P6.3). Done here because
+      // this component is mounted for the whole session, and it costs one call that returns 0.
+      await claimTankInvites();
       const sync = getSync();
       if (!sync) return;
       const claimedBy = await sync.claimedBy();

@@ -3,7 +3,7 @@ import { latestUpdatedAt, mergeRecords, pickWinner, type Syncable } from '../mer
 import { coalesce, isDue, makeEntry, withFailure } from '../outbox';
 import { childToRow, rowToChild, rowToSprite, spriteToRow } from '../rows';
 import * as storage from '../../storage';
-import type { Instance, Sprite } from '../../types';
+import type { Instance, RoomInstance, Sprite, TankGroup } from '../../types';
 
 function rec(id: string, updatedAt: number, extra: Partial<Syncable> = {}): Syncable {
   return { id, updatedAt, deletedAt: 0, rev: 0, ...extra };
@@ -168,5 +168,29 @@ describe('row mapping', () => {
 
     const restored = rowToChild<Instance>(row);
     expect(restored).toEqual({ ...instance, rev: 0 });
+  });
+
+  // A group has no sprite, and `tank_groups` has no sprite_id column. Sending the key anyway - even as
+  // null - makes PostgREST reject the whole request for naming a column that does not exist, which the
+  // outbox can only retry forever: every group and every piece of room decor silently stopped syncing.
+  it('leaves sprite_id off entirely for a record that has no sprite', () => {
+    const group: TankGroup = { id: 'group_1', name: 'School', zone: null, updatedAt: 5, deletedAt: 0, rev: 0 };
+    const row = childToRow('tank_1', group);
+    expect('sprite_id' in row).toBe(false);
+    expect(rowToChild<TankGroup>(row)).toEqual(group);
+  });
+
+  it('keeps sprite_id for room decor, which does point at a sprite', () => {
+    const decor: RoomInstance = {
+      id: 'room_1',
+      spriteId: 'sprite_9',
+      x: 3,
+      y: 4,
+      visible: true,
+      updatedAt: 5,
+      deletedAt: 0,
+      rev: 0,
+    };
+    expect(childToRow('tank_1', decor).sprite_id).toBe('sprite_9');
   });
 });

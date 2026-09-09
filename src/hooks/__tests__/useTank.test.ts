@@ -538,3 +538,63 @@ describe('setInstanceSpeed', () => {
     expect(d.swimSpeed).toBe('slow');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P6-3 - a tank somebody else shared
+// ─────────────────────────────────────────────────────────────────────────────
+describe('read-only engine (a shared tank)', () => {
+  function sharedState(instances: Instance[]) {
+    return {
+      instances,
+      groups: [],
+      roomInstances: [],
+      width: 400,
+      height: 300,
+      shape: 'rectangle' as const,
+      cornerRadiusFrac: 0.22,
+      ovalTopCutFrac: 0.28,
+      backgroundSpriteId: null,
+      backgroundTransform: { x: 0, y: 0, scale: 1, rotation: 0 },
+      waterLevel: 1,
+      algae: 0,
+      lastTickAt: null,
+    };
+  }
+
+  it('loads its contents from the source it was given, not from local storage', async () => {
+    const theirFish = fish();
+    const engine = new TankEngine({
+      readOnly: true,
+      source: { load: async () => ({ tankId: 'tank_theirs', sprites: [FISH_SPRITE], state: sharedState([theirFish]) }) },
+    });
+    // The load path is the same one the local engine uses; only where it reads from differs.
+    await engine.hydrate();
+
+    expect(engine.tankId).toBe('tank_theirs');
+    expect(engine.instances.map((i) => i.id)).toEqual([theirFish.id]);
+    expect(engine.tankWidth).toBe(400);
+  });
+
+  it('refuses to save, so a view of someone else\'s work cannot become a write', async () => {
+    const engine = new TankEngine({
+      readOnly: true,
+      source: { load: async () => ({ tankId: 'tank_theirs', sprites: [], state: sharedState([]) }) },
+    });
+    await engine.hydrate();
+
+    const result = await engine.save();
+    expect(result.ok).toBe(false);
+  });
+
+  it('never swaps in this browser\'s sprite library for theirs', async () => {
+    const engine = new TankEngine({
+      readOnly: true,
+      source: { load: async () => ({ tankId: 'tank_theirs', sprites: [FISH_SPRITE], state: sharedState([]) }) },
+    });
+    await engine.hydrate();
+
+    engine.refreshPalette();
+
+    expect(engine.sprites).toEqual([FISH_SPRITE]);
+  });
+});

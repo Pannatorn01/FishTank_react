@@ -11,7 +11,7 @@ import {
   type TankEngine,
 } from '@/hooks/useTank';
 import { useLanguage } from '@/lib/i18n';
-import { roomSceneMargin, StorageQuotaError, TANK_SHAPES } from '@/lib/storage';
+import { StorageQuotaError, TANK_SHAPES } from '@/lib/storage';
 import type { TankShape } from '@/lib/types';
 import { getTankRendererMode } from '@/tank/render/rendererMode';
 
@@ -22,6 +22,7 @@ import { getTankRendererMode } from '@/tank/render/rendererMode';
 // the main chunk regardless of which renderer ends up being used.
 const TankPixiLayer = lazy(() => import('@/tank/render/TankPixiLayer').then((m) => ({ default: m.TankPixiLayer })));
 import { RoomLayer } from './RoomLayer';
+import { useTankViewport } from './useTankViewport';
 import { TankBackgroundOverlay } from './TankBackgroundOverlay';
 
 const SPEED_ICON: Record<(typeof SWIM_SPEEDS)[number], string> = {
@@ -52,9 +53,10 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
   const [tankRendererMode] = useState(getTankRendererMode);
   const [justSaved, setJustSaved] = useState(false);
   const frameElRef = useRef<HTMLDivElement | null>(null);
-  const viewportElRef = useRef<HTMLDivElement | null>(null);
-  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const lastWheelZoom = useRef(0);
+  // How big the tank is drawn and where its overlays go - shared with the read-only view of somebody
+  // else's tank, which needs exactly the same geometry and none of the editing below.
+  const { viewportElRef, effectiveScale, frameStyle, wrapShapeStyle, frameOffset, pixiHostStyle } = useTankViewport(engine);
 
   const handleSave = async () => {
     // Only show the "saved" tick when it actually saved - the failure case has to say so out loud
@@ -95,20 +97,6 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [drawingZone, engine]);
 
-  // Tracks the viewport's own (fixed-ish, but window-resize-sensitive) content size, so the
-  // auto-fit scale below can be recomputed whenever it changes.
-  useEffect(() => {
-    const el = viewportElRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-      setViewportSize({ width: entry.contentRect.width, height: entry.contentRect.height });
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
   // Ctrl+scroll while the mouse is over the tank zooms it, same shortcut/behavior as the sprite
   // editor's canvas. A native (non-passive) listener is required: React 17+ registers wheel
   // listeners as passive at the root, so a synthetic onWheel prop can't preventDefault() the
@@ -127,7 +115,7 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [engine]);
+  }, [engine, viewportElRef]);
 
   // Keeps the canvas resolution and everyone's positions rescaled live while .tank-frame's size is
   // changing (native drag) - resizeCanvas() only touches the engine's own data (canvas pixel
@@ -165,66 +153,6 @@ export function TankCanvas({ engine }: { engine: TankEngine }) {
     return () => window.removeEventListener('pointerup', onPointerUp);
   }, [engine]);
 
-  const tankWidth = engine.tankWidth ?? TANK_SIZE_MIN.width;
-  const tankHeight = engine.tankHeight ?? TANK_SIZE_MIN.height;
-  // "Fit" = as large as the tank can be drawn while still fitting entirely inside the viewport - the
-  // zoom steps are a fraction *of this*, so 100% zoom can never spill outside the viewport the tank
-  // is centered in, and shrinking the browser window (or growing the tank past what fits) both just
-  // shrink this the same way. Never scales past 1 (a small tank isn't blown up to fill the space).
-  const fitScale =
-    viewportSize.width > 0 && viewportSize.height > 0
-      ? Math.min(1, viewportSize.width / tankWidth, viewportSize.height / tankHeight)
-      : 1;
-  const effectiveScale = fitScale * TANK_ZOOM_STEPS[engine.zoomIndex];
-
-  useEffect(() => {
-    engine.setDisplayScale(effectiveScale);
-    engine.resizeCanvas();
-  }, [engine, effectiveScale, tankWidth, tankHeight]);
-
-  // min/max are expressed in on-screen px too (scaled the same as width/height), so the native
-  // resize handle itself can't be dragged past TANK_SIZE_MIN/MAX in real time - without this, only
-  // the pointerup commit (setTankSize's own clamp) enforced the limit, which meant the box would
-  // visibly overshoot while dragging and then snap back the moment you let go.
-  const frameStyle = {
-    width: tankWidth * effectiveScale,
-    height: tankHeight * effectiveScale,
-    minWidth: TANK_SIZE_MIN.width * effectiveScale,
-    minHeight: TANK_SIZE_MIN.height * effectiveScale,
-    maxWidth: TANK_SIZE_MAX.width * effectiveScale,
-    maxHeight: TANK_SIZE_MAX.height * effectiveScale,
-  };
-
-  // Matches the water shape to whatever TankEngine.draw() actually clips its canvas drawing to
-  // (see shapePath/clampCenterToShape in useTank.ts) - 'oval' is a plain 50% radius (an ellipse
-  // inscribed in any rectangle), 'rounded' mirrors the same corner-radius formula the engine uses
-  // for its clip path/physics so the visible glass edge and the invisible collision edge agree.
-  const wrapShapeStyle =
-    engine.tankShape === 'oval'
-      ? { borderRadius: '50%' }
-      : engine.tankShape === 'rounded'
-        ? { borderRadius: Math.min(tankWidth, tankHeight) * engine.tankCornerRadiusFrac * effectiveScale }
-        : undefined;
-
-  // .tank-frame is centered in .tank-viewport via flexbox (see index.css) - this is that same
-  // centering done in JS, so TankBackgroundOverlay can convert the engine's canvas-logical
-  // coordinates into on-screen positions within the viewport, independent of the frame's own DOM
-  // position.
-  const frameOffset = {
-    left: Math.max(0, (viewportSize.width - frameStyle.width) / 2),
-    top: Math.max(0, (viewportSize.height - frameStyle.height) / 2),
-  };
-
-  // Sized/positioned bigger than (and centered the same as) .tank-frame - room decor (P2) lives in
-  // the margin around the tank rectangle, so the Pixi canvas needs actual pixels to paint there
-  // rather than being clipped at the tank's own edge (see TankPixiLayer.tsx's own doc comment).
-  const { marginX, marginY, sceneWidth, sceneHeight } = roomSceneMargin(tankWidth, tankHeight);
-  const pixiHostStyle = {
-    left: frameOffset.left - marginX * effectiveScale,
-    top: frameOffset.top - marginY * effectiveScale,
-    width: sceneWidth * effectiveScale,
-    height: sceneHeight * effectiveScale,
-  };
 
   return (
     <div className="tank-canvas-col">

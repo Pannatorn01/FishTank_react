@@ -296,3 +296,275 @@ begin
     );
   end loop;
 end $$;
+
+-- ================================================================ P6-3: sharing a tank
+--
+-- Three ways a tank can reach someone else, in increasing order of exposure:
+--
+--   private   - nobody but the owner. The default, and what every tank stays until asked otherwise.
+--   unlisted  - anyone holding the link. The link carries a `share_slug`, NOT the tank id (see below).
+--   public    - listed in a gallery. The column accepts it, the app does not offer it yet: a public
+--               listing without a report button and a moderation queue is the one thing the plan says
+--               not to ship (§4 P6.4/P6.5).
+--
+-- Why a slug rather than the tank id: ids are minted by the client as `tank_<base36 time>_<6 random
+-- base36>` (src/lib/storage.ts uid). That is fine for an identifier and useless as a secret - the time
+-- half is guessable and the random half is about 2^31. "Anyone with the link" means the link has to be
+-- the hard part, so unlisted tanks carry a separate 128-bit slug and the id alone opens nothing.
+
+alter table public.tanks add column if not exists share_slug text;
+create unique index if not exists tanks_share_slug_idx on public.tanks (share_slug) where share_slug is not null;
+
+-- Someone invited by email who has not signed up yet. Kept apart from tank_shares because that table
+-- points at auth.users and there is no user to point at yet; claim_tank_invites() moves the row across
+-- the first time that address signs in.
+create table if not exists public.tank_invites (
+  tank_id    text not null references public.tanks(id) on delete cascade,
+  email      text not null,
+  created_at timestamptz not null default now(),
+  primary key (tank_id, email)
+);
+
+alter table public.tank_invites enable row level security;
+
+drop policy if exists tank_invites_owner_rw on public.tank_invites;
+create policy tank_invites_owner_rw on public.tank_invites
+  for all using (public.owns_tank(public.tank_invites.tank_id))
+  with check (public.owns_tank(public.tank_invites.tank_id));
+
+-- Room decor points at a sprite exactly as an in-tank instance does, and the column was missing: the
+-- client sends `sprite_id` for every child row (rows.ts childToRow), so every room-decor upload was
+-- rejected for naming a column that does not exist and sat in the outbox retrying forever. Adding the
+-- column also lets the sprite policy below resolve a shared tank's room decor, instead of the tank
+-- arriving with its decorations missing.
+alter table public.room_instances add column if not exists sprite_id text references public.sprites(id);
+
+-- Extended for the same reason: a shared tank whose background and room decor are invisible is not a
+-- shared tank, it is a puzzle. `tanks.settings->>'backgroundSpriteId'` is where the background lives
+-- (rows.ts tankToRow folds the tank's own fields into that jsonb).
+create or replace function public.sprite_in_visible_tank(s_id text) returns boolean
+language sql stable security definer set search_path = public as $fn$
+  select exists (
+    select 1
+    from public.tanks t
+    where t.deleted_at = 0
+      and not t.hidden_by_admin
+      and (
+        t.visibility = 'public'
+        or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid())
+      )
+      and (
+        t.settings->>'backgroundSpriteId' = s_id
+        or exists (select 1 from public.tank_instances i where i.tank_id = t.id and i.sprite_id = s_id)
+        or exists (select 1 from public.room_instances r where r.tank_id = t.id and r.sprite_id = s_id)
+      )
+  );
+$fn$;
+
+-- `unlisted` is deliberately gone from the direct-read policies. An unlisted tank is reachable only
+-- through get_shared_tank() below, which demands the slug; leaving it readable by id would have made
+-- the id the secret, which is the thing the slug exists to avoid.
+drop policy if exists tanks_shared_read on public.tanks;
+create policy tanks_shared_read on public.tanks
+  for select using (
+    deleted_at = 0
+    and not hidden_by_admin
+    and (visibility = 'public' or public.tank_shared_with_me(public.tanks.id))
+  );
+
+create or replace function public.can_view_tank(t_id text) returns boolean
+language sql stable security definer set search_path = public as $fn$
+  select exists (
+    select 1 from public.tanks t
+    where t.id = t_id
+      and t.deleted_at = 0
+      and not t.hidden_by_admin
+      and (
+        t.user_id = auth.uid()
+        or t.visibility = 'public'
+        or exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid())
+      )
+  );
+$fn$;
+
+-- ---------------------------------------------------------------- sharing RPCs
+--
+-- These exist because two things the sharing UI needs cannot be done from the browser against tables:
+-- turning an email address into a user id, and turning a user id back into an address to show the
+-- owner who they invited. `auth.users` is not readable by anyone, and should not become readable.
+
+-- Share with an email address, whether or not it belongs to an account yet.
+--
+-- It deliberately returns nothing about the address. Answering "that person has an account" / "they do
+-- not" would turn this into an oracle anyone with a tank could ask about any email, so both paths look
+-- identical from outside and the UI says the honest thing: they will see it once they sign in.
+create or replace function public.share_tank(t_id text, viewer_email text) returns void
+language plpgsql security definer set search_path = public as $fn$
+declare
+  addr text := lower(trim(viewer_email));
+  target uuid;
+begin
+  if not public.owns_tank(t_id) then
+    raise exception 'not your tank' using errcode = '42501';
+  end if;
+  if addr = '' or addr not like '%_@_%._%' then
+    raise exception 'not an email address' using errcode = '22023';
+  end if;
+
+  select u.id into target from auth.users u where lower(u.email) = addr limit 1;
+  if target is null then
+    insert into public.tank_invites (tank_id, email) values (t_id, addr) on conflict do nothing;
+  elsif target <> auth.uid() then
+    insert into public.tank_shares (tank_id, viewer_id, role) values (t_id, target, 'viewer') on conflict do nothing;
+  end if;
+end;
+$fn$;
+
+create or replace function public.unshare_tank(t_id text, viewer_email text) returns void
+language plpgsql security definer set search_path = public as $fn$
+declare
+  addr text := lower(trim(viewer_email));
+begin
+  if not public.owns_tank(t_id) then
+    raise exception 'not your tank' using errcode = '42501';
+  end if;
+  delete from public.tank_invites i where i.tank_id = t_id and i.email = addr;
+  delete from public.tank_shares s
+   where s.tank_id = t_id
+     and s.viewer_id in (select u.id from auth.users u where lower(u.email) = addr);
+end;
+$fn$;
+
+-- Who this tank is shared with, as addresses the owner can recognise. Only the owner may ask, and only
+-- about their own tank, so this reveals nothing they did not type in themselves.
+create or replace function public.tank_share_list(t_id text)
+returns table (email text, pending boolean, created_at timestamptz)
+language sql stable security definer set search_path = public as $fn$
+  select lower(u.email), false, s.created_at
+    from public.tank_shares s join auth.users u on u.id = s.viewer_id
+   where s.tank_id = t_id and public.owns_tank(t_id)
+  union all
+  select i.email, true, i.created_at
+    from public.tank_invites i
+   where i.tank_id = t_id and public.owns_tank(t_id)
+  order by 3;
+$fn$;
+
+-- Turns invitations addressed to this user's email into real shares. Called by the app after sign-in;
+-- safe to call at any time and safe to call twice.
+create or replace function public.claim_tank_invites() returns integer
+language plpgsql security definer set search_path = public as $fn$
+declare
+  addr text;
+  moved integer := 0;
+begin
+  select lower(u.email) into addr from auth.users u where u.id = auth.uid();
+  if addr is null then return 0; end if;
+
+  with taken as (
+    delete from public.tank_invites i where i.email = addr returning i.tank_id
+  ), granted as (
+    insert into public.tank_shares (tank_id, viewer_id, role)
+    select t.tank_id, auth.uid(), 'viewer' from taken t
+    on conflict do nothing
+    returning 1
+  )
+  select count(*) into moved from granted;
+  return moved;
+end;
+$fn$;
+
+-- The whole of a tank someone else can see, in one call.
+--
+-- One function rather than five table reads because there is exactly one authorisation question here -
+-- "may this person look at this tank?" - and asking it once, in one place, is how it stays answerable.
+-- The RLS policies above still stand behind the tables themselves; this does not replace them.
+--
+-- `slug` is what makes an unlisted tank readable. It is compared only against this tank's own slug, so
+-- a wrong or absent slug simply falls through to the other three reasons someone might be let in (they
+-- own it, it is public, it was shared with them).
+create or replace function public.get_shared_tank(t_id text, slug text default null) returns jsonb
+language plpgsql stable security definer set search_path = public as $fn$
+declare
+  tank public.tanks%rowtype;
+  allowed boolean;
+begin
+  select * into tank from public.tanks t where t.id = t_id;
+  if not found or tank.deleted_at <> 0 or tank.hidden_by_admin then
+    return null;
+  end if;
+
+  -- Every `coalesce` here is load-bearing, and this is the one place in the file where SQL's
+  -- three-valued logic can actually hurt.
+  --
+  -- With no session at all, auth.uid() is NULL, so `tank.user_id = auth.uid()` is NULL rather than
+  -- false - and `NULL or false or false or false` is NULL, not false. `if not NULL then` does not run
+  -- its branch, so the guard below was skipped and the function fell through and returned the tank.
+  -- Every private tank in the project was readable in full by anyone who knew (or guessed) its id and
+  -- sent no credentials whatsoever. Found by scripts/share-smoke.cjs, which asks an unauthenticated
+  -- caller for a tank it should not get.
+  --
+  -- The lesson generalises: inside a policy's USING clause or a WHERE, NULL is treated as "deny", but
+  -- in a plpgsql `if`, NULL is neither branch. A boolean built by hand has to be made total before it
+  -- is trusted.
+  allowed :=
+    coalesce(tank.user_id = auth.uid(), false)
+    or tank.visibility = 'public'
+    or (tank.visibility = 'unlisted' and slug is not null and tank.share_slug is not null and tank.share_slug = slug)
+    or exists (select 1 from public.tank_shares s where s.tank_id = tank.id and s.viewer_id = auth.uid());
+  if not coalesce(allowed, false) then
+    return null;
+  end if;
+
+  return jsonb_build_object(
+    'tank', jsonb_build_object(
+      'id', tank.id, 'name', tank.name, 'visibility', tank.visibility,
+      'settings', tank.settings, 'updated_at', tank.updated_at
+    ),
+    'instances', coalesce((select jsonb_agg(to_jsonb(i)) from public.tank_instances i
+                            where i.tank_id = tank.id and i.deleted_at = 0), '[]'::jsonb),
+    'groups',    coalesce((select jsonb_agg(to_jsonb(g)) from public.tank_groups g
+                            where g.tank_id = tank.id and g.deleted_at = 0), '[]'::jsonb),
+    'room',      coalesce((select jsonb_agg(to_jsonb(r)) from public.room_instances r
+                            where r.tank_id = tank.id and r.deleted_at = 0), '[]'::jsonb),
+    -- Every sprite the tank actually uses, and nothing else: the rest of the owner's library is not
+    -- part of what was shared.
+    'sprites',   coalesce((select jsonb_agg(to_jsonb(sp)) from public.sprites sp
+                            where sp.deleted_at = 0
+                              and not sp.hidden_by_admin
+                              and (
+                                sp.id = tank.settings->>'backgroundSpriteId'
+                                or exists (select 1 from public.tank_instances i where i.tank_id = tank.id and i.sprite_id = sp.id)
+                                or exists (select 1 from public.room_instances r where r.tank_id = tank.id and r.sprite_id = sp.id)
+                              )), '[]'::jsonb)
+  );
+end;
+$fn$;
+
+-- The tanks other people have shared with this user.
+create or replace function public.tanks_shared_with_me()
+returns table (id text, name text, updated_at bigint)
+language sql stable security definer set search_path = public as $fn$
+  select t.id, t.name, t.updated_at
+    from public.tanks t
+   where t.deleted_at = 0
+     and not t.hidden_by_admin
+     and t.user_id <> auth.uid()
+     and exists (select 1 from public.tank_shares s where s.tank_id = t.id and s.viewer_id = auth.uid())
+   order by t.updated_at desc;
+$fn$;
+
+revoke all on function public.share_tank(text, text) from public;
+revoke all on function public.unshare_tank(text, text) from public;
+revoke all on function public.tank_share_list(text) from public;
+revoke all on function public.claim_tank_invites() from public;
+revoke all on function public.tanks_shared_with_me() from public;
+
+-- Signed-in users only for everything that names a person. get_shared_tank is the one exception: an
+-- unlisted link has to work for someone who is not signed in, which is the whole point of a link.
+grant execute on function public.share_tank(text, text) to authenticated;
+grant execute on function public.unshare_tank(text, text) to authenticated;
+grant execute on function public.tank_share_list(text) to authenticated;
+grant execute on function public.claim_tank_invites() to authenticated;
+grant execute on function public.tanks_shared_with_me() to authenticated;
+grant execute on function public.get_shared_tank(text, text) to anon, authenticated;

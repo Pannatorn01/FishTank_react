@@ -2180,3 +2180,34 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
   .toolbar-row { flex-direction: column; align-items: stretch; }
   .header-editor-actions { margin-left: 0; }
 }
+
+/* ---------------------------------------------------------------- sharing (plan P6-3) */
+
+/* The owner's side: which link exists, and who has it. */
+.tank-share-panel { display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+.tank-share-section { display: flex; flex-direction: column; gap: 6px; }
+.tank-share-heading { margin: 0; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.7; }
+.tank-share-choices { display: flex; gap: 4px; }
+.tank-share-choices button { flex: 1; font-size: 0.68rem; padding: 0 6px; }
+.tank-share-hint { margin: 0; font-size: 0.7rem; line-height: 1.45; opacity: 0.75; }
+.tank-share-link { display: flex; gap: 4px; align-items: center; }
+/* The link itself is long and the panel is narrow: let the input take whatever is left rather than
+   pushing the Copy button off the edge. */
+.tank-share-link input { flex: 1 1 auto; min-width: 0; font-size: 0.68rem; }
+.tank-share-people { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.tank-share-people li { display: flex; align-items: center; gap: 6px; font-size: 0.7rem; }
+.tank-share-people li > span:first-child { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.tank-share-pending { font-size: 0.62rem; opacity: 0.65; white-space: nowrap; }
+
+/* The viewer's side. */
+.shared-tank-view { display: flex; flex-direction: column; gap: 8px; height: 100%; }
+.shared-tank-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.shared-tank-title { font-size: 0.85rem; font-weight: 600; overflow-wrap: anywhere; }
+.shared-tank-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.65rem; padding: 2px 8px; border-radius: 999px;
+  border: 1px solid currentColor; opacity: 0.75;
+}
+/* Someone else's tank cannot be resized by dragging its corner - `resize` is set on .tank-frame for
+   the owner's view, and leaving it on here would offer a gesture whose result is thrown away. */
+.tank-frame-readonly { resize: none; }

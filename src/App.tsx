@@ -17,10 +17,14 @@ import { SyncStatusChip } from '@/components/SyncStatusChip';
 // below for how that's preserved while still deferring the import/mount until Build or Life is opened
 // at least once.
 const TankSection = lazy(() => import('@/components/tank/TankSection').then((m) => ({ default: m.TankSection })));
+// Lazy for the same reason, plus one of its own: most sessions never open somebody else's tank, and
+// the ones that do arrive on a link and can afford one more chunk.
+const SharedTankView = lazy(() => import('@/components/tank/SharedTankView').then((m) => ({ default: m.SharedTankView })));
 import { useEditorLayout } from '@/hooks/useEditorLayout';
 import { usePixelEditor } from '@/hooks/usePixelEditor';
 import { UI_SCALES, useUiScale, type UiScale } from '@/hooks/useUiScale';
 import { THEME_PREVIEW, useUiTheme } from '@/hooks/useUiTheme';
+import { shareTargetFromUrl } from '@/lib/data/sharing';
 import { useLanguage } from '@/lib/i18n';
 import { UI_THEMES } from '@/lib/storage';
 import type { SpriteType, UiTheme } from '@/lib/types';
@@ -29,6 +33,26 @@ type Tab = 'editor' | 'tank' | 'life';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('editor');
+  // Set when the page was opened from a share link, or when the share panel asks to open a tank
+  // somebody shared. While it is set the app shows that tank instead of the user's own - it is a
+  // different person's work, and mixing it into the same tabs is how the two get confused.
+  const [shared, setShared] = useState(() => shareTargetFromUrl());
+
+  useEffect(() => {
+    const onOpenShared = (e: Event) => {
+      setShared({ tankId: (e as CustomEvent<{ tankId: string }>).detail.tankId, slug: null });
+    };
+    window.addEventListener('ft:open-shared-tank', onOpenShared);
+    return () => window.removeEventListener('ft:open-shared-tank', onOpenShared);
+  }, []);
+
+  // Closing takes the tank out of the address bar too, so a reload (or a shared browser session) does
+  // not drop the user straight back into somebody else's tank.
+  const closeShared = () => {
+    setShared(null);
+    window.history.replaceState(null, '', window.location.pathname);
+  };
+
   // Once true, stays true - TankSection keeps its own running engine/animation loop alive across tab
   // switches (see this file's Suspense boundary comment), so it must never unmount after first visit.
   const [hasVisitedTank, setHasVisitedTank] = useState(false);
@@ -104,7 +128,9 @@ export default function App() {
             </div>
           </div>
         </div>
-        <div className="toolbar-row">
+        {/* Hidden while someone else's tank is open: those tabs act on the user's own work, and a tab
+            bar that appears to do nothing is worse than one that is not there. */}
+        <div className="toolbar-row" hidden={!!shared}>
           <nav className="tabs">
             <Button type="button" variant={tab === 'editor' ? 'default' : 'secondary'} onClick={() => setTab('editor')}>
               <i className="fa-solid fa-palette" /> {t('tab.editor')}
@@ -148,6 +174,13 @@ export default function App() {
       </header>
       <StorageBanner readOnly={engine.readOnly} />
 
+      {shared ? (
+        <main>
+          <Suspense fallback={<p className="tab-panel-loading">{t('app.loading')}</p>}>
+            <SharedTankView tankId={shared.tankId} slug={shared.slug} onClose={closeShared} />
+          </Suspense>
+        </main>
+      ) : (
       <main>
         {/* Storage is asynchronous now (src/lib/data), so there is a moment - a microtask today, a
             network round-trip once there is a server - where the engine is constructed but empty.
@@ -173,6 +206,7 @@ export default function App() {
           )}
         </section>
       </main>
+      )}
     </div>
   );
 }

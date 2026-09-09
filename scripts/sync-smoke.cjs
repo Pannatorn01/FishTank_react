@@ -143,6 +143,44 @@ async function serverRows(token, path) {
   const drained = await outboxSize(page);
   check('the outbox drained', drained === 0, `outbox=${drained}`);
 
+  // ---- 1b. everything *inside* a tank, not just the tank ----------------------------
+  // Sprites and the tank's own row were the only things this script ever watched, and that is exactly
+  // how room decor and groups went unnoticed: rows.ts sent a `sprite_id` key for every child, the
+  // tank_groups and room_instances tables had no such column, PostgREST rejected the whole request,
+  // and the outbox retried it forever. Everything looked fine here because nothing looked.
+  //
+  // Written through the repository rather than by dragging decor around the tank UI: the point is
+  // whether the *sync* path carries these row shapes, and a drag gesture would only make the test
+  // fragile without testing anything more.
+  const childProbe = await page.evaluate(async () => {
+    const mod = await import('/src/lib/data/index.ts');
+    const repos = mod.getRepos();
+    await repos.sprites.hydrate();
+    const spriteId = repos.sprites.list()[0]?.id;
+    const tankId = await repos.tank.currentId();
+    const state = await repos.tank.load(tankId);
+    const now = Date.now();
+    state.roomInstances = [
+      ...state.roomInstances,
+      { id: 'room_probe', spriteId, x: 12, y: 12, visible: true, updatedAt: now, deletedAt: 0, rev: 0 },
+    ];
+    state.groups = [
+      ...state.groups,
+      { id: 'grp_probe', name: 'Probe school', zone: null, updatedAt: now, deletedAt: 0, rev: 0 },
+    ];
+    await repos.tank.save(state, tankId);
+    return { tankId, spriteId };
+  });
+  await syncNow(page);
+  await page.waitForTimeout(1500);
+
+  const roomRows = await serverRows(token, `room_instances?tank_id=eq.${childProbe.tankId}&select=id,sprite_id`);
+  check('room decor reaches the server, sprite and all', roomRows.some((r) => r.id === 'room_probe' && r.sprite_id === childProbe.spriteId), JSON.stringify(roomRows));
+  const groupRows = await serverRows(token, `tank_groups?tank_id=eq.${childProbe.tankId}&select=id`);
+  check('so do groups, which have no sprite at all', groupRows.some((r) => r.id === 'grp_probe'), JSON.stringify(groupRows));
+  const drainedChildren = await outboxSize(page);
+  check('and neither is stuck in the outbox', drainedChildren === 0, `outbox=${drainedChildren}`);
+
   // ---- 2. edits while offline ------------------------------------------------------
   await ctx.setOffline(true);
   await drawAndSave(page, 'Made Offline');
