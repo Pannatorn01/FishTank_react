@@ -24,22 +24,31 @@ function spriteDims(sprite: Sprite): { width: number; height: number } {
  */
 const cache = new Map<string, Texture>();
 
-function keyFor(sprite: Sprite, frameIndex: number): string {
-  return `${sprite.id}:${frameIndex}`;
+function keyFor(sprite: Sprite, frameIndex: number, scale: number): string {
+  return `${sprite.id}:${frameIndex}@${scale}`;
 }
 
-export function textureFor(sprite: Sprite, frameIndex = 0): Texture {
-  const key = keyFor(sprite, frameIndex);
+/**
+ * `scale` is the raster density, defaulting to the tank's own DISPLAY_SCALE so every caller that
+ * draws a sprite at tank size keeps the crispness it always had.
+ *
+ * Pass 1 for anything the renderer is going to resize anyway - Life mode's room backdrop is stretched
+ * to fit the whole viewport, so rasterizing it at 4x first only costs 16x the memory and throws the
+ * extra pixels away: a 348x224 backdrop is 4.8MB per frame at 4x and 0.3MB at 1x. Nearest-neighbour
+ * upscaling (see scaleMode below) makes the two visually identical.
+ */
+export function textureFor(sprite: Sprite, frameIndex = 0, scale = DISPLAY_SCALE): Texture {
+  const key = keyFor(sprite, frameIndex, scale);
   const hit = cache.get(key);
   if (hit) return hit;
 
   const { width, height } = spriteDims(sprite);
   const canvas = document.createElement('canvas');
-  canvas.width = width * DISPLAY_SCALE;
-  canvas.height = height * DISPLAY_SCALE;
+  canvas.width = width * scale;
+  canvas.height = height * scale;
   const ctx = canvas.getContext('2d')!;
   const frame = sprite.frames[frameIndex] ?? sprite.frames[0];
-  if (frame) paintLayers(ctx, frame, width, height, DISPLAY_SCALE);
+  if (frame) paintLayers(ctx, frame, width, height, scale);
 
   const texture = Texture.from(canvas);
   // The one line every pixel-art-on-Pixi guide warns about: Pixi's default is bilinear ('linear'),

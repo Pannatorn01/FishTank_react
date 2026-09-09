@@ -1,10 +1,11 @@
 // GENERATED FILE - do not edit by hand.
-// Rebuilt by pixellab-assets/genpack.py from the PNGs in pixellab-assets/unified/.
+// Rebuilt by: python pixellab-assets/genpack.py pixellab-assets src/lib/data/pixellabPack.ts
 //
 // The art pack generated with PixelLab (see pixellab-assets/): the cat and bird poses, the
-// tank props and the two scenes, all on one shared 18-colour palette. Stored run-length
-// encoded in pixelCodec's own RleFrame shape so seeding costs no image decoding and adds no
-// second storage format - storage.buildDefaultSprites turns these into real Sprites.
+// tank props and the two scenes, snapped to one shared 18-colour palette by the generator.
+//
+// Stored run-length encoded in pixelCodec's own RleFrame shape so seeding costs no image decoding
+// and adds no second storage format - storage.buildDefaultSprites turns these into real Sprites.
 import type { RleFrame } from '../pixelCodec';
 import type { SpriteType } from '../types';
 
@@ -13,6 +14,9 @@ export interface PackEntry {
   type: SpriteType;
   width: number;
   height: number;
+  /** Milliseconds per frame, for an entry whose motion has its own tempo. Absent means the
+   *  app's own default pace (storage.DEFAULT_FRAME_MS). */
+  frameMs?: number;
   /** One RleFrame per animation frame; a single entry means a still sprite. */
   frames: RleFrame[];
 }
@@ -252,4 +256,5 @@ export const PACK_SPRITE_NAMES = {
   catAwake: 'Cat reaching up',
   birdAsleep: 'Bird asleep',
   birdAwake: 'Bird flapping',
+  roomScene: 'Room by the window',
 } as const;

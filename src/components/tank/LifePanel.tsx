@@ -109,19 +109,19 @@ export function LifePanel({ engine, active }: { engine: TankEngine; active: bool
 
   // Any 'background'-type sprite can be the room, exactly as any of them can be the water backdrop -
   // there is no separate "room art" sprite kind to teach the editor about, and the two pictures are
-  // picked independently (see TankEngine.roomBackgroundSpriteId).
-  const roomChoices = engine.sprites.filter((s) => s.type === 'background');
+  // picked independently (see TankEngine.roomBackgroundSpriteId). There is no "no room" choice: the
+  // scene always stands the tank in a room, falling back to the art pack's own when nothing is set
+  // (see roomScene.ts's effectiveRoomSprite), so the select mirrors that with no empty option.
+  const roomChoices = engine.sprites.filter((s) => s.type === 'background' && s.deletedAt === 0);
+  const activeRoomId =
+    roomChoices.find((s) => s.id === engine.roomBackgroundSpriteId)?.id ?? roomChoices[0]?.id ?? '';
 
   return (
     <div className="life-layout">
       <div ref={hostRef} className="life-pixi-host" />
       <label className="life-room-picker" title={t('life.roomSceneTitle')}>
         <span>{t('life.roomScene')}</span>
-        <select
-          value={engine.roomBackgroundSpriteId ?? ''}
-          onChange={(e) => engine.setRoomBackgroundSprite(e.target.value || null)}
-        >
-          <option value="">{t('life.roomSceneNone')}</option>
+        <select value={activeRoomId} onChange={(e) => engine.setRoomBackgroundSprite(e.target.value || null)}>
           {roomChoices.map((sprite) => (
             <option key={sprite.id} value={sprite.id}>
               {sprite.name}

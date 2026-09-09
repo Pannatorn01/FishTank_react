@@ -49,23 +49,58 @@ const PREDATOR_FLOOR_GAP = 6;
 const PREDATOR_BAR_WIDTH = 40;
 const PREDATOR_BAR_HEIGHT = 5;
 const PREDATOR_BAR_OFFSET_Y = -34;
-/** Where the surface the tank stands on sits inside a room backdrop, as a fraction of the artwork's
- *  own height. Measured on the shipped room art (pixellab-assets, a table in front of a window): the
- *  table top is a little over two thirds down. The backdrop is letterboxed rather than cropped (see
- *  fitRoomBackground) precisely so this fraction lands on the same painted pixels at every viewport
- *  size - a cover-fit would slide the table out from under the tank as the window changed shape. */
-const ROOM_ART_SURFACE_FRAC = 0.69;
-/** Height of a resident animal (the sleeping cat and bird) as a fraction of the room's height. The
- *  cast is scaled to the room rather than drawn at the sprite's native 4x so a 32-cell cat stays
- *  cat-sized against a tank that is itself scaled to fit. */
-const RESIDENT_HEIGHT_FRAC = 0.13;
-/** Where each resident sits along the room's width. Kept clear of TANK_FIT_FRAC's centred tank. */
-const CAT_HOME_XFRAC = 0.13;
-const BIRD_HOME_XFRAC = 0.87;
+/**
+ * Where the things in the room belong, as fractions of the backdrop artwork's own width and height -
+ * not of the viewport. Measured off the shipped room art (pixellab-assets/room-window-348x224.png, a
+ * table in front of a curtained window): the table top edge is at y=164 of 224, the table spans
+ * x=88..262 of 348, the floorboards start at y=200, and the curtain rod crosses the top at y=16.
+ *
+ * Art fractions, not viewport fractions, are the whole point: the tank has to stand *on the painted
+ * table* and the cat *on the painted floor*, so their anchors have to follow the artwork when the
+ * window is resized. That is also why fitRoomBackground letterboxes rather than crops - a cover-fit
+ * would slide the table out from under the tank as the viewport changed shape.
+ *
+ * These are tuned to that one picture. Another room backdrop with its table somewhere else needs its
+ * own numbers; there is no way to find a painted table automatically.
+ */
+const ROOM_ART = {
+  tableCenterXFrac: 0.5,
+  tableTopYFrac: 164 / 224,
+  tableWidthFrac: (262 - 88) / 348,
+  floorTopYFrac: 200 / 224,
+  /** The cat sleeps on the floorboards, left of the table's near leg and clear of the curtain. */
+  catXFrac: 0.17,
+  /** The bird roosts on the curtain rod - the one perch in the picture that the tank never covers. */
+  birdXFrac: 0.8,
+  birdPerchYFrac: 22 / 224,
+} as const;
+/** How much of the painted table's width the tank is allowed to take up. Under 1 so the glass reads
+ *  as standing on the table rather than overhanging both ends of it. */
+const TANK_ON_TABLE_FRAC = 0.86;
+/**
+ * Sizes of the cast, as fractions of the artwork's *width*, measured against each sprite's drawn
+ * pixels rather than its canvas (see contentBox).
+ *
+ * Width, not height, because these sprites have wildly different proportions: the sleeping cat is a
+ * flat curl a third as tall as it is wide, while the bird nearly fills its square. Sizing both to the
+ * same height made the cat come out visibly smaller than the bird - the opposite of what a cat next
+ * to a bird should look like.
+ */
+const CAT_WIDTH_FRAC = 0.22;
+const BIRD_WIDTH_FRAC = 0.06;
+/** The awake poses stand up instead of lying down, so the same width fraction would tower over the
+ *  room - these are sized so a raiding cat is roughly a third of the table's height and still clearly
+ *  the bigger animal. */
+const CAT_RAID_WIDTH_FRAC = 0.12;
+const BIRD_RAID_WIDTH_FRAC = 0.07;
 /** How long each frame of an awake animal's animation holds. Only the awake poses animate - a
  *  sleeping animal is deliberately a still frame, per the brief: they stir only when they come for
  *  the fish. */
 const CAST_FRAME_MS = 220;
+/** Fallback hold per frame for an animated room backdrop whose sprite carries no frameMs of its own.
+ *  Slower than the cast: a backdrop's motion is drifting clouds and a swaying curtain, which read as
+ *  atmosphere at this pace and as a flicker at the cast's. */
+const BACKDROP_FRAME_MS = 500;
 
 export type ArmedTool = 'feed' | 'scrub' | null;
 
@@ -133,7 +168,7 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
   for (const resident of [catResident, birdResident]) {
     resident.visible = false;
     resident.eventMode = 'none';
-    resident.anchor.set(0.5, 1);
+    // The real anchor is set per sprite from its content box - see placeCastMember.
     stage.addChild(resident);
   }
 
@@ -148,7 +183,6 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
   const predatorSprite = new PixiSprite();
   predatorSprite.visible = false;
   predatorSprite.eventMode = 'none';
-  predatorSprite.anchor.set(0.5, 1);
   const predatorTimerBar = new Graphics();
   predatorContainer.addChild(predatorBody, predatorSprite, predatorTimerBar);
   stage.addChild(predatorContainer);
@@ -160,6 +194,10 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
   // once, not per-frame - always convert against the tank's *current* margin offset rather than a
   // stale one captured at mount time.
   let tankMargin = { x: 0, y: 0 };
+  /** Where the backdrop artwork actually landed in the viewport after letterboxing - the coordinate
+   *  space every ROOM_ART fraction is measured in. Falls back to the whole viewport when there is no
+   *  backdrop, so the placeholder wall still gets a sane cast/tank placement. */
+  let artRect = { x: 0, y: 0, width: 0, height: 0 };
   let armedTool: ArmedTool = null;
   let currentEngine: TankEngine | null = null;
   let lastPredatorKind: 'cat' | 'bird' | null = null;
@@ -219,15 +257,55 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     return engine.sprites.find((s) => s.name === name && s.deletedAt === 0);
   }
 
-  /** Paints one room-scale animal: scaled by the room's height rather than the sprite's own 4x raster,
-   *  standing on `surfaceY`, cycling frames only if `animate` is set. */
+  /** The drawn pixels' bounding box within a sprite's canvas, in cells. Cached per sprite id: it is a
+   *  full scan of every cell of every layer, and it runs from a per-frame render path.
+   *
+   *  Needed because a pixel-art sprite is rarely drawn edge to edge - the sleeping cat sits in the
+   *  bottom third of its 32x32 canvas. Sizing and positioning against the canvas instead of the drawn
+   *  pixels is what made the cat too small and left it floating above the floorboards. */
+  const contentBoxes = new Map<string, { x: number; y: number; width: number; height: number }>();
+
+  function contentBox(sprite: Sprite): { x: number; y: number; width: number; height: number } {
+    const cached = contentBoxes.get(sprite.id);
+    if (cached) return cached;
+    const width = sprite.width || 16;
+    const height = sprite.height || 16;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+    for (const layer of sprite.frames[0] ?? []) {
+      if (!layer.visible) continue;
+      for (let i = 0; i < layer.cells.length; i++) {
+        if (layer.cells[i] === null) continue;
+        const x = i % width;
+        const y = (i - x) / width;
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    // An entirely blank sprite has no drawn pixels to measure - treat the whole canvas as the box so
+    // the caller still gets sane (if invisible) geometry rather than a negative size.
+    const box =
+      maxX < 0
+        ? { x: 0, y: 0, width, height }
+        : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+    contentBoxes.set(sprite.id, box);
+    return box;
+  }
+
+  /** Paints one animal at an art-relative spot: `xFrac`/`yFrac` and `heightFrac` are all fractions of
+   *  the backdrop artwork (see ROOM_ART), so the cast follows the picture rather than the window. The
+   *  sprite's bottom-centre lands on the given point. Frames cycle only if `animate` is set - a
+   *  sleeping animal is a still frame on purpose. */
   function placeCastMember(
     view: PixiSprite,
     sprite: Sprite | undefined,
     xFrac: number,
-    surfaceY: number,
-    roomWidth: number,
-    roomHeight: number,
+    yFrac: number,
+    widthFrac: number,
     animate: boolean,
   ): boolean {
     if (!sprite) {
@@ -237,67 +315,83 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     const frameCount = Math.max(1, sprite.frames.length);
     const frameIndex = animate ? Math.floor(Date.now() / CAST_FRAME_MS) % frameCount : 0;
     view.texture = textureFor(sprite, frameIndex);
-    const cellsHigh = sprite.height || 16;
     const cellsWide = sprite.width || 16;
-    const targetHeight = roomHeight * RESIDENT_HEIGHT_FRAC;
-    view.height = targetHeight;
-    view.width = targetHeight * (cellsWide / cellsHigh);
-    view.position.set(xFrac * roomWidth, surfaceY);
+    const cellsHigh = sprite.height || 16;
+    const box = contentBox(sprite);
+    // Scale so the *drawn* pixels come out widthFrac of the artwork wide; the canvas around them is
+    // scaled to match and simply stays transparent.
+    const cellPx = (artRect.width * widthFrac) / box.width;
+    view.width = cellsWide * cellPx;
+    view.height = cellsHigh * cellPx;
+    // Anchoring on the content box's bottom-centre (rather than the canvas's) is what puts the cat's
+    // belly on the floorboards instead of leaving it hovering over them by however many blank rows
+    // the artist happened to leave below it.
+    view.anchor.set((box.x + box.width / 2) / cellsWide, (box.y + box.height) / cellsHigh);
+    view.position.set(artRect.x + artRect.width * xFrac, artRect.y + artRect.height * yFrac);
     view.visible = true;
     return true;
   }
 
-  /** The y (room coordinates) that things in the room stand on: the painted table top when there is
-   *  room artwork, otherwise the placeholder floor line. */
-  function surfaceLine(roomHeight: number): number {
-    if (roomBackdrop.visible) return roomBackdrop.y + roomBackdrop.height * ROOM_ART_SURFACE_FRAC;
-    return roomHeight - roomHeight * FLOOR_FRAC;
+  /** The backdrop actually shown. There is deliberately no "no room" option any more: an unset
+   *  choice falls back to the pack's own room, and only a library with no background sprite at all
+   *  drops through to the placeholder wall. */
+  function effectiveRoomSprite(engine: TankEngine): Sprite | undefined {
+    const backgrounds = engine.sprites.filter((s) => s.type === 'background' && s.deletedAt === 0);
+    const chosen = engine.roomBackgroundSpriteId
+      ? backgrounds.find((s) => s.id === engine.roomBackgroundSpriteId)
+      : undefined;
+    return chosen ?? backgrounds.find((s) => s.name === PACK_SPRITE_NAMES.roomScene) ?? backgrounds[0];
   }
 
-  /** Letterboxes the chosen backdrop into the viewport - see ROOM_ART_SURFACE_FRAC for why this is a
-   *  contain-fit and not a cover-fit. The placeholder wall/floor stays painted underneath, so the
-   *  bars beside a backdrop whose aspect does not match the viewport read as the rest of the room
-   *  rather than as empty canvas. */
+  /** Letterboxes the chosen backdrop into the viewport - see ROOM_ART for why this is a contain-fit
+   *  and not a cover-fit. The placeholder wall/floor stays painted underneath, so the bars beside a
+   *  backdrop whose aspect does not match the viewport read as the rest of the room rather than as
+   *  empty canvas. */
   function fitRoomBackground(engine: TankEngine, roomWidth: number, roomHeight: number): void {
-    const sprite = engine.roomBackgroundSpriteId
-      ? engine.sprites.find((s) => s.id === engine.roomBackgroundSpriteId && s.type === 'background')
-      : null;
+    const sprite = effectiveRoomSprite(engine);
     if (!sprite) {
       roomBackdrop.visible = false;
+      artRect = { x: 0, y: 0, width: roomWidth, height: roomHeight };
       return;
     }
     const cellsWide = sprite.width || 16;
     const cellsHigh = sprite.height || 16;
-    roomBackdrop.texture = textureFor(sprite, 0);
+    // A backdrop with several frames is an animated room - drifting sky, a curtain moving. One frame
+    // is the still case and costs the same code path.
+    const frameCount = Math.max(1, sprite.frames.length);
+    const frameIndex =
+      frameCount > 1 ? Math.floor(Date.now() / (sprite.frameMs || BACKDROP_FRAME_MS)) % frameCount : 0;
+    // Rasterized at 1x, not the usual 4x: the backdrop is scaled to the viewport a few lines below,
+    // so the extra density would be thrown away - and an 8-frame animated room at 4x is ~38MB of
+    // texture instead of ~2MB.
+    roomBackdrop.texture = textureFor(sprite, frameIndex, 1);
     const scale = Math.min(roomWidth / cellsWide, roomHeight / cellsHigh);
     roomBackdrop.width = cellsWide * scale;
     roomBackdrop.height = cellsHigh * scale;
     roomBackdrop.position.set((roomWidth - roomBackdrop.width) / 2, (roomHeight - roomBackdrop.height) / 2);
     roomBackdrop.visible = true;
+    artRect = { x: roomBackdrop.x, y: roomBackdrop.y, width: roomBackdrop.width, height: roomBackdrop.height };
   }
 
   /** The two animals that live in the room. Each is shown asleep unless it is the one currently
    *  raiding the tank, in which case drawPredator draws it awake instead and this leaves its spot
    *  empty - the same animal cannot be both asleep in the corner and up at the glass. */
-  function drawResidents(engine: TankEngine, roomWidth: number, roomHeight: number): void {
-    const surfaceY = surfaceLine(roomHeight);
+  function drawResidents(engine: TankEngine): void {
     const raiding = engine.predator?.kind ?? null;
     placeCastMember(
       catResident,
       raiding === 'cat' ? undefined : spriteByName(engine, PACK_SPRITE_NAMES.catAsleep),
-      CAT_HOME_XFRAC,
-      surfaceY,
-      roomWidth,
-      roomHeight,
+      ROOM_ART.catXFrac,
+      ROOM_ART.floorTopYFrac,
+      CAT_WIDTH_FRAC,
       false,
     );
     placeCastMember(
       birdResident,
       raiding === 'bird' ? undefined : spriteByName(engine, PACK_SPRITE_NAMES.birdAsleep),
-      BIRD_HOME_XFRAC,
-      surfaceY,
-      roomWidth,
-      roomHeight,
+      ROOM_ART.birdXFrac,
+      ROOM_ART.birdPerchYFrac,
+      BIRD_WIDTH_FRAC,
       false,
     );
   }
@@ -317,7 +411,7 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     floor.clear().rect(0, roomHeight - floorHeight, roomWidth, floorHeight).fill(FLOOR_COLOR);
   }
 
-  function fitTankSlot(engine: TankEngine, roomWidth: number, roomHeight: number): void {
+  function fitTankSlot(engine: TankEngine): void {
     const w = engine.canvas?.width ?? 0;
     const h = engine.canvas?.height ?? 0;
     if (w <= 0 || h <= 0) {
@@ -325,14 +419,20 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
       return;
     }
     tankSlot.visible = true;
-    const surfaceY = surfaceLine(roomHeight);
-    const maxW = roomWidth * TANK_FIT_FRAC;
-    const maxH = surfaceY * TANK_FIT_FRAC;
+    // The glass is not tankSlot's whole content: createTankScene offsets its scene by the room-decor
+    // margin (see tankScene.ts's sceneRoot), so the water sits at (marginX, marginY) inside this
+    // container. Centering tankSlot itself is what pushed the tank down and to the right of the table
+    // - the placement has to be computed for the glass rectangle, then the container moved so that
+    // rectangle lands where it belongs.
+    const { marginX, marginY } = roomSceneMargin(w, h);
+    const tableTopY = artRect.y + artRect.height * ROOM_ART.tableTopYFrac;
+    const tableCenterX = artRect.x + artRect.width * ROOM_ART.tableCenterXFrac;
+    const maxW = artRect.width * ROOM_ART.tableWidthFrac * TANK_ON_TABLE_FRAC;
+    // Whatever headroom there is between the top of the room and the table it stands on.
+    const maxH = (tableTopY - artRect.y) * TANK_FIT_FRAC;
     const scale = Math.min(maxW / w, maxH / h, 1);
     tankSlot.scale.set(scale);
-    // Centered horizontally, standing on whatever the room's surface is - the painted table top when
-    // a backdrop is chosen, the placeholder floor line otherwise.
-    tankSlot.position.set((roomWidth - w * scale) / 2, surfaceY - h * scale);
+    tankSlot.position.set(tableCenterX - (marginX + w / 2) * scale, tableTopY - (marginY + h) * scale);
 
     const hitAreaSizeKey = `${w}:${h}`;
     if (hitAreaSizeKey !== lastHitAreaSizeKey) {
@@ -371,10 +471,10 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     g.poly([12, -2, 20, 0, 12, 2]).fill(BEAK_COLOR);
   }
 
-  /** Room-level (not tank-local) - `predator.xFrac` is a fraction of the room's own width, sitting on
-   *  the floor line beside the tank, not inside the water (see PredatorEvent's own doc comment in
-   *  types.ts for why). */
-  function drawPredator(engine: TankEngine, roomWidth: number, roomHeight: number): void {
+  /** Art-level (not tank-local) - `predator.xFrac` is a fraction of the room artwork's own width,
+   *  standing on the painted table beside the glass rather than inside the water (see PredatorEvent's
+   *  own doc comment in types.ts for why). */
+  function drawPredator(engine: TankEngine): void {
     const predator = engine.predator;
     if (!predator) {
       predatorContainer.visible = false;
@@ -394,15 +494,16 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
       spriteByName(engine, awakeName),
       0,
       0,
-      roomWidth,
-      roomHeight,
+      predator.kind === 'cat' ? CAT_RAID_WIDTH_FRAC : BIRD_RAID_WIDTH_FRAC,
       true,
     );
-    // placeCastMember positions in room coordinates; inside predatorContainer the pose belongs at the
-    // container's own origin, which the container then moves to the predator's spot.
+    // placeCastMember positions in the artwork's coordinates; inside predatorContainer the pose
+    // belongs at the container's own origin, which the container then moves to the predator's spot.
     if (usingArtwork) predatorSprite.position.set(0, 0);
     predatorBody.visible = !usingArtwork;
-    predatorContainer.position.set(predator.xFrac * roomWidth, surfaceLine(roomHeight) - PREDATOR_FLOOR_GAP);
+    // Along the room art's own width, standing on the table it is raiding rather than the far floor.
+    const raidY = artRect.y + artRect.height * ROOM_ART.tableTopYFrac - PREDATOR_FLOOR_GAP;
+    predatorContainer.position.set(artRect.x + artRect.width * predator.xFrac, raidY);
 
     const totalMs = Math.max(1, predator.expiresAt - predator.spawnedAt);
     const remainingFrac = Math.max(0, Math.min(1, (predator.expiresAt - Date.now()) / totalMs));
@@ -425,11 +526,11 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
       paintRoom(roomWidth, roomHeight);
     }
     fitRoomBackground(engine, roomWidth, roomHeight);
-    fitTankSlot(engine, roomWidth, roomHeight);
+    fitTankSlot(engine);
     tankScene.render(engine);
-    drawResidents(engine, roomWidth, roomHeight);
+    drawResidents(engine);
     drawCleanlinessBar(engine);
-    drawPredator(engine, roomWidth, roomHeight);
+    drawPredator(engine);
   }
 
   function destroy(): void {

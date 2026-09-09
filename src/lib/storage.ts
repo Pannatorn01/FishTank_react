@@ -996,7 +996,7 @@ function buildPackSprites(): Sprite[] {
     width: entry.width,
     height: entry.height,
     frames: entry.frames.map((frame) => [makeLayer(decodeFrame(frame))]),
-    frameMs: DEFAULT_FRAME_MS,
+    frameMs: entry.frameMs ?? DEFAULT_FRAME_MS,
   }));
 }
 
