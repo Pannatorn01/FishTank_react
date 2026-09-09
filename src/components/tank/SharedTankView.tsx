@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { useAuth } from '@/hooks/useAuth';
 import { useTank, type TankSource } from '@/hooks/useTank';
+import { reportContent } from '@/lib/data/gallery';
 import { fetchSharedTank, type SharedTank } from '@/lib/data/sharing';
 import { useLanguage } from '@/lib/i18n';
 import { SharedTankCanvas } from './SharedTankCanvas';
@@ -16,7 +19,25 @@ import { SharedTankCanvas } from './SharedTankCanvas';
  */
 export function SharedTankView({ tankId, slug, onClose }: { tankId: string; slug: string | null; onClose: () => void }) {
   const { t } = useLanguage();
+  const { session } = useAuth();
   const [tank, setTank] = useState<SharedTank | null | 'loading' | 'error'>('loading');
+  const [reporting, setReporting] = useState(false);
+  const [reported, setReported] = useState(false);
+  const [reason, setReason] = useState('');
+
+  const submitReport = async (id: string) => {
+    setReporting(false);
+    try {
+      await reportContent('tank', id, reason.trim());
+      // Confirmed to the reporter and nothing more - not whether anyone else reported it, nor what
+      // happened next. See reportContent.
+      setReported(true);
+    } catch (e) {
+      console.warn('reporting a tank failed', e);
+    } finally {
+      setReason('');
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -46,7 +67,45 @@ export function SharedTankView({ tankId, slug, onClose }: { tankId: string; slug
         <span className="shared-tank-badge">
           <i className="fa-solid fa-eye" aria-hidden="true" /> {t('share.readOnly')}
         </span>
+        {/* The report button belongs here, not only on the gallery card: someone browsing sees a name,
+            someone who has opened the tank sees what is actually in it, and that is the moment they
+            know whether it needs reporting. Signed-in only, because a report has to belong to
+            somebody (schema.sql: content_reports). */}
+        {typeof tank === 'object' && tank && session && (
+          <button
+            type="button"
+            className="gallery-report"
+            disabled={reported}
+            title={t('gallery.report')}
+            onClick={() => {
+              setReason('');
+              setReporting(true);
+            }}
+          >
+            <i className="fa-solid fa-flag" aria-hidden="true" /> {reported ? t('gallery.reported') : t('gallery.report')}
+          </button>
+        )}
       </div>
+
+      {reporting && typeof tank === 'object' && tank && (
+        <div className="gallery-report-form">
+          <p>{t('gallery.reportBody', { name: tank.name })}</p>
+          <Input
+            value={reason}
+            placeholder={t('gallery.reportPlaceholder')}
+            onChange={(e) => setReason(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && void submitReport(tank.id)}
+          />
+          <div className="gallery-report-actions">
+            <Button type="button" size="sm" variant="secondary" onClick={() => setReporting(false)}>
+              {t('gallery.cancel')}
+            </Button>
+            <Button type="button" size="sm" onClick={() => void submitReport(tank.id)}>
+              {t('gallery.reportSend')}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {tank === 'loading' && <p className="tab-panel-loading">{t('share.loading')}</p>}
       {tank === 'error' && <p className="tab-panel-loading">{t('share.loadFailed')}</p>}

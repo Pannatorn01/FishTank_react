@@ -11,10 +11,19 @@ import type { EditorPrefs, StorageAdapter, TankState, TankSummary } from './adap
  * backend needs too, where the cache doubles as the offline copy (plan P4/P5).
  */
 export class SpriteRepo {
-  /** Told about every successful write, so the sync engine can queue it (see getRepos). A callback
-   *  rather than a dependency: the repository works exactly the same with nobody listening, which is
-   *  the local-only case and the default. */
-  onWrite: ((sprites: Sprite[]) => void) | null = null;
+  /**
+   * Told about every successful write, so the sync engine can queue it (see getRepos). A callback
+   * rather than a dependency: the repository works exactly the same with nobody listening, which is
+   * the local-only case and the default.
+   *
+   * Awaited, not fired and forgotten. Queueing writes a row to the outbox, which is itself an
+   * IndexedDB transaction, so a save that returned before it finished would leave a window - short,
+   * but real - in which the change is on disk locally and nothing knows it is owed to the server. A
+   * tab closed in that window keeps the work and stops mentioning it until the next save of the same
+   * record. Everything else in this codebase refuses to call something saved before it is; this is
+   * the same rule applied to "queued".
+   */
+  onWrite: ((sprites: Sprite[]) => void | Promise<void>) | null = null;
   private sprites: Sprite[] = [];
   private hydrated = false;
   private readonly adapter: StorageAdapter;
@@ -74,7 +83,7 @@ export class SpriteRepo {
       this.sprites = previous;
       throw e;
     }
-    this.onWrite?.([sprite]);
+    await this.onWrite?.([sprite]);
   }
 
   async remove(id: string): Promise<void> {
@@ -88,7 +97,7 @@ export class SpriteRepo {
       throw e;
     }
     // The tombstone is what travels, not the absence: see the adapters' saveSprites.
-    if (removed) this.onWrite?.([{ ...removed, deletedAt: Date.now(), updatedAt: Date.now() }]);
+    if (removed) await this.onWrite?.([{ ...removed, deletedAt: Date.now(), updatedAt: Date.now() }]);
   }
 
   /** Replaces the whole library at once - used when seeding the default sprites on a first run. */
@@ -107,7 +116,7 @@ export class SpriteRepo {
 
 export class TankRepo {
   /** See SpriteRepo.onWrite. */
-  onWrite: ((state: TankState, tankId: string) => void) | null = null;
+  onWrite: ((state: TankState, tankId: string) => void | Promise<void>) | null = null;
   private readonly adapter: StorageAdapter;
 
   constructor(adapter: StorageAdapter) {
@@ -142,11 +151,11 @@ export class TankRepo {
 
   /** Told about a deletion the same way onWrite is told about a save, so the sync engine can pass it
    *  on: a tank removed here has to be removed on the other devices too, not just stop being uploaded. */
-  onDelete: ((tankId: string) => void) | null = null;
+  onDelete: ((tankId: string) => void | Promise<void>) | null = null;
 
   async delete(id: string): Promise<void> {
     await this.adapter.deleteTank(id);
-    this.onDelete?.(id);
+    await this.onDelete?.(id);
   }
 
   load(tankId?: string): Promise<TankState> {
@@ -155,7 +164,7 @@ export class TankRepo {
 
   async save(state: TankState, tankId?: string): Promise<void> {
     await this.adapter.saveTankState(state, tankId);
-    this.onWrite?.(state, tankId ?? (await this.adapter.getCurrentTankId()));
+    await this.onWrite?.(state, tankId ?? (await this.adapter.getCurrentTankId()));
   }
 }
 

@@ -5,7 +5,8 @@ import type { Sprite } from '../types';
 import { rowToSprite, type SpriteRow } from './rows';
 
 /**
- * The public sprite gallery, and the report button that has to exist alongside it (plan P6.4/P6.5).
+ * The public listings - sprites (P6.4) and tanks (P6.6) - and the report button that has to exist
+ * alongside them (P6.5).
  *
  * Two rules shape everything here:
  *
@@ -81,6 +82,35 @@ export async function forkGallerySprite(entry: GallerySprite): Promise<Sprite> {
   await getRepos().sprites.put(copy);
   window.dispatchEvent(new CustomEvent('ft:sprites-updated'));
   return copy;
+}
+
+/** One tank in the public listing. Deliberately not a whole tank: see listTankGallery. */
+export interface GalleryTank {
+  id: string;
+  name: string;
+  fishCount: number;
+  /** Server-side ordering key, passed back as `before` to fetch the next page. */
+  cursor: string;
+}
+
+/**
+ * One page of published tanks, newest first. Browsing works signed out, and so does opening one - a
+ * public tank is public.
+ *
+ * A card carries a name and a fish count rather than a picture. Drawing a thumbnail would mean
+ * fetching every listed tank in full - its instances, and every sprite each of them uses - which is
+ * most of a page load per card, to produce something the visitor can get by clicking one. The cost is
+ * that the listing is plainer than a sprite gallery, where a thumbnail is 16x16 pixels and free.
+ */
+export async function listTankGallery(limit = 60, before?: string): Promise<GalleryTank[]> {
+  const { data, error } = await client().rpc('gallery_tanks', { lim: limit, before: before ?? null });
+  if (error) throw error;
+  return ((data ?? []) as Array<{ id: string; name: string; fish_count: number; server_updated_at: string }>).map((row) => ({
+    id: row.id,
+    name: row.name,
+    fishCount: row.fish_count ?? 0,
+    cursor: row.server_updated_at,
+  }));
 }
 
 export type ReportTarget = 'sprite' | 'tank';

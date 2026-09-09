@@ -65,6 +65,44 @@ export async function sendMagicLink(email: string): Promise<{ ok: boolean; error
   return error ? { ok: false, error: error.message } : { ok: true };
 }
 
+/**
+ * Signs in with Google.
+ *
+ * This navigates the page away to Google and comes back, which is why it returns only a failure: on
+ * success there is nothing left to return to. The session lands through the same
+ * `onAuthStateChange` every other sign-in uses, so everything downstream - the first-sign-in upload
+ * offer, the sync engine, the pending tank invitations - happens exactly as it does after a magic
+ * link, with no second path to keep working.
+ *
+ * It appears in the UI only when the project actually has the provider configured (see
+ * `googleSignInEnabled`): an OAuth button that returns "Unsupported provider" is worse than no button,
+ * because the user cannot tell whether the fault is theirs.
+ */
+export async function signInWithGoogle(): Promise<{ ok: boolean; error?: string }> {
+  const supabase = getSupabase();
+  if (!supabase) return { ok: false, error: 'not configured' };
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: 'google',
+    // Back to wherever the app is actually running - the same origin the magic link returns to, so a
+    // dev server, a preview deploy and production each come back to themselves.
+    options: { redirectTo: window.location.origin },
+  });
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
+/**
+ * Whether to offer the Google button at all.
+ *
+ * A build-time flag rather than something asked of the server: Supabase has no public endpoint that
+ * lists a project's enabled providers, and the alternative - offer it and let it fail - puts an error
+ * in front of the user for a setting only the project owner can change. Set
+ * `VITE_GOOGLE_SIGN_IN=true` once the provider is configured in the dashboard (Authentication ->
+ * Sign In / Providers -> Google). Magic link, which needs no such setup, is always available.
+ */
+export function googleSignInEnabled(): boolean {
+  return import.meta.env.VITE_GOOGLE_SIGN_IN === 'true';
+}
+
 export async function signOut(): Promise<void> {
   await getSupabase()?.auth.signOut();
 }

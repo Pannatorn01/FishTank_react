@@ -79,7 +79,9 @@ function check(name, ok, detail) {
   // Put a fish in the tank before sharing it. Without this the whole viewer half of this script would
   // pass against an empty tank, which is precisely the failure it is supposed to catch: a shared tank
   // that arrives with no contents looks identical to one that arrives correctly and happens to be bare.
-  const placed = await page.evaluate(async () => {
+  // Per-run id - see the note in tank-gallery-ui-smoke.cjs about why a fixed one poisons later runs.
+  const probeInstanceId = `inst_share_${Date.now()}`;
+  const placed = await page.evaluate(async (instanceId) => {
     const mod = await import('/src/lib/data/index.ts');
     const repos = mod.getRepos();
     await repos.sprites.hydrate();
@@ -90,7 +92,7 @@ function check(name, ok, detail) {
     state.instances = [
       ...state.instances,
       {
-        id: 'inst_share_probe', spriteId: sprite.id, kind: sprite.type, x: 60, y: 60, dir: 1, vx: 10, vy: 2,
+        id: instanceId, spriteId: sprite.id, kind: sprite.type, x: 60, y: 60, dir: 1, vx: 10, vy: 2,
         targetY: 60, frameIndex: 0, frameTimer: 0, bobPhase: 0, isDragging: false, swimSpeed: 'medium',
         groupId: null, schoolOffsetY: 0, zone: null, visible: true, bornAt: now, lifespanMs: 9e8,
         dead: false, diedAt: 0, hunger: 1, starvingSince: 0, matureAt: now, wellFedSince: 0,
@@ -100,7 +102,7 @@ function check(name, ok, detail) {
     await repos.tank.save(state, tankId);
     await mod.getSync()?.syncNow();
     return { spriteName: sprite.name, spriteId: sprite.id };
-  });
+  }, probeInstanceId);
   await page.waitForTimeout(1500);
 
   // ---- the owner's side --------------------------------------------------------------
@@ -113,7 +115,16 @@ function check(name, ok, detail) {
   check('the Share tab opens on a signed-in, backed-up tank', !/Sign in first/i.test(panel), panel.split('\n')[0]);
 
   const linkButton = page.locator('.tank-share-choices button', { hasText: 'Anyone with the link' });
-  check('the panel offers a link, and does not offer a public listing', (await linkButton.count()) === 1 && (await page.getByRole('button', { name: /public/i }).count()) === 0);
+  // All three choices. This check used to assert the opposite - that no public option existed - which
+  // was right while nothing listed tanks, and wrong the moment P6-6 gave a public tank somewhere to
+  // appear. Left as an exact comparison rather than a "contains", so adding a fourth option has to be
+  // a deliberate edit here too.
+  const choices = (await page.locator('.tank-share-choices button').allInnerTexts()).map((c) => c.trim());
+  check(
+    'the panel offers private, link and public',
+    JSON.stringify(choices) === JSON.stringify(['Only me', 'Anyone with the link', 'Anyone']),
+    choices.join(' | ')
+  );
 
   await linkButton.click();
   await page.waitForTimeout(2000);

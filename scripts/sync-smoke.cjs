@@ -160,7 +160,11 @@ async function serverRows(token, path) {
   // Written through the repository rather than by dragging decor around the tank UI: the point is
   // whether the *sync* path carries these row shapes, and a drag gesture would only make the test
   // fragile without testing anything more.
-  const childProbe = await page.evaluate(async () => {
+  // Per-run ids, never fixed ones - see the note in tank-gallery-ui-smoke.cjs. A fixed id collides
+  // with whatever a crashed earlier run left behind, and since that row belongs to a different
+  // throwaway account the upsert is refused rather than overwritten.
+  const probeIds = { room: `room_${Date.now()}`, group: `grp_${Date.now()}` };
+  const childProbe = await page.evaluate(async (ids) => {
     const mod = await import('/src/lib/data/index.ts');
     const repos = mod.getRepos();
     await repos.sprites.hydrate();
@@ -170,22 +174,22 @@ async function serverRows(token, path) {
     const now = Date.now();
     state.roomInstances = [
       ...state.roomInstances,
-      { id: 'room_probe', spriteId, x: 12, y: 12, visible: true, updatedAt: now, deletedAt: 0, rev: 0 },
+      { id: ids.room, spriteId, x: 12, y: 12, visible: true, updatedAt: now, deletedAt: 0, rev: 0 },
     ];
     state.groups = [
       ...state.groups,
-      { id: 'grp_probe', name: 'Probe school', zone: null, updatedAt: now, deletedAt: 0, rev: 0 },
+      { id: ids.group, name: 'Probe school', zone: null, updatedAt: now, deletedAt: 0, rev: 0 },
     ];
     await repos.tank.save(state, tankId);
     return { tankId, spriteId };
-  });
+  }, probeIds);
   await syncNow(page);
   await page.waitForTimeout(1500);
 
   const roomRows = await serverRows(token, `room_instances?tank_id=eq.${childProbe.tankId}&select=id,sprite_id`);
-  check('room decor reaches the server, sprite and all', roomRows.some((r) => r.id === 'room_probe' && r.sprite_id === childProbe.spriteId), JSON.stringify(roomRows));
+  check('room decor reaches the server, sprite and all', roomRows.some((r) => r.id === probeIds.room && r.sprite_id === childProbe.spriteId), JSON.stringify(roomRows));
   const groupRows = await serverRows(token, `tank_groups?tank_id=eq.${childProbe.tankId}&select=id`);
-  check('so do groups, which have no sprite at all', groupRows.some((r) => r.id === 'grp_probe'), JSON.stringify(groupRows));
+  check('so do groups, which have no sprite at all', groupRows.some((r) => r.id === probeIds.group), JSON.stringify(groupRows));
   const drainedChildren = await outboxSize(page);
   check('and neither is stuck in the outbox', drainedChildren === 0, `outbox=${drainedChildren}`);
 

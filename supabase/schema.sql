@@ -575,9 +575,12 @@ grant execute on function public.get_shared_tank(text, text) to anon, authentica
 -- are the same feature: publishing without reporting hands strangers a megaphone with nobody at the
 -- other end, and the plan says neither goes out alone (§4 P6.4/P6.5).
 --
--- Scope: sprites only. A tank can still be private or unlisted, never public - not because of
--- moderation any more, but because nothing lists tanks, and "public" without a listing is only an
--- unlisted tank with a guessable address. That is a worse offer than the one it replaces.
+-- Scope when this was written: sprites only. A tank could be private or unlisted, never public - not
+-- because of moderation, but because nothing listed tanks, and "public" without a listing is only an
+-- unlisted tank with a guessable address. That gap is closed by gallery_tanks in the P6-6 section at
+-- the end of this file; the reporting built here covers both from the start (content_reports accepts
+-- target_type 'tank', and autohide_reported flips tanks.hidden_by_admin), which is why adding the
+-- listing needed no new moderation.
 
 -- Provenance must never stop someone deleting their own work. `forked_from` points at the sprite a
 -- copy came from, and as a plain reference it made that original undeletable for as long as anyone
@@ -685,3 +688,50 @@ $fn$;
 revoke all on function public.gallery_sprites(integer, timestamptz) from public;
 -- Browsing does not require an account; copying and reporting do (RLS decides both).
 grant execute on function public.gallery_sprites(integer, timestamptz) to anon, authenticated;
+
+-- ================================================================ P6-6: the tank gallery
+--
+-- This is the listing whose absence was the reason a tank could not be public (see the P6-4/P6-5
+-- header above, which said so in as many words). Nothing about permissions changes here: `tanks`,
+-- its contents and the sprites it uses have all allowed `visibility = 'public'` since P6-3, and
+-- get_shared_tank has always let a public tank through without a slug. What was missing was a way to
+-- find one, and "public" without that is only an unlisted tank with a guessable address.
+--
+-- Moderation needs nothing new either: content_reports already accepts target_type 'tank', and
+-- autohide_reported already flips tanks.hidden_by_admin. The listing below is the last piece, and it
+-- honours that flag - which is what makes publishing a tank safe to offer.
+
+/**
+ * The tank listing.
+ *
+ * A function rather than a plain select for the same reason as gallery_sprites: `tanks` carries
+ * `user_id` and `share_slug`, and a listing anyone can browse has no business handing out either. An
+ * unlisted tank's slug leaking through a public listing would be quiet and total - every tank that had
+ * ever been unlisted would be openable by anyone - so the column list here is written out rather than
+ * being `select *`.
+ *
+ * `fish_count` is the one thing beyond a name: a listing of bare names is hard to choose from, and
+ * counting rows is far cheaper than shipping every tank's contents to draw a thumbnail. A visitor who
+ * wants to see a tank opens it, which is one click and one call (get_shared_tank).
+ */
+create or replace function public.gallery_tanks(lim integer default 60, before timestamptz default null)
+returns table (id text, name text, fish_count integer, server_updated_at timestamptz)
+language sql stable security definer set search_path = public as $fn$
+  select
+    t.id,
+    t.name,
+    (select count(*) from public.tank_instances i where i.tank_id = t.id and i.deleted_at = 0)::integer,
+    t.server_updated_at
+  from public.tanks t
+  where t.visibility = 'public'
+    and t.deleted_at = 0
+    and not t.hidden_by_admin
+    and (before is null or t.server_updated_at < before)
+  order by t.server_updated_at desc
+  limit least(greatest(lim, 1), 100);
+$fn$;
+
+revoke all on function public.gallery_tanks(integer, timestamptz) from public;
+-- Browsing does not require an account; opening a tank does not either (it is public). Reporting does,
+-- because a report has to belong to somebody - RLS on content_reports decides that, not this.
+grant execute on function public.gallery_tanks(integer, timestamptz) to anon, authenticated;

@@ -16,16 +16,20 @@ import {
   type ShareEntry,
   type ShareState,
   type SharedTankSummary,
+  type TankVisibility,
 } from '@/lib/data/sharing';
 import { useLanguage } from '@/lib/i18n';
+import { TankGalleryDialog } from './TankGalleryDialog';
 
 /**
- * Who can see this tank, and which tanks other people have shared back.
+ * Who can see this tank, which tanks other people have shared back, and the way into the public
+ * listing.
  *
- * `public` is missing on purpose. The column accepts it and the policies honour it, but a listing
- * anyone can browse needs a report button and somewhere for the reports to go, and the plan is explicit
- * that neither ships before the other (§4 P6.4/P6.5). Until then the two honest options are "nobody"
- * and "the people I hand it to".
+ * `public` was missing from this panel until there was somewhere for a public tank to appear: the
+ * policies have allowed it since P6-3, but offering it with nothing listing tanks would have been an
+ * unlisted tank with a guessable address, which is worse than the unlisted option next to it. The
+ * listing (P6-6) is what makes the third choice mean something, and the reporting it needs came with
+ * the sprite gallery (P6-5) and already covered tanks.
  */
 export function TankSharePanel({ engine }: { engine: TankEngine }) {
   const { t } = useLanguage();
@@ -42,6 +46,7 @@ export function TankSharePanel({ engine }: { engine: TankEngine }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
 
   const reload = useCallback(async () => {
     if (!tankId || !session) return;
@@ -64,7 +69,27 @@ export function TankSharePanel({ engine }: { engine: TankEngine }) {
   }, [reload]);
 
   if (!available) return <p className="tank-share-hint">{t('share.needsProject')}</p>;
-  if (!session) return <p className="tank-share-hint">{t('share.needsAccount')}</p>;
+
+  // Signing in is needed to share a tank, not to look at what other people have published - the
+  // listing is granted to anonymous callers on purpose (schema.sql: gallery_tanks), so a guest gets
+  // the gallery rather than a dead end telling them to come back with an account.
+  if (!session) {
+    return (
+      <div className="tank-share-panel">
+        <p className="tank-share-hint">{t('share.needsAccount')}</p>
+        <div className="tank-share-section">
+          <h3 className="tank-share-heading">{t('tankGallery.heading')}</h3>
+          <p className="tank-share-hint">{t('tankGallery.hint')}</p>
+          <Button type="button" size="sm" variant="secondary" onClick={() => setBrowsing(true)}>
+            <i className="fa-solid fa-globe" /> {t('tankGallery.browse')}
+          </Button>
+        </div>
+        <TankGalleryDialog open={browsing} onClose={() => setBrowsing(false)} onError={setError} />
+        {error && <p className="account-error">{error}</p>}
+      </div>
+    );
+  }
+
   if (share === 'loading') return <p className="tank-share-hint">{t('share.loading')}</p>;
 
   const run = async (action: () => Promise<void>) => {
@@ -85,7 +110,7 @@ export function TankSharePanel({ engine }: { engine: TankEngine }) {
       await reload();
     });
 
-  const setVisibility = (visibility: 'private' | 'unlisted') =>
+  const setVisibility = (visibility: TankVisibility) =>
     run(async () => {
       if (!tankId) return;
       setShare(await setTankVisibility(tankId, visibility));
@@ -111,8 +136,11 @@ export function TankSharePanel({ engine }: { engine: TankEngine }) {
 
   const rotate = () =>
     run(async () => {
-      if (!tankId) return;
-      setShare({ visibility: 'unlisted', shareSlug: await rotateShareSlug(tankId) });
+      if (!tankId || share === 'absent') return;
+      // Keeps whatever the tank's visibility actually is. Rotating replaces the secret in the link, it
+      // does not change who the tank is offered to - and a public tank told it had become unlisted
+      // would be a lie the panel then acted on.
+      setShare({ visibility: share.visibility, shareSlug: await rotateShareSlug(tankId) });
     });
 
   const link = share !== 'absent' && share.shareSlug && tankId ? shareLink(tankId, share.shareSlug) : null;
@@ -156,11 +184,26 @@ export function TankSharePanel({ engine }: { engine: TankEngine }) {
               >
                 <i className="fa-solid fa-link" /> {t('share.unlisted')}
               </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={share.visibility === 'public' ? 'default' : 'secondary'}
+                disabled={busy}
+                onClick={() => setVisibility('public')}
+              >
+                <i className="fa-solid fa-globe" /> {t('share.public')}
+              </Button>
             </div>
             <p className="tank-share-hint">
-              {share.visibility === 'unlisted' ? t('share.unlistedBody') : t('share.privateBody')}
+              {share.visibility === 'public'
+                ? t('share.publicBody')
+                : share.visibility === 'unlisted'
+                  ? t('share.unlistedBody')
+                  : t('share.privateBody')}
             </p>
-            {share.visibility === 'unlisted' && link && (
+            {/* A public tank keeps its link working too - it is strictly more open than unlisted, and
+                taking the link away from the people already holding one would be a surprise. */}
+            {(share.visibility === 'unlisted' || share.visibility === 'public') && link && (
               <div className="tank-share-link">
                 <Input readOnly value={link} onFocus={(e) => e.currentTarget.select()} />
                 <Button type="button" size="sm" variant="secondary" onClick={() => void copyLink()}>
@@ -242,7 +285,16 @@ export function TankSharePanel({ engine }: { engine: TankEngine }) {
         )}
       </div>
 
+      <div className="tank-share-section">
+        <h3 className="tank-share-heading">{t('tankGallery.heading')}</h3>
+        <p className="tank-share-hint">{t('tankGallery.hint')}</p>
+        <Button type="button" size="sm" variant="secondary" onClick={() => setBrowsing(true)}>
+          <i className="fa-solid fa-globe" /> {t('tankGallery.browse')}
+        </Button>
+      </div>
+
       {error && <p className="account-error">{error}</p>}
+      <TankGalleryDialog open={browsing} onClose={() => setBrowsing(false)} onError={setError} />
     </div>
   );
 }

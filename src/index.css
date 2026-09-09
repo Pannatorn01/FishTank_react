@@ -2330,3 +2330,21 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 .tank-switcher { display: inline-flex; align-items: center; gap: 4px; }
 .tank-switcher-trigger { min-width: 9rem; max-width: 14rem; }
 .tank-switcher-input { width: 10rem; }
+
+/* ---------------------------------------------------------------- tank gallery (plan P6-6) */
+
+/* A list rather than the sprite gallery's grid of thumbnails, because a tank card has no thumbnail to
+   hang a grid cell on - see listTankGallery for why it does not fetch one. A name that can be long,
+   a count, and two actions read better in a row. */
+.tank-gallery-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.tank-gallery-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border: 1px solid currentColor; border-radius: 6px;
+}
+/* The name takes what is left and wraps rather than pushing the buttons off the row. */
+.tank-gallery-name { flex: 1 1 auto; min-width: 0; font-size: 0.78rem; overflow-wrap: anywhere; }
+.tank-gallery-count { font-size: 0.68rem; opacity: 0.7; white-space: nowrap; }
+
+/* Sign-in dialog: the Google button and the "or use your email" divider above the email field. */
+.account-google { width: 100%; }
+.account-or { margin: 6px 0 0; font-size: 0.7rem; text-align: center; opacity: 0.7; }

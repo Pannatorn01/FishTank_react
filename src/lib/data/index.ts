@@ -50,9 +50,11 @@ function attachSync(adapter: StorageAdapter, repos: Repos): void {
   const supabase = getSupabase();
   if (!supabase || !(adapter instanceof IndexedDbAdapter)) return;
   sync = new SyncEngine(adapter, supabase);
-  repos.sprites.onWrite = (sprites) => void sync?.queueSprites(sprites);
-  repos.tank.onWrite = (state, tankId) => void sync?.queueTank(tankId, state);
-  repos.tank.onDelete = (tankId) => void sync?.queueTankDeletion(tankId);
+  // Returned, not discarded: the repositories await these, so a save is not finished until the
+  // change has actually been written to the outbox (see SpriteRepo.onWrite).
+  repos.sprites.onWrite = (sprites) => sync?.queueSprites(sprites);
+  repos.tank.onWrite = (state, tankId) => sync?.queueTank(tankId, state);
+  repos.tank.onDelete = (tankId) => sync?.queueTankDeletion(tankId);
   // Signing in (or out, or a token refresh) changes what a sync would do, so it is worth one
   // immediately rather than waiting up to a minute for the heartbeat.
   supabase.auth.onAuthStateChange(() => void sync?.syncNow());

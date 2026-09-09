@@ -213,7 +213,9 @@ describe('TankRepo (several tanks)', () => {
     const adapter = new FakeAdapter();
     const repo = new TankRepo(adapter);
     const deleted: string[] = [];
-    repo.onDelete = (id) => deleted.push(id);
+    repo.onDelete = (id) => {
+      deleted.push(id);
+    };
 
     const id = await repo.create('Spare');
     await repo.delete(id);
@@ -226,9 +228,66 @@ describe('TankRepo (several tanks)', () => {
     const adapter = new FakeAdapter();
     const repo = new TankRepo(adapter);
     const deleted: string[] = [];
-    repo.onDelete = (id) => deleted.push(id);
+    repo.onDelete = (id) => {
+      deleted.push(id);
+    };
 
     await expect(repo.delete('tank_test')).rejects.toThrow('only tank');
     expect(deleted).toEqual([]);
+  });
+});
+
+describe('a save is not finished until the sync engine has been told', () => {
+  // Queueing a change is itself an IndexedDB write. When these notifications were fired and forgotten,
+  // a save could return while the record was on disk locally and nothing yet knew it was owed to the
+  // server - so a tab closed in that window kept the work but stopped mentioning it until the next
+  // save of the same record. Found by a Playwright probe that published a tank one moment after saving
+  // a fish into it: the gallery card said "0 fish", because syncNow() had overtaken its own queue
+  // write.
+  //
+  // Ordering, not timing: the listener finishes on a later macrotask, and the assertion is that `save`
+  // had not resolved before it did. A "has it resolved after N microtasks" check passes either way and
+  // proves nothing - which is how the first version of this test was written, and why it caught
+  // nothing when the fix was reverted to check.
+  const slow = (order: string[], label: string) => async () => {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    order.push(label);
+  };
+
+  it('waits for the sprite notification before resolving', async () => {
+    const repo = new SpriteRepo(new FakeAdapter());
+    await repo.hydrate();
+    const order: string[] = [];
+    repo.onWrite = slow(order, 'queued');
+
+    await repo.put(sprite('sprite_slow'));
+    order.push('saved');
+
+    expect(order).toEqual(['queued', 'saved']);
+  });
+
+  it('waits for the tank notification too', async () => {
+    const repo = new TankRepo(new FakeAdapter());
+    const order: string[] = [];
+    repo.onWrite = slow(order, 'queued');
+
+    // The fake adapter has no tank state to load and none is needed: what is being checked is when the
+    // notification happens relative to the save, not what was in it.
+    await repo.save({} as TankState, 'tank_test');
+    order.push('saved');
+
+    expect(order).toEqual(['queued', 'saved']);
+  });
+
+  it('waits for a deletion to be queued as well', async () => {
+    const repo = new TankRepo(new FakeAdapter());
+    const order: string[] = [];
+    repo.onDelete = slow(order, 'queued');
+
+    await repo.create('Spare');
+    await repo.delete('tank_2');
+    order.push('deleted');
+
+    expect(order).toEqual(['queued', 'deleted']);
   });
 });

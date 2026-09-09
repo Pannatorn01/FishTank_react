@@ -11,7 +11,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { sendMagicLink, signOut, useAuth } from '@/hooks/useAuth';
+import { googleSignInEnabled, sendMagicLink, signInWithGoogle, signOut, useAuth } from '@/hooks/useAuth';
 import { getSync } from '@/lib/data';
 import { claimTankInvites } from '@/lib/data/sharing';
 import { useLanguage } from '@/lib/i18n';
@@ -64,6 +64,14 @@ export function AccountMenu() {
     else setError(result.error ?? 'error');
   };
 
+  // No success branch: this navigates away to Google, and the session arrives on the way back through
+  // the same listener a magic link uses. Only the failure has anywhere to be shown.
+  const submitGoogle = async () => {
+    setError(null);
+    const result = await signInWithGoogle();
+    if (!result.ok) setError(result.error ?? 'error');
+  };
+
   const claim = async () => {
     const sync = getSync();
     if (!sync || !session) return;
@@ -93,6 +101,14 @@ export function AccountMenu() {
             <AlertDialogTitle>{t('auth.signInTitle')}</AlertDialogTitle>
             <AlertDialogDescription>{t('auth.signInBody')}</AlertDialogDescription>
           </AlertDialogHeader>
+          {googleSignInEnabled() && (
+            <>
+              <Button type="button" variant="secondary" className="account-google" onClick={() => void submitGoogle()}>
+                <i className="fa-brands fa-google" /> {t('auth.google')}
+              </Button>
+              <p className="account-or">{t('auth.or')}</p>
+            </>
+          )}
           <Input
             type="email"
             value={input}
