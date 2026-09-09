@@ -652,3 +652,131 @@ describe('refresh (switching tanks / reloading after a remote sync)', () => {
     expect(engine.backgroundSpriteId).toBe('bg1');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Schooling, end to end: marquee -> Group -> update(). computeSchoolSteer has its
+// own unit tests (tank/sim/__tests__/schooling.test.ts); what these cover is the
+// part those cannot - that the engine actually builds the steer from its live
+// instances each frame and that the movement code reads it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('schooling through update()', () => {
+  /** Groups the given ids the way the UI does: marquee-select them, then press Group. */
+  function group(engine: TankEngine, ids: string[]): string {
+    engine.toggleMarqueeSelect(ids);
+    engine.groupMarquee();
+    return engine.groups[0].id;
+  }
+
+  it('pulls a school toward a common heading', () => {
+    // Two facing right, one facing left, none near a wall - so nothing but the school steer can
+    // decide where they end up pointing.
+    const a = fish({ id: 'a', x: 300, y: 100, dir: 1 });
+    const b = fish({ id: 'b', x: 320, y: 140, dir: 1 });
+    const c = fish({ id: 'c', x: 340, y: 500, dir: -1 });
+    const engine = makeEngine([a, b, c]);
+    group(engine, ['a', 'b', 'c']);
+
+    call(engine, 'update', 0.016);
+
+    expect([a.dir, b.dir, c.dir]).toEqual([1, 1, 1]);
+  });
+
+  it('steers members toward the group\'s mean depth, each by its own offset', () => {
+    const a = fish({ id: 'a', x: 300, y: 100, dir: 1 });
+    const b = fish({ id: 'b', x: 320, y: 500, dir: 1 });
+    const engine = makeEngine([a, b]);
+    // Grouping assigns the offsets itself (reflowSchoolOffsets, evenly spaced plus jitter), so they
+    // are read back rather than set here - asserting the relationship, not a magic number.
+    group(engine, ['a', 'b']);
+    const centerY = (a.y + b.y) / 2;
+    const [offA, offB] = [a.schoolOffsetY, b.schoolOffsetY];
+
+    call(engine, 'update', 0.016);
+
+    // Mean of 100 and 500 is 300: the high fish is aimed down and the low one up, each to its own
+    // slot in the formation.
+    expect(centerY).toBe(300);
+    expect(a.targetY).toBeCloseTo(centerY + offA, 5);
+    expect(b.targetY).toBeCloseTo(centerY + offB, 5);
+  });
+
+  it('keeps members apart by their schoolOffsetY rather than stacking them', () => {
+    const a = fish({ id: 'a', x: 300, y: 200, dir: 1 });
+    const b = fish({ id: 'b', x: 320, y: 400, dir: 1 });
+    const engine = makeEngine([a, b]);
+    group(engine, ['a', 'b']);
+
+    call(engine, 'update', 0.016);
+
+    expect(a.schoolOffsetY).not.toBe(b.schoolOffsetY);
+    expect(a.targetY).not.toBe(b.targetY);
+    // The gap between their targets is exactly the gap between their slots - the school holds a
+    // formation rather than collapsing onto one depth.
+    expect(a.targetY! - b.targetY!).toBeCloseTo(a.schoolOffsetY! - b.schoolOffsetY!, 5);
+  });
+
+  it('converges a scattered school over many frames', () => {
+    const a = fish({ id: 'a', x: 200, y: 80, dir: 1, vy: 60 });
+    const b = fish({ id: 'b', x: 400, y: 300, dir: -1, vy: 60 });
+    const c = fish({ id: 'c', x: 600, y: 500, dir: 1, vy: 60 });
+    const engine = makeEngine([a, b, c]);
+    group(engine, ['a', 'b', 'c']);
+
+    const spread = () => Math.max(a.y, b.y, c.y) - Math.min(a.y, b.y, c.y);
+    const before = spread();
+    for (let i = 0; i < 120; i++) call(engine, 'update', 0.016);
+
+    expect(spread()).toBeLessThan(before);
+    // All still in the tank, and all pointing the same way - a school, not three loose fish.
+    expect(new Set([a.dir, b.dir, c.dir]).size).toBe(1);
+  });
+
+  it('leaves an ungrouped fish to wander on its own', () => {
+    const a = fish({ id: 'a', x: 300, y: 100, dir: 1 });
+    const b = fish({ id: 'b', x: 320, y: 140, dir: 1 });
+    const loner = fish({ id: 'loner', x: 340, y: 500, dir: -1 });
+    const engine = makeEngine([a, b, loner]);
+    group(engine, ['a', 'b']);
+
+    call(engine, 'update', 0.016);
+
+    // The school's heading does not reach a fish that was never in it.
+    expect(loner.dir).toBe(-1);
+  });
+
+  it('does not let a dragged member drag the whole school with it', () => {
+    const a = fish({ id: 'a', x: 300, y: 300, dir: 1 });
+    const b = fish({ id: 'b', x: 320, y: 300, dir: 1 });
+    const held = fish({ id: 'held', x: 340, y: 20, dir: -1 });
+    const engine = makeEngine([a, b, held]);
+    group(engine, ['a', 'b', 'held']);
+    held.isDragging = true;
+    const [offA, offB] = [a.schoolOffsetY, b.schoolOffsetY];
+
+    call(engine, 'update', 0.016);
+
+    // The steer is the mean of a and b alone (both at 300), not pulled up toward the held fish at
+    // y=20 - each free member aims at 300 plus its own slot.
+    expect(a.targetY).toBeCloseTo(300 + offA!, 5);
+    expect(b.targetY).toBeCloseTo(300 + offB!, 5);
+  });
+
+  it('stops steering a group once death leaves it with one member', () => {
+    const a = fish({ id: 'a', x: 300, y: 100, dir: 1 });
+    const b = fish({ id: 'b', x: 320, y: 500, dir: 1 });
+    const engine = makeEngine([a, b]);
+    group(engine, ['a', 'b']);
+    // Old age, caught by update()'s own aging phase rather than set by hand - which also clears the
+    // dead fish's groupId, leaving the group with a single member.
+    b.bornAt = NOW - 10_000;
+    b.lifespanMs = 1_000;
+
+    call(engine, 'update', 0.016);
+
+    expect(b.dead).toBe(true);
+    expect(b.groupId).toBeNull();
+    // a is now a school of one: it gets no steer, so its target is a wandering one, not b's depth.
+    call(engine, 'update', 0.016);
+    expect(a.targetY).not.toBeCloseTo(500, 1);
+  });
+});
