@@ -2,6 +2,7 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { t } from '@/lib/i18n';
 import { pixelateImageFile } from '@/lib/imageImport';
+import { downloadBlob } from '@/lib/download';
 import { paintLayers } from '@/lib/pixelMath';
 import { getRepos, type TankState, type TankSummary } from '@/lib/data';
 import * as storage from '@/lib/storage';
@@ -439,9 +440,20 @@ export class TankEngine {
     void this.reloadTankList();
   }
 
-  private async loadEverything(): Promise<void> {
-    const { tankId, sprites, state } = await this.source.load();
-    this.sprites = sprites;
+  /**
+   * Copies a loaded `TankState` into the engine's own fields - **every** persisted field, which is the
+   * whole reason this is one method. Opening a tank at startup and switching to a different one are two
+   * different code paths that both have to land the same tank in the same engine, and when this was
+   * written out longhand in both, `refresh()`'s copy was missing `waterLevel`/`algae`/`lastTickAt`: a
+   * tank switched to showed the *previous* tank's water level and algae, and since `snapshotForStorage`
+   * reads these same fields straight back out, the next save wrote them onto the tank switched to. A
+   * brand new tank inherited the old one's algae. Anything added to `TankState` has to be added here,
+   * and only here.
+   *
+   * Deliberately does not touch selection/undo/dirty or the sprite library - those are the caller's,
+   * and they differ between the two paths (see `refresh`).
+   */
+  private applyTankState(tankId: string, state: TankState): void {
     this.tankId = tankId;
     this.instances = state.instances.map((inst) => ({
       ...inst,
@@ -461,25 +473,42 @@ export class TankEngine {
     this.backgroundTransform = state.backgroundTransform;
     this.waterLevel = state.waterLevel;
     this.algae = state.algae;
+  }
 
-    // Hunger/starvation, water-evaporation, and algae-growth catch-up (P5 §6 items 2/4/5,
-    // docs/PIXI_MIGRATION_PLAN.md) - replays however much real time passed since the last save as one
-    // lump sum, so a tank left alone while the tab was closed is exactly as hungry/evaporated/algae-
-    // covered on reopen as it would be had the app somehow kept simulating in the background the whole
-    // time. The very first time this ever runs (no saved checkpoint yet) has nothing to catch up on -
-    // elapsed is 0, not "since the epoch". Algae's catch-up only ever uses its base growth rate, not
-    // the waste-accelerated one (see tickAlgae()'s own doc comment) - waste itself isn't persisted, so
-    // there's no historical waste count to have accelerated it while closed.
+  /**
+   * Hunger/starvation, water-evaporation, and algae-growth catch-up (P5 §6 items 2/4/5,
+   * docs/PIXI_MIGRATION_PLAN.md) - replays however much real time passed since `lastTickAt` as one
+   * lump sum, so a tank left alone while the tab was closed is exactly as hungry/evaporated/algae-
+   * covered on reopen as it would be had the app somehow kept simulating in the background the whole
+   * time. A tank with no saved checkpoint yet has nothing to catch up on - elapsed is 0, not "since
+   * the epoch". Algae's catch-up only ever uses its base growth rate, not the waste-accelerated one
+   * (see tickAlgae()'s own doc comment) - waste itself isn't persisted, so there's no historical waste
+   * count to have accelerated it while closed.
+   *
+   * Runs for a tank switched to as much as for the one open at startup: the elapsed time is read from
+   * *that tank's* own last save, so switching to a tank untouched for three days replays those three
+   * days, exactly as opening the app on it would.
+   */
+  private catchUpSince(lastTickAt: number | null): number {
     const now = Date.now();
-    const elapsedSinceLastTick = state.lastTickAt ? Math.max(0, now - state.lastTickAt) : 0;
-    this.tickHunger(elapsedSinceLastTick);
-    this.tickWaterLevel(elapsedSinceLastTick);
-    this.tickAlgae(elapsedSinceLastTick, 0);
+    const elapsed = lastTickAt ? Math.max(0, now - lastTickAt) : 0;
+    this.tickHunger(elapsed);
+    this.tickWaterLevel(elapsed);
+    this.tickAlgae(elapsed, 0);
     this.lastTickAt = now;
+    return now;
+  }
+
+  private async loadEverything(): Promise<void> {
+    const { tankId, sprites, state } = await this.source.load();
+    this.sprites = sprites;
+    this.applyTankState(tankId, state);
+    const now = this.catchUpSince(state.lastTickAt);
 
     // Predator (P5 §6 item 7) - a single roll per app load (see PREDATOR_SPAWN_CHANCE's doc comment),
-    // not something re-rolled on every tab switch. Only worth spawning if there's actually a fish to
-    // threaten - an empty tank never gets a predator event.
+    // not something re-rolled on every tab switch (which is why this sits here and not in the shared
+    // helpers above - `refresh` deliberately does not roll). Only worth spawning if there's actually a
+    // fish to threaten - an empty tank never gets a predator event.
     if (this.instances.some((i) => i.kind === 'fish' && !i.dead) && Math.random() < PREDATOR_SPAWN_CHANCE) {
       this.predator = {
         kind: Math.random() < 0.5 ? 'cat' : 'bird',
@@ -1118,23 +1147,8 @@ export class TankEngine {
     // The id comes back too: reloading is also how switching tanks lands, and the engine has to end up
     // pointing at whichever tank it just loaded rather than the one it was showing before.
     const { tankId, state } = await this.source.load();
-    this.tankId = tankId;
-    this.instances = state.instances.map((inst) => ({
-      ...inst,
-      groupId: inst.groupId ?? null,
-      zone: inst.zone ?? null,
-      visible: inst.visible ?? true,
-    }));
-    this.groups = state.groups.map((g) => ({ ...g, zone: g.zone ?? null }));
-    this.tankWidth = state.width ?? TANK_SIZE_DEFAULT.width;
-    this.tankHeight = state.height ?? TANK_SIZE_DEFAULT.height;
-    this.roomInstances = state.roomInstances;
-    this.tankShape = state.shape;
-    this.tankCornerRadiusFrac = state.cornerRadiusFrac;
-    this.tankOvalTopCutFrac = state.ovalTopCutFrac;
-    this.backgroundSpriteId = state.backgroundSpriteId;
-    this.roomBackgroundSpriteId = state.roomBackgroundSpriteId;
-    this.backgroundTransform = state.backgroundTransform;
+    this.applyTankState(tankId, state);
+    this.catchUpSince(state.lastTickAt);
     this.selectedId = null;
     this.marqueeIds = null;
     this.draggingInstance = null;
@@ -1292,24 +1306,12 @@ export class TankEngine {
     return out;
   }
 
-  private downloadBlob(blob: Blob | null, filename: string): void {
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
   /** A still photo of the tank exactly as it looks right now (one frame of compositeScene, timeMs=0
    *  so every room item draws its first frame) - the simplest of the three export formats, and what
    *  GIF/video export both build on top of. */
   exportPng(): void {
     const canvas = this.compositeScene(0);
-    canvas.toBlob((blob) => this.downloadBlob(blob, `${this.exportBaseName()}.png`));
+    canvas.toBlob((blob) => downloadBlob(blob, `${this.exportBaseName()}.png`));
   }
 
   private exportBaseName(): string {
@@ -1336,7 +1338,7 @@ export class TankEngine {
       if (e.data.size > 0) chunks.push(e.data);
     };
     recorder.onstop = () => {
-      this.downloadBlob(new Blob(chunks, { type: mimeType }), `${this.exportBaseName()}.webm`);
+      downloadBlob(new Blob(chunks, { type: mimeType }), `${this.exportBaseName()}.webm`);
     };
     const startedAt = performance.now();
     const redraw = () => {
@@ -1400,7 +1402,7 @@ export class TankEngine {
         if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
       }
       gif.finish();
-      this.downloadBlob(new Blob([gif.bytes() as BlobPart], { type: 'image/gif' }), `${this.exportBaseName()}.gif`);
+      downloadBlob(new Blob([gif.bytes() as BlobPart], { type: 'image/gif' }), `${this.exportBaseName()}.gif`);
     } finally {
       this.exportingGif = false;
       this.reactNotify();

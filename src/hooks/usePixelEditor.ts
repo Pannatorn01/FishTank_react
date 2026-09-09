@@ -25,6 +25,7 @@ import {
 import { getRepos, getSync } from '@/lib/data';
 import * as storage from '@/lib/storage';
 import { pixelateImageFile } from '@/lib/imageImport';
+import { downloadFramePng, downloadSpriteJson, downloadSpriteSheetPng } from '@/lib/spriteExport';
 import { createPenTool } from '@/lib/tools/tools/penTool';
 import { createShapeTool } from '@/lib/tools/tools/shapeTool';
 import { createMagicWandTool, resolveWandCombine } from '@/lib/tools/tools/magicWandTool';
@@ -36,7 +37,8 @@ import { createFillTool } from '@/lib/tools/tools/fillTool';
 import { createGradientTool, gradientT } from '@/lib/tools/tools/gradientTool';
 import { createSprayTool } from '@/lib/tools/tools/sprayTool';
 import { createCurveTool } from '@/lib/tools/tools/curveTool';
-import { resolveMarqueeMode } from '@/lib/tools/selectionMask';
+import { polygonMask, resolveMarqueeMode, settleSelection, shiftMask } from '@/lib/tools/selectionMask';
+import { rotatedMask, rotatedRegionCells, resizedBox, scaledRegionCells, type ColoredCell } from '@/lib/selectionTransform';
 import type { Gesture, GestureResult, Tool, ToolContext, ToolPointerEvent, ToolPreview } from '@/lib/tools/types';
 import type {
   CanvasBackground,
@@ -195,13 +197,13 @@ function cloneSprite(sprite: Sprite): Sprite {
   return structuredClone(sprite);
 }
 
-interface MoveBufferCell extends Cell {
-  color: string;
-}
-
 type Snapshot = HistorySnapshot;
 
-class PixelEditorEngine {
+/** Exported for unit tests (src/hooks/__tests__/usePixelEditor.test.ts), the same way `TankEngine` is -
+ *  app code gets its instance from the `usePixelEditor()` hook, never constructs one directly. Every
+ *  DOM-touching method guards on a null `canvas`/`previewCanvas`, so a bare `new PixelEditorEngine()`
+ *  is a usable headless engine. */
+export class PixelEditorEngine {
   canvas: HTMLCanvasElement | null = null;
   ctx: CanvasRenderingContext2D | null = null;
   previewCanvas: HTMLCanvasElement | null = null;
@@ -262,13 +264,13 @@ class PixelEditorEngine {
   resizeHandle: HandleName | null = null;
   resizeOrigin: SelectionBox | null = null;
   resizeSource: (string | null)[][] | null = null;
-  resizePreview: MoveBufferCell[] | null = null;
+  resizePreview: ColoredCell[] | null = null;
   rotateOrigin: SelectionBox | null = null;
   rotateSource: (string | null)[][] | null = null;
   rotateStartAngle = 0;
   rotateAngle = 0;
-  rotatePreview: MoveBufferCell[] | null = null;
-  moveBuffer: { cells: MoveBufferCell[] } | null = null;
+  rotatePreview: ColoredCell[] | null = null;
+  moveBuffer: { cells: ColoredCell[] } | null = null;
   moveDelta = { dx: 0, dy: 0 };
   clipboard: { w: number; h: number; rows: (string | null)[][] } | null = null;
   symmetry: SymmetryMode = 'none';
@@ -364,7 +366,7 @@ class PixelEditorEngine {
   gradientType: GradientType = 'linear';
   gradientStart: Cell | null = null;
   gradientEnd: Cell | null = null;
-  gradientPreview: MoveBufferCell[] | null = null;
+  gradientPreview: ColoredCell[] | null = null;
   /** Continuous zoom factor (1 = 100%) - not locked to ZOOM_LEVELS's fixed steps, which remain only as
    *  quick-pick presets in the status bar. Clamped to [minZoomScale(), maxZoomScale()] by setZoom;
    *  also set directly (via defaultZoomForSize) wherever the canvas's own width/height changes -
@@ -1830,13 +1832,7 @@ class PixelEditorEngine {
       const ny = c.y + dy;
       if (nx >= 0 && ny >= 0 && nx < width && ny < height) frame[ny * width + nx] = c.color;
     });
-    if (this.selection) this.selection = shiftBox(this.selection, this.moveDelta);
-    if (this.lassoPoints) {
-      this.lassoPoints = this.lassoPoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
-      this.selectionMask = this.polygonMask(this.lassoPoints);
-    } else if (this.selectionMask) {
-      this.selectionMask = this.shiftMask(this.selectionMask, dx, dy);
-    }
+    this.translateSelectionBy(dx, dy);
     this.moveBuffer = null;
     this.moveDelta = { dx: 0, dy: 0 };
     this.gestureBaseBitmap = null;
@@ -2102,43 +2098,20 @@ class PixelEditorEngine {
     }
   }
 
-  private boundingBoxOfPoints(pts: Cell[]): SelectionBox {
-    let x0 = pts[0].x, x1 = pts[0].x, y0 = pts[0].y, y1 = pts[0].y;
-    pts.forEach((p) => {
-      x0 = Math.min(x0, p.x);
-      x1 = Math.max(x1, p.x);
-      y0 = Math.min(y0, p.y);
-      y1 = Math.max(y1, p.y);
-    });
-    return { x0, y0, x1, y1 };
-  }
-
-  /** Even-odd scanline fill of the closed polygon `pts` describes (auto-closed from the last point back
-   *  to the first), sampled at each cell's center - the standard way to turn a freehand lasso path into
-   *  the set of cells it actually encloses. Bounded to the polygon's own bounding box, not the whole
-   *  canvas, since a selection is typically a small fraction of a large one. */
-  private polygonMask(pts: Cell[]): Set<string> {
-    const box = this.boundingBoxOfPoints(pts);
-    const mask = new Set<string>();
-    for (let y = box.y0; y <= box.y1; y++) {
-      const cy = y + 0.5;
-      const crossings: number[] = [];
-      for (let i = 0; i < pts.length; i++) {
-        const a = pts[i];
-        const b = pts[(i + 1) % pts.length];
-        if (a.y === b.y) continue;
-        if ((cy >= a.y && cy < b.y) || (cy >= b.y && cy < a.y)) {
-          crossings.push(a.x + ((cy - a.y) / (b.y - a.y)) * (b.x - a.x));
-        }
-      }
-      crossings.sort((m, n) => m - n);
-      for (let i = 0; i + 1 < crossings.length; i += 2) {
-        const xStart = Math.max(box.x0, Math.ceil(crossings[i] - 0.5));
-        const xEnd = Math.min(box.x1, Math.floor(crossings[i + 1] - 0.5));
-        for (let x = xStart; x <= xEnd; x++) mask.add(`${x},${y}`);
-      }
+  /** Translates the selection's *geometry* - box, freeform outline and mask - by (dx, dy), without
+   *  touching a single pixel. Shared by every path that relocates a selection (arrow-key nudge, a
+   *  finished drag's commitMove, and a migrated Move tool's `moveSelectionBy` result), each of which
+   *  moves the pixels its own way but has to settle the geometry identically afterwards. Where an
+   *  outline exists it is the thing shifted and the mask is re-derived from it, so the outline and the
+   *  mask can never drift apart; a mask with no outline (see traceMaskOutline) is shifted directly. */
+  private translateSelectionBy(dx: number, dy: number): void {
+    if (this.selection) this.selection = shiftBox(this.selection, { dx, dy });
+    if (this.lassoPoints) {
+      this.lassoPoints = this.lassoPoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+      this.selectionMask = polygonMask(this.lassoPoints);
+    } else if (this.selectionMask) {
+      this.selectionMask = shiftMask(this.selectionMask, dx, dy);
     }
-    return mask;
   }
 
   /** Shifts the current selection by exactly (dx, dy) - a discrete, single-step counterpart to the
@@ -2150,7 +2123,7 @@ class PixelEditorEngine {
     const box = this.selection;
     const { width, height } = this.current;
     const frame = this.activeCells();
-    const cells: MoveBufferCell[] = [];
+    const cells: ColoredCell[] = [];
     for (let y = box.y0; y <= box.y1; y++) {
       for (let x = box.x0; x <= box.x1; x++) {
         if (this.selectionMask && !this.selectionMask.has(`${x},${y}`)) continue;
@@ -2164,45 +2137,8 @@ class PixelEditorEngine {
       const ny = c.y + dy;
       if (nx >= 0 && ny >= 0 && nx < width && ny < height) frame[ny * width + nx] = c.color;
     });
-    this.selection = shiftBox(box, { dx, dy });
-    if (this.lassoPoints) {
-      this.lassoPoints = this.lassoPoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
-      this.selectionMask = this.polygonMask(this.lassoPoints);
-    } else if (this.selectionMask) {
-      this.selectionMask = this.shiftMask(this.selectionMask, dx, dy);
-    }
+    this.translateSelectionBy(dx, dy);
     this.refresh();
-  }
-
-  /** Translates every cell of a sparse `"x,y"` selection mask by (dx, dy) - the precise, shape-agnostic
-   *  counterpart to shifting lassoPoints and re-deriving the mask via polygonMask, used by
-   *  nudgeSelection/commitMove when there's no lassoPoints outline to shift instead (a Magic Wand
-   *  selection whose mask couldn't be safely represented as one traced+bridged polygon - see
-   *  applyMagicWandAt's own doc comment). */
-  private shiftMask(mask: Set<string>, dx: number, dy: number): Set<string> {
-    const shifted = new Set<string>();
-    mask.forEach((key) => {
-      const [xs, ys] = key.split(',');
-      shifted.add(`${Number(xs) + dx},${Number(ys) + dy}`);
-    });
-    return shifted;
-  }
-
-  private buildResizePreview(source: (string | null)[][], origBox: SelectionBox, newBox: SelectionBox): MoveBufferCell[] {
-    const origW = origBox.x1 - origBox.x0 + 1;
-    const origH = origBox.y1 - origBox.y0 + 1;
-    const newW = newBox.x1 - newBox.x0 + 1;
-    const newH = newBox.y1 - newBox.y0 + 1;
-    const out: MoveBufferCell[] = [];
-    for (let y = 0; y < newH; y++) {
-      const srcY = Math.min(origH - 1, Math.floor((y / newH) * origH));
-      for (let x = 0; x < newW; x++) {
-        const srcX = Math.min(origW - 1, Math.floor((x / newW) * origW));
-        const color = source[srcY][srcX];
-        if (color) out.push({ x: newBox.x0 + x, y: newBox.y0 + y, color });
-      }
-    }
-    return out;
   }
 
   private commitResize(): void {
@@ -2222,118 +2158,11 @@ class PixelEditorEngine {
     this.gestureBaseBitmap = null;
   }
 
-  private computeResizedBox(origin: SelectionBox, handle: HandleName, c: Cell): SelectionBox {
-    let x0 = origin.x0;
-    let x1 = origin.x1;
-    let y0 = origin.y0;
-    let y1 = origin.y1;
-    if (handle.includes('w')) x0 = c.x;
-    if (handle.includes('e')) x1 = c.x;
-    if (handle.includes('n')) y0 = c.y;
-    if (handle.includes('s')) y1 = c.y;
-    return {
-      x0: Math.min(x0, x1),
-      x1: Math.max(x0, x1),
-      y0: Math.min(y0, y1),
-      y1: Math.max(y0, y1),
-    };
-  }
-
-  /**
-   * Inverse-maps each cell of the rotated bounding box back into the captured source region
-   * (nearest-neighbor) so the preview has no holes, unlike forward-mapping source pixels. A rotated
-   * rectangle never fills its own axis-aligned bounding box - the four corner triangles are
-   * genuinely outside the rotated shape - so instead of leaving them empty/checkered, the inverse
-   * lookup is clamped to the nearest edge pixel (standard "clamp to edge" extrapolation), stretching
-   * each edge's color into the corner it borders rather than showing a hole.
-   */
-  private computeRotatePreview(angle: number): { cells: MoveBufferCell[]; box: SelectionBox } {
-    const origin = this.rotateOrigin!;
-    const source = this.rotateSource!;
-    const w = origin.x1 - origin.x0 + 1;
-    const h = origin.y1 - origin.y0 + 1;
-    const cx = origin.x0 + w / 2;
-    const cy = origin.y0 + h / 2;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-
-    const corners: [number, number][] = [
-      [origin.x0, origin.y0], [origin.x1 + 1, origin.y0],
-      [origin.x0, origin.y1 + 1], [origin.x1 + 1, origin.y1 + 1],
-    ];
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    corners.forEach(([px, py]) => {
-      const rx = px - cx;
-      const ry = py - cy;
-      const nx = cx + rx * cos - ry * sin;
-      const ny = cy + rx * sin + ry * cos;
-      minX = Math.min(minX, nx);
-      maxX = Math.max(maxX, nx);
-      minY = Math.min(minY, ny);
-      maxY = Math.max(maxY, ny);
-    });
-
-    const { width: fw, height: fh } = this.current;
-    const bx0 = Math.max(0, Math.floor(minX));
-    const by0 = Math.max(0, Math.floor(minY));
-    const bx1 = Math.min(fw - 1, Math.ceil(maxX) - 1);
-    const by1 = Math.min(fh - 1, Math.ceil(maxY) - 1);
-
-    const cells: MoveBufferCell[] = [];
-    if (bx1 >= bx0 && by1 >= by0) {
-      for (let y = by0; y <= by1; y++) {
-        for (let x = bx0; x <= bx1; x++) {
-          const relX = x + 0.5 - cx;
-          const relY = y + 0.5 - cy;
-          const srcRelX = relX * cos + relY * sin;
-          const srcRelY = -relX * sin + relY * cos;
-          const srcX = Math.floor(srcRelX + cx - origin.x0);
-          const srcY = Math.floor(srcRelY + cy - origin.y0);
-          // Skipped, not clamped to the edge. A destination cell in the corners of the rotated
-          // bounding box maps back outside the source rectangle entirely - there is no pixel there to
-          // rotate. Clamping handed those cells the nearest edge pixel instead, which smeared the
-          // artwork's border outward into all four corners of the box (the more so the further from a
-          // multiple of 90 degrees the angle was) and painted pixels the selection never contained.
-          if (srcX < 0 || srcY < 0 || srcX >= w || srcY >= h) continue;
-          const color = source[srcY][srcX];
-          if (color) cells.push({ x, y, color });
-        }
-      }
-    }
-    const box: SelectionBox = bx1 >= bx0 && by1 >= by0 ? { x0: bx0, y0: by0, x1: bx1, y1: by1 } : origin;
-    return { cells, box };
-  }
-
-  /**
-   * The selection mask after `angle`, built the same way computeRotatePreview builds the rotated
-   * pixels: walk every cell of the rotated bounding box, inverse-rotate its center back into the
-   * original box, and keep it when the cell it lands on was selected. Sharing that one mapping is the
-   * whole point - any independent derivation drifts from where the pixels actually went. `box` is the
-   * rotated bounding box computeRotatePreview returned (already clamped to the canvas), and a plain
-   * rectangular selection (no mask) counts as "every cell of rotateOrigin selected".
-   */
-  private rotatedSelectionMask(angle: number, box: SelectionBox): Set<string> {
-    const origin = this.rotateOrigin!;
-    const w = origin.x1 - origin.x0 + 1;
-    const h = origin.y1 - origin.y0 + 1;
-    const cx = origin.x0 + w / 2;
-    const cy = origin.y0 + h / 2;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    const source = this.selectionMask;
-    const mask = new Set<string>();
-    for (let y = box.y0; y <= box.y1; y++) {
-      for (let x = box.x0; x <= box.x1; x++) {
-        const relX = x + 0.5 - cx;
-        const relY = y + 0.5 - cy;
-        const srcX = Math.floor(relX * cos + relY * sin + cx);
-        const srcY = Math.floor(-relX * sin + relY * cos + cy);
-        if (srcX < origin.x0 || srcX > origin.x1 || srcY < origin.y0 || srcY > origin.y1) continue;
-        if (source && !source.has(`${srcX},${srcY}`)) continue;
-        mask.add(`${x},${y}`);
-      }
-    }
-    return mask;
+  /** `rotatedRegionCells` for the gesture in progress - the origin/source/canvas-size arguments are
+   *  all engine state, so the two call sites only pass the angle. */
+  private rotatedRegion(angle: number): { cells: ColoredCell[]; box: SelectionBox } {
+    const { width, height } = this.current;
+    return rotatedRegionCells(this.rotateOrigin!, this.rotateSource!, angle, width, height);
   }
 
   private commitRotate(): void {
@@ -2348,10 +2177,11 @@ class PixelEditorEngine {
     // This used to spin each of the outline's own vertices and round them back to whole cells, which
     // at the scale a pixel-boundary outline actually has (unit-length stair steps) turned a clean
     // silhouette into a scrambled, self-crossing scribble - and left the border describing something
-    // other than the pixels that had just moved. rotatedSelectionMask instead reuses the exact mapping
-    // computeRotatePreview used for the pixels, so mask, outline and artwork cannot disagree.
+    // other than the pixels that had just moved. rotatedMask instead goes through the same
+    // `inverseRotation` the pixels did, so mask, outline and artwork cannot disagree.
     if (this.rotateOrigin && this.selection && this.rotateAngle !== 0) {
-      this.applySelectionMask(this.rotatedSelectionMask(this.rotateAngle, this.selection), 'new');
+      const mask = rotatedMask(this.rotateOrigin, this.selectionMask, this.rotateAngle, this.selection);
+      this.applySelectionMask(mask, 'new');
     }
     this.rotateOrigin = null;
     this.rotateSource = null;
@@ -2474,7 +2304,7 @@ class PixelEditorEngine {
     this.resizeOrigin = { ...this.selection };
     this.resizeSource = this.captureSelectionPixels(this.selection);
     this.clearFrameRegion(this.selection);
-    this.resizePreview = this.buildResizePreview(this.resizeSource, this.resizeOrigin, this.selection);
+    this.resizePreview = scaledRegionCells(this.resizeSource, this.resizeOrigin, this.selection);
     this.cacheGestureBaseBitmap();
     this.refresh();
   }
@@ -2485,9 +2315,9 @@ class PixelEditorEngine {
   updateResizeDrag(e: { clientX: number; clientY: number }): void {
     if (!this.resizeHandle || !this.resizeOrigin || !this.resizeSource) return;
     const c = this.cellFromEventUnclamped(e);
-    const box = this.computeResizedBox(this.resizeOrigin, this.resizeHandle, c);
+    const box = resizedBox(this.resizeOrigin, this.resizeHandle, c);
     this.selection = box;
-    this.resizePreview = this.buildResizePreview(this.resizeSource, this.resizeOrigin, box);
+    this.resizePreview = scaledRegionCells(this.resizeSource, this.resizeOrigin, box);
     this.refresh();
   }
 
@@ -2517,7 +2347,7 @@ class PixelEditorEngine {
     const { cx, cy } = this.selectionCenterPx(this.rotateOrigin, cellPx);
     this.rotateStartAngle = Math.atan2(pt.py - cy, pt.px - cx);
     this.rotateAngle = 0;
-    const { cells, box } = this.computeRotatePreview(0);
+    const { cells, box } = this.rotatedRegion(0);
     this.rotatePreview = cells;
     this.selection = box;
     this.cacheGestureBaseBitmap();
@@ -2534,7 +2364,7 @@ class PixelEditorEngine {
     const { cx, cy } = this.selectionCenterPx(this.rotateOrigin, cellPx);
     const currentAngle = Math.atan2(pt.py - cy, pt.px - cx);
     this.rotateAngle = currentAngle - this.rotateStartAngle;
-    const { cells, box } = this.computeRotatePreview(this.rotateAngle);
+    const { cells, box } = this.rotatedRegion(this.rotateAngle);
     this.rotatePreview = cells;
     this.selection = box;
     // Unlike the resize-drag branch's plain drawGrid() (canvas-only, nothing else depends on it),
@@ -2725,14 +2555,7 @@ class PixelEditorEngine {
     if (result.alsoSaveColor !== undefined) this.addSavedColor(result.alsoSaveColor);
     const wasMove = result.moveSelectionBy !== undefined;
     if (result.moveSelectionBy) {
-      const { dx, dy } = result.moveSelectionBy;
-      if (this.selection) this.selection = shiftBox(this.selection, { dx, dy });
-      if (this.lassoPoints) {
-        this.lassoPoints = this.lassoPoints.map((p) => ({ x: p.x + dx, y: p.y + dy }));
-        this.selectionMask = this.polygonMask(this.lassoPoints);
-      } else if (this.selectionMask) {
-        this.selectionMask = this.shiftMask(this.selectionMask, dx, dy);
-      }
+      this.translateSelectionBy(result.moveSelectionBy.dx, result.moveSelectionBy.dy);
     }
     const hadColor = result.ops.some((op) => op.color !== null);
     this.moveBuffer = null;
@@ -3137,172 +2960,19 @@ class PixelEditorEngine {
   // floodSelectMask/globalSelectMask (Magic Wand's own tolerance-aware region walk) now live as pure
   // functions in src/lib/tools/tools/magicWandTool.ts, ported alongside the rest of that tool.
 
-  /** Materializes whatever the current selection is (a plain rectangular box with no mask, or an
-   *  already-sparse mask) into an explicit `"x,y"` cell set - what Magic Wand's Ctrl/Alt combine modes
-   *  need as their starting point, since a plain marquee selection has no mask of its own to union or
-   *  subtract against. */
-  private maskFromSelection(): Set<string> {
-    if (this.selectionMask) return new Set(this.selectionMask);
-    const mask = new Set<string>();
-    if (!this.selection) return mask;
-    const { x0, y0, x1, y1 } = this.selection;
-    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) mask.add(`${x},${y}`);
-    return mask;
-  }
+  // maskFromSelection/boundingBoxOfMask/maskBoundaryEdges/chainBoundaryEdges/traceMaskOutline/
+  // masksEqual (the mask <-> outline machinery a settled selection is built out of) live as pure
+  // functions in src/lib/tools/selectionMask.ts, shared with the Magic Wand, Select and Lasso tools.
 
-  /** Bounding box of a sparse `"x,y"` cell mask (see selectionMask) - the Magic Wand's counterpart to
-   *  boundingBoxOfPoints, used the same way: as the settled selection's `selection` box. */
-  private boundingBoxOfMask(mask: Set<string>): SelectionBox {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    mask.forEach((key) => {
-      const [xs, ys] = key.split(',');
-      const x = Number(xs);
-      const y = Number(ys);
-      if (x < x0) x0 = x;
-      if (x > x1) x1 = x;
-      if (y < y0) y0 = y;
-      if (y > y1) y1 = y;
-    });
-    return { x0, y0, x1, y1 };
-  }
-
-  /**
-   * Every unit boundary edge of a cell mask, in grid-line coordinates (0..width/height - the corner
-   * where cell (x,y)'s own corners sit, not a cell index) rather than cell coordinates: polygonMask
-   * decides whether cell (x,y) is selected by checking whether its *center* (x+0.5, y+0.5) falls
-   * inside the traced polygon, so a polygon built from cell coordinates directly (as if the boundary
-   * cells themselves were the vertices) ends up exactly one cell short on the far/bottom side of
-   * whatever it encloses - confirmed by tracing a plain 2x2 block that way and finding polygonMask
-   * reconstructs only 1 of the 4 cells. Emitting the actual grid-line corner each boundary side sits
-   * on (one cell over from the boundary cell itself, on the appropriate side) is what makes
-   * polygonMask reconstruct the exact original mask - verified the same way, this time getting all 4
-   * cells back. selectionLassoOutline renders these points as-is, with no half-cell offset, so the
-   * border drawn from them sits exactly on the boundary pixels' outer edges.
-   */
-  private maskBoundaryEdges(mask: Set<string>): { from: Cell; to: Cell }[] {
-    const edges: { from: Cell; to: Cell }[] = [];
-    mask.forEach((key) => {
-      const [xs, ys] = key.split(',');
-      const x = Number(xs);
-      const y = Number(ys);
-      if (!mask.has(`${x},${y - 1}`)) edges.push({ from: { x, y }, to: { x: x + 1, y } });
-      if (!mask.has(`${x + 1},${y}`)) edges.push({ from: { x: x + 1, y }, to: { x: x + 1, y: y + 1 } });
-      if (!mask.has(`${x},${y + 1}`)) edges.push({ from: { x: x + 1, y: y + 1 }, to: { x, y: y + 1 } });
-      if (!mask.has(`${x - 1},${y}`)) edges.push({ from: { x, y: y + 1 }, to: { x, y } });
-    });
-    return edges;
-  }
-
-  /**
-   * Chains maskBoundaryEdges' unordered edge soup into closed loops by following each edge's `to`
-   * point to the next edge that starts there. Every vertex on a raster mask's boundary has exactly one
-   * outgoing and one incoming edge by construction (each grid-line segment is the border of exactly
-   * one boundary cell on the selected side), so this always resolves into whole simple closed loops
-   * with nothing left over: one per outer silhouette, and - for free, needing no special-casing - one
-   * per interior hole, automatically wound the opposite way round (an unselected cell's neighbors emit
-   * their shared edges in the mirror-image direction of an outer boundary), which is exactly what lets
-   * an even-odd fill (see polygonMask) or the default nonzero SVG fill rule render/reconstruct a hole
-   * as a hole rather than filled-in.
-   */
-  private chainBoundaryEdges(edges: { from: Cell; to: Cell }[]): Cell[][] {
-    const byStart = new Map<string, { from: Cell; to: Cell }[]>();
-    edges.forEach((e) => {
-      const key = `${e.from.x},${e.from.y}`;
-      const list = byStart.get(key);
-      if (list) list.push(e);
-      else byStart.set(key, [e]);
-    });
-    const used = new Set<{ from: Cell; to: Cell }>();
-    const loops: Cell[][] = [];
-    edges.forEach((start) => {
-      if (used.has(start)) return;
-      const loop: Cell[] = [];
-      let current = start;
-      while (!used.has(current)) {
-        used.add(current);
-        loop.push(current.from);
-        const candidates = byStart.get(`${current.to.x},${current.to.y}`) ?? [];
-        const next = candidates.find((e) => !used.has(e));
-        if (!next) break;
-        current = next;
-      }
-      loops.push(loop);
-    });
-    return loops;
-  }
-
-  /**
-   * Combines every boundary loop (see chainBoundaryEdges - an outer silhouette plus any holes, or
-   * several disjoint loops for a global Shift+click match spanning multiple blobs) into the single
-   * closed point list lassoPoints expects. A single loop is used as-is; two or more are stitched into
-   * one path via "keyhole" bridges radiating from the first loop's own start point (the "hub"): each
-   * other loop is spliced in as its own closed lap, entered and exited through the exact same hub
-   * point (bridging every extra loop through one shared hub, rather than threading loop 1 -> 2 -> 3 ->
-   * ... -> back to 1, is what makes this generalize to any number of loops instead of just two).
-   *
-   * In principle a bridge edge, walked once out and once back, contributes either zero or two
-   * scanline crossings at any given y in polygonMask's even-odd count, which cancels out and renders
-   * as an invisible zero-width seam - and that holds up whenever the bridge only ever passes through
-   * rows where the real geometry it's bridging also has crossings of its own (true for a hole, always
-   * inside its own outer loop's row span). It does NOT reliably hold for two loops separated by rows
-   * neither one touches (a global Shift+click match spanning genuinely disjoint blobs): the bridge's
-   * pair of identical, coincident crossings on an otherwise-empty row can misround into a spurious
-   * 1-cell-wide sliver (confirmed by reconstructing a two-disjoint-2x2-blocks case this way and getting
-   * 11 cells back instead of 8). applyMagicWandAt verifies the round trip and discards this outline
-   * rather than risk that, so this function itself doesn't need to tell the safe and unsafe cases apart.
-   */
-  private traceMaskOutline(mask: Set<string>): Cell[] {
-    const loops = this.chainBoundaryEdges(this.maskBoundaryEdges(mask)).filter((loop) => loop.length > 0);
-    if (loops.length <= 1) return loops[0] ?? [];
-    const hub = loops[0][0];
-    const path: Cell[] = [...loops[0], hub];
-    for (let i = 1; i < loops.length; i++) path.push(...loops[i], loops[i][0], hub);
-    return path;
-  }
-
-  private masksEqual(a: Set<string>, b: Set<string>): boolean {
-    if (a.size !== b.size) return false;
-    for (const key of a) if (!b.has(key)) return false;
-    return true;
-  }
-
-  /** Merges a freshly made selection mask into whatever is already selected per `mode`, then settles
-   *  the result into the selection box / mask / outline trio the overlay and every selection-aware
-   *  operation read. Shared by the Magic Wand, the lasso and (in add/subtract mode) the rectangular
-   *  marquee, so "add to the selection" means the same thing and produces the same kind of selection
-   *  whichever tool drew the new piece. */
+  /** Merges a freshly made selection mask into whatever is already selected per `mode` and stores the
+   *  settled result - the engine-state wrapper around `settleSelection`, which every selection tool
+   *  already goes through via its GestureResult (see commitGestureResult). Used by the paths that
+   *  produce a selection outside a tool gesture, i.e. commitRotate. */
   private applySelectionMask(clicked: Set<string>, mode: SelectionMode): void {
-    let mask: Set<string>;
-    if (mode === 'add') {
-      mask = this.maskFromSelection();
-      clicked.forEach((key) => mask.add(key));
-    } else if (mode === 'subtract') {
-      mask = this.maskFromSelection();
-      clicked.forEach((key) => mask.delete(key));
-    } else {
-      mask = clicked;
-    }
-
-    if (mask.size === 0) {
-      this.selection = null;
-      this.lassoPoints = null;
-      this.selectionMask = null;
-      return;
-    }
-    const box = this.boundingBoxOfMask(mask);
-    this.selection = box;
-    // A mask that fills its own bounding box completely *is* a plain rectangular marquee, so it is
-    // stored as one: no per-cell mask to carry around, and the resize handles (which only render for a
-    // rectangle - see selectionOverlayBox) stay available. Rotating a rectangle by a multiple of 90
-    // degrees lands here, as does a Magic Wand click on a rectangular block of color.
-    if (mask.size === (box.x1 - box.x0 + 1) * (box.y1 - box.y0 + 1)) {
-      this.selectionMask = null;
-      this.lassoPoints = null;
-      return;
-    }
-    this.selectionMask = mask;
-    const outline = this.traceMaskOutline(mask);
-    this.lassoPoints = outline.length > 0 && this.masksEqual(this.polygonMask(outline), mask) ? outline : null;
+    const settled = settleSelection(clicked, mode, this);
+    this.selection = settled.box;
+    this.selectionMask = settled.mask ? new Set(settled.mask) : null;
+    this.lassoPoints = settled.outline;
   }
 
   // --- rendering ---
@@ -3728,55 +3398,19 @@ class PixelEditorEngine {
 
   // --- export ---
 
-  private downloadBlob(blob: Blob | null, filename: string): void {
-    if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
+  // The three exports themselves (off-screen canvas layout, scale and filename) live in
+  // src/lib/spriteExport.ts - none of them read anything but the sprite and the current frame index.
 
   exportFramePng(): void {
-    const { width, height } = this.current;
-    const scale = Math.max(4, Math.round(256 / Math.max(width, height)));
-    const off = document.createElement('canvas');
-    off.width = width * scale;
-    off.height = height * scale;
-    const ctx = off.getContext('2d')!;
-    paintLayers(ctx, this.current.frames[this.frameIndex], width, height, scale);
-    const name = (this.current.name || 'sprite').trim() || 'sprite';
-    off.toBlob((blob) => this.downloadBlob(blob, `${name}_frame${this.frameIndex + 1}.png`));
+    downloadFramePng(this.current, this.frameIndex);
   }
 
   exportSpriteSheetPng(): void {
-    const { width, height } = this.current;
-    const scale = Math.max(4, Math.round(256 / Math.max(width, height)));
-    const frames = this.current.frames;
-    const off = document.createElement('canvas');
-    off.width = width * scale * frames.length;
-    off.height = height * scale;
-    const octx = off.getContext('2d')!;
-    frames.forEach((layers, i) => {
-      octx.save();
-      octx.translate(i * width * scale, 0);
-      paintLayers(octx, layers, width, height, scale);
-      octx.restore();
-    });
-    const name = (this.current.name || 'sprite').trim() || 'sprite';
-    off.toBlob((blob) => this.downloadBlob(blob, `${name}_sheet.png`));
+    downloadSpriteSheetPng(this.current);
   }
 
-  /** Exports the current sprite as a standalone .json file (not PNG) - lets an artist back up or share
-   *  a sprite's actual editable data, not just a flattened image. GIF export was considered but
-   *  intentionally skipped (would need a new dependency, out of scope for this pass). */
   exportSpriteJson(): void {
-    const blob = new Blob([JSON.stringify(this.current, null, 2)], { type: 'application/json' });
-    const name = (this.current.name || 'sprite').trim() || 'sprite';
-    this.downloadBlob(blob, `${name}.json`);
+    downloadSpriteJson(this.current);
   }
 
   /** Reads a .json file exported by exportSpriteJson (or hand-edited/older-format equivalent) and loads
@@ -3796,26 +3430,7 @@ class PixelEditorEngine {
         }
         normalized.id = storage.uid('sprite');
         Object.assign(normalized, storage.newRecordMeta(), { id: normalized.id });
-        this.current = normalized;
-        this.frameIndex = 0;
-        this.activeLayerIndex = 0;
-        this.previewFrame = 0;
-        this.selection = null;
-        this.lassoPoints = null;
-        this.selectionMask = null;
-        this.moveBuffer = null;
-        this.clearPan();
-        this.zoomScale = this.defaultZoomForSize(Math.max(normalized.width, normalized.height));
-        this.clearCurveState();
-        this.undoStack = [];
-        this.redoStack = [];
-        this.historyPending = null;
-        this.dirty = true;
-        this.loadToken += 1;
-        this.centerSymmetryAxis();
-        this.recomputeCanvasSize();
-        this.restartPreviewTimer();
-        this.refresh();
+        this.adoptSprite(normalized, true);
       } catch (err) {
         console.error('importSpriteFromFile failed', err);
         onError(t('error.importFailed'));
@@ -3827,27 +3442,49 @@ class PixelEditorEngine {
 
   // --- sprite library ---
 
-  newSprite(confirmDiscard: () => boolean): void {
-    if (this.dirty && !confirmDiscard()) return;
-    this.current = blankSprite();
+  /**
+   * Makes `sprite` the one being edited, and resets everything that was about the *previous* sprite:
+   * which frame and layer are active, the selection, any in-flight gesture, the pan/zoom, the symmetry
+   * axis, and the undo history. The single place any of that happens - every path that swaps the
+   * current sprite (new, load, import, and deleting the one open) goes through here.
+   *
+   * It is one method because it was four hand-copied ones, and the copies had already drifted: the
+   * delete-the-open-sprite path reset neither `frameIndex` nor the undo stacks, so deleting a sprite
+   * while on frame 3 left `frameIndex` pointing past the blank replacement's single frame (`drawGrid`
+   * then calls `paintLayers` with `frames[3]`, i.e. `undefined`, and throws), and an undo afterwards
+   * could pull the deleted sprite's pixels back onto the blank one. `newSprite` had separately missed
+   * `previewFrame`.
+   *
+   * `dirty` is the one thing callers still decide: an imported file is unsaved work from the moment it
+   * loads, while a sprite opened from the library matches what is stored.
+   */
+  private adoptSprite(sprite: Sprite, dirty: boolean): void {
+    this.current = sprite;
     this.frameIndex = 0;
     this.activeLayerIndex = 0;
+    this.previewFrame = 0;
     this.selection = null;
     this.lassoPoints = null;
     this.selectionMask = null;
     this.moveBuffer = null;
     this.clearPan();
-    this.zoomScale = this.defaultZoomForSize(Math.max(this.current.width, this.current.height));
+    this.zoomScale = this.defaultZoomForSize(Math.max(sprite.width, sprite.height));
+    // Before the undo stacks are emptied: a pending curve draft is rolled back through them.
     this.clearCurveState();
     this.undoStack = [];
     this.redoStack = [];
     this.historyPending = null;
-    this.dirty = false;
+    this.dirty = dirty;
     this.loadToken += 1;
     this.centerSymmetryAxis();
     this.recomputeCanvasSize();
     this.restartPreviewTimer();
     this.refresh();
+  }
+
+  newSprite(confirmDiscard: () => boolean): void {
+    if (this.dirty && !confirmDiscard()) return;
+    this.adoptSprite(blankSprite(), false);
   }
 
   async saveCurrentSprite(name: string, type: Sprite['type'], onError: (msg: string) => void): Promise<void> {
@@ -3884,26 +3521,7 @@ class PixelEditorEngine {
 
   loadSpriteForEdit(sprite: Sprite, confirmDiscard: () => boolean): void {
     if (this.dirty && !confirmDiscard()) return;
-    this.current = storage.normalizeSprite(cloneSprite(sprite));
-    this.frameIndex = 0;
-    this.activeLayerIndex = 0;
-    this.previewFrame = 0;
-    this.selection = null;
-    this.lassoPoints = null;
-    this.selectionMask = null;
-    this.moveBuffer = null;
-    this.clearPan();
-    this.zoomScale = this.defaultZoomForSize(Math.max(this.current.width, this.current.height));
-    this.clearCurveState();
-    this.undoStack = [];
-    this.redoStack = [];
-    this.historyPending = null;
-    this.dirty = false;
-    this.loadToken += 1;
-    this.centerSymmetryAxis();
-    this.recomputeCanvasSize();
-    this.restartPreviewTimer();
-    this.refresh();
+    this.adoptSprite(storage.normalizeSprite(cloneSprite(sprite)), false);
   }
 
   async deleteSprite(id: string, confirmDelete: () => boolean, onError: (msg: string) => void): Promise<void> {
@@ -3918,19 +3536,9 @@ class PixelEditorEngine {
     }
     this.sprites = repo.list();
     if (this.current.id === id) {
-      this.current = blankSprite();
-      this.activeLayerIndex = 0;
-      this.selection = null;
-      this.lassoPoints = null;
-      this.selectionMask = null;
-      this.moveBuffer = null;
-      this.clearPan();
-      this.clearCurveState();
-      this.loadToken += 1;
-      this.centerSymmetryAxis();
-      this.recomputeCanvasSize();
-      this.restartPreviewTimer();
-      this.refresh();
+      // The sprite on the canvas is the one that was just deleted, so there is nothing left to be
+      // unsaved about: a blank sprite, not dirty.
+      this.adoptSprite(blankSprite(), false);
     } else {
       this.reactNotify();
     }
@@ -3969,4 +3577,3 @@ export function usePixelEditor() {
   return engine;
 }
 
-export type { PixelEditorEngine };

@@ -6,6 +6,7 @@ import {
   TankEngine,
 } from '../useTank';
 import type { Instance, Sprite, TankGroup } from '@/lib/types';
+import type { TankState } from '@/lib/data';
 
 /** vitest's node env has no localStorage - a minimal in-memory stand-in (copied from storage.test.ts).
  *  useTank never calls init() in these tests, but undo()/redo()/refresh() and persist paths still
@@ -597,5 +598,85 @@ describe('read-only engine (a shared tank)', () => {
     engine.refreshPalette();
 
     expect(engine.sprites).toEqual([FISH_SPRITE]);
+  });
+});
+
+describe('refresh (switching tanks / reloading after a remote sync)', () => {
+  function stateWith(over: Partial<TankState> = {}): TankState {
+    return {
+      instances: [],
+      groups: [],
+      roomInstances: [],
+      width: 400,
+      height: 300,
+      shape: 'rectangle' as const,
+      cornerRadiusFrac: 0.22,
+      ovalTopCutFrac: 0.28,
+      backgroundSpriteId: null,
+      roomBackgroundSpriteId: null,
+      backgroundTransform: { x: 0, y: 0, scale: 1, rotation: 0 },
+      waterLevel: 1,
+      algae: 0,
+      lastTickAt: null,
+      ...over,
+    };
+  }
+
+  /** An engine whose source hands back whichever state the test most recently set. */
+  function switchableEngine() {
+    let next = { tankId: 'tank_a', state: stateWith() };
+    const engine = new TankEngine({
+      source: { load: async () => ({ tankId: next.tankId, sprites: [FISH_SPRITE], state: next.state }) },
+    });
+    return { engine, setNext: (tankId: string, state: TankState) => { next = { tankId, state }; } };
+  }
+
+  it('loads the water level and algae of the tank it switched to, not the one it came from', async () => {
+    // The whole point of this test: waterLevel/algae are per-tank persisted state, and the engine
+    // writes them straight back out of its own fields (snapshotForStorage), so a refresh that leaves
+    // the previous tank's values in place does not merely display the wrong thing - it saves it onto
+    // the tank that was switched to.
+    const { engine, setNext } = switchableEngine();
+    setNext('tank_a', stateWith({ waterLevel: 0.2, algae: 0.9 }));
+    await engine.hydrate();
+    expect(engine.waterLevel).toBeCloseTo(0.2, 5);
+
+    setNext('tank_b', stateWith({ waterLevel: 1, algae: 0 }));
+    await engine.refresh(() => true);
+
+    expect(engine.tankId).toBe('tank_b');
+    expect(engine.waterLevel).toBeCloseTo(1, 5);
+    expect(engine.algae).toBeCloseTo(0, 5);
+  });
+
+  it('replays the switched-to tank\'s own elapsed time, measured from that tank\'s last save', async () => {
+    // Switching to a tank untouched for days has to catch that tank up, the same way opening the app on
+    // it would - measured from ITS lastTickAt, not the one the engine was already holding.
+    const { engine, setNext } = switchableEngine();
+    setNext('tank_a', stateWith({ lastTickAt: NOW - 1000 }));
+    await engine.hydrate();
+    expect(engine.waterLevel).toBeCloseTo(1, 3);
+
+    const threeDays = 3 * 24 * 60 * 60 * 1000;
+    setNext('tank_b', stateWith({ waterLevel: 1, lastTickAt: NOW - threeDays }));
+    await engine.refresh(() => true);
+
+    // WATER_FULL_TO_EMPTY_MS is 5 days, so three days of catch-up evaporates 3/5 of the tank.
+    expect(engine.waterLevel).toBeCloseTo(1 - 3 / 5, 3);
+    // ...and the checkpoint moves to now, so the same elapsed time is never replayed twice.
+    expect((engine as unknown as { lastTickAt: number }).lastTickAt).toBe(NOW);
+  });
+
+  it('still loads everything the previous load path already handled', async () => {
+    const { engine, setNext } = switchableEngine();
+    await engine.hydrate();
+
+    setNext('tank_b', stateWith({ width: 900, height: 600, shape: 'oval', backgroundSpriteId: 'bg1' }));
+    await engine.refresh(() => true);
+
+    expect(engine.tankWidth).toBe(900);
+    expect(engine.tankHeight).toBe(600);
+    expect(engine.tankShape).toBe('oval');
+    expect(engine.backgroundSpriteId).toBe('bg1');
   });
 });
