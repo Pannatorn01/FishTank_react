@@ -1,6 +1,8 @@
 import { describe, it } from 'vitest';
 import { encodeFrame } from '../pixelCodec';
-import { buildDefaultSprites, emptyFrame, makeLayer } from '../storage';
+import { buildDefaultSprites } from '../defaultSprites';
+import { emptyFrame } from '../pixelMath';
+import { makeLayer } from '../storage';
 import type { Sprite } from '../types';
 
 function bg(width: number, height: number): Sprite {

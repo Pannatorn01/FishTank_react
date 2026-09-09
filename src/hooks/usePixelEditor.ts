@@ -1,18 +1,6 @@
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import {
-  ditherColorAt,
-  ditherGradientMix,
-  flipFrameH,
-  flipFrameV,
-  hexToRgb,
-  layersDiffRegion,
-  paintLayers,
-  rgbToHex,
-  rotateFrame,
-  shiftBox,
-  wrapShiftFrame,
-} from '@/lib/pixelMath';
+import { RESIZE_ANCHOR_FRAC, ditherColorAt, ditherGradientMix, emptyFrame, flipFrameH, flipFrameV, hexToRgb, layersDiffRegion, padFrame, paintLayers, resampleFrame, rgbToHex, rotateFrame, shiftBox, wrapShiftFrame } from '@/lib/pixelMath';
 import { t } from '@/lib/i18n';
 import {
   type HistoryEntry,
@@ -24,6 +12,7 @@ import {
 } from '@/lib/undoHistory';
 import { getRepos, getSync } from '@/lib/data';
 import * as storage from '@/lib/storage';
+import { buildDefaultSprites } from '@/lib/defaultSprites';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { downloadFramePng, downloadSpriteJson, downloadSpriteSheetPng } from '@/lib/spriteExport';
 import { createPenTool } from '@/lib/tools/tools/penTool';
@@ -157,7 +146,7 @@ function blankSprite(): Sprite {
     type: 'fish',
     width: size,
     height: size,
-    frames: [[storage.makeLayer(storage.emptyFrame(size, size))]],
+    frames: [[storage.makeLayer(emptyFrame(size, size))]],
     frameMs: storage.DEFAULT_FRAME_MS,
   };
 }
@@ -480,7 +469,7 @@ export class PixelEditorEngine {
       // mode instead: the user can still draw, and the banner tells them nothing will be kept.
       console.error('loading saved work failed', err);
       this.readOnly = true;
-      if (this.sprites.length === 0) this.sprites = storage.buildDefaultSprites();
+      if (this.sprites.length === 0) this.sprites = buildDefaultSprites();
     }
     this.ready = true;
     this.refresh();
@@ -507,7 +496,7 @@ export class PixelEditorEngine {
       // always throws) must not take the app down: keep the defaults in memory, mark the session
       // read-only, and let the UI say so. Losing the starter sprites on reload is a far smaller
       // failure than a white screen with no way back (docs/STORAGE_DB_MIGRATION_PLAN.md P0-2).
-      const defaults = storage.buildDefaultSprites();
+      const defaults = buildDefaultSprites();
       try {
         await spriteRepo.replaceAll(defaults);
       } catch (err) {
@@ -1002,15 +991,15 @@ export class PixelEditorEngine {
     this.pushUndo();
     const { width, height } = this.current;
     if (mode === 'crop') {
-      const frac = storage.RESIZE_ANCHOR_FRAC[anchor];
+      const frac = RESIZE_ANCHOR_FRAC[anchor];
       const offsetX = Math.round((clampedWidth - width) * frac.x);
       const offsetY = Math.round((clampedHeight - height) * frac.y);
       this.current.frames = this.current.frames.map((layers) =>
-        layers.map((layer) => ({ ...layer, cells: storage.padFrame(layer.cells, width, height, clampedWidth, clampedHeight, offsetX, offsetY) }))
+        layers.map((layer) => ({ ...layer, cells: padFrame(layer.cells, width, height, clampedWidth, clampedHeight, offsetX, offsetY) }))
       );
     } else {
       this.current.frames = this.current.frames.map((layers) =>
-        layers.map((layer) => ({ ...layer, cells: storage.resampleFrame(layer.cells, width, height, clampedWidth, clampedHeight) }))
+        layers.map((layer) => ({ ...layer, cells: resampleFrame(layer.cells, width, height, clampedWidth, clampedHeight) }))
       );
     }
     this.current.width = clampedWidth;
@@ -1060,7 +1049,7 @@ export class PixelEditorEngine {
     if (newWidth === width && newHeight === height && x0 === 0 && y0 === 0) return;
     this.pushUndo();
     this.current.frames = this.current.frames.map((layers) =>
-      layers.map((layer) => ({ ...layer, cells: storage.padFrame(layer.cells, width, height, newWidth, newHeight, -x0, -y0) }))
+      layers.map((layer) => ({ ...layer, cells: padFrame(layer.cells, width, height, newWidth, newHeight, -x0, -y0) }))
     );
     this.current.width = newWidth;
     this.current.height = newHeight;
@@ -1117,7 +1106,7 @@ export class PixelEditorEngine {
     this.pushUndo();
     const { width, height } = this.current;
     const layers = this.layers();
-    layers.push(storage.makeLayer(storage.emptyFrame(width, height), `Layer ${layers.length + 1}`));
+    layers.push(storage.makeLayer(emptyFrame(width, height), `Layer ${layers.length + 1}`));
     this.activeLayerIndex = layers.length - 1;
     this.refresh();
   }
@@ -1129,7 +1118,7 @@ export class PixelEditorEngine {
     if (this.layers().length >= LAYER_LIMIT) return;
     const { width, height } = this.current;
     const result = await pixelateImageFile(file, width, height);
-    const cells = storage.resampleFrame(result.frame, result.width, result.height, width, height);
+    const cells = resampleFrame(result.frame, result.width, result.height, width, height);
     this.pushUndo();
     const layers = this.layers();
     const layer = storage.makeLayer(cells, `Reference ${layers.length + 1}`);
@@ -1237,7 +1226,7 @@ export class PixelEditorEngine {
     if (this.current.frames.length >= FRAME_LIMIT) return;
     this.pushUndo();
     const { width, height } = this.current;
-    this.current.frames.push([storage.makeLayer(storage.emptyFrame(width, height))]);
+    this.current.frames.push([storage.makeLayer(emptyFrame(width, height))]);
     this.frameIndex = this.current.frames.length - 1;
     this.activeLayerIndex = 0;
     this.refresh();
@@ -1275,7 +1264,7 @@ export class PixelEditorEngine {
   clearFrame(): void {
     this.pushUndo();
     const { width, height } = this.current;
-    this.activeLayer().cells = storage.emptyFrame(width, height);
+    this.activeLayer().cells = emptyFrame(width, height);
     this.refresh();
   }
 
@@ -1802,7 +1791,7 @@ export class PixelEditorEngine {
 
     const layers = this.layers();
     if (layers.length < LAYER_LIMIT) {
-      layers.push(storage.makeLayer(storage.emptyFrame(width, height), `Layer ${layers.length + 1}`));
+      layers.push(storage.makeLayer(emptyFrame(width, height), `Layer ${layers.length + 1}`));
       this.activeLayerIndex = layers.length - 1;
     }
     const frame = this.activeCells();

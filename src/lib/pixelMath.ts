@@ -1,4 +1,4 @@
-import type { Cell, Frame, Layer, SelectionBox, Sprite } from './types';
+import type { Cell, Frame, Layer, ResizeAnchor, SelectionBox, Sprite } from './types';
 
 /** Stands in for a sprite's own dimensions when it has none - see `spriteDims`. Deliberately a literal
  *  rather than an import of `storage.DEFAULT_GRID_SIZE`: this module is pure geometry with no storage
@@ -338,3 +338,61 @@ export function rotateFrame(
   }
   return { frame: out, width: outW, height: outH };
 }
+
+/**
+ * Frame geometry: making, stretching and cropping the flat cell array a layer is.
+ *
+ * Moved here from storage.ts, where it had no business being - none of it reads or writes anything,
+ * it is the same per-cell arithmetic as the rest of this module.
+ */
+export function emptyFrame(width: number, height: number): Frame {
+  return new Array(width * height).fill(null);
+}
+
+export function resampleFrame(frame: Frame, oldW: number, oldH: number, newW: number, newH: number): Frame {
+  if (oldW === newW && oldH === newH) return frame.slice();
+  const out = emptyFrame(newW, newH);
+  for (let y = 0; y < newH; y++) {
+    const srcY = Math.min(oldH - 1, Math.floor((y / newH) * oldH));
+    for (let x = 0; x < newW; x++) {
+      const srcX = Math.min(oldW - 1, Math.floor((x / newW) * oldW));
+      out[y * newW + x] = frame[srcY * oldW + srcX];
+    }
+  }
+  return out;
+}
+
+/** Where each 9-point ResizeAnchor sits as a 0..1 fraction across the resize delta - see padFrame. */
+export const RESIZE_ANCHOR_FRAC: Record<ResizeAnchor, { x: number; y: number }> = {
+  'top-left': { x: 0, y: 0 },
+  'top-center': { x: 0.5, y: 0 },
+  'top-right': { x: 1, y: 0 },
+  'middle-left': { x: 0, y: 0.5 },
+  'middle-center': { x: 0.5, y: 0.5 },
+  'middle-right': { x: 1, y: 0.5 },
+  'bottom-left': { x: 0, y: 1 },
+  'bottom-center': { x: 0.5, y: 1 },
+  'bottom-right': { x: 1, y: 1 },
+};
+
+/**
+ * Crop/expand resize: places the old (oldW x oldH) frame's content at (offsetX, offsetY) inside a new
+ * (newW x newH) canvas, unlike resampleFrame's stretch - pixels outside the new canvas are dropped,
+ * and any newly-added area is left transparent. `offsetX`/`offsetY` are typically derived from
+ * RESIZE_ANCHOR_FRAC (see usePixelEditor.ts's setGridSize) or from a content bounding box (see
+ * usePixelEditor.ts's trimToContent, which crops with the exact offset needed to drop empty borders).
+ */
+export function padFrame(frame: Frame, oldW: number, oldH: number, newW: number, newH: number, offsetX: number, offsetY: number): Frame {
+  const out = emptyFrame(newW, newH);
+  for (let y = 0; y < oldH; y++) {
+    const ny = y + offsetY;
+    if (ny < 0 || ny >= newH) continue;
+    for (let x = 0; x < oldW; x++) {
+      const nx = x + offsetX;
+      if (nx < 0 || nx >= newW) continue;
+      out[ny * newW + nx] = frame[y * oldW + x];
+    }
+  }
+  return out;
+}
+

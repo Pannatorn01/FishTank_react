@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { PIXELLAB_PACK } from '../data/pixellabPack';
 import { decodeFrame } from '../pixelCodec';
-import { buildDefaultSprites } from '../storage';
+import { buildDefaultSprites } from '../defaultSprites';
 
 /** The pack is generated (pixellab-assets/genpack.py), so the risk it carries is not a typo in one
  *  entry but a whole regeneration that silently encodes the wrong size or leaves a colour outside

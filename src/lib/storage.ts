@@ -6,16 +6,13 @@ import type {
   Layer,
   OnionColorMode,
   OnionSettings,
-  RecordMeta,
-  ResizeAnchor,
-  RoomInstance,
+  RecordMeta,  RoomInstance,
   Sprite,
   TankGroup,
   TankShape,
   UiTheme,
 } from './types';
 import { decodeFrame, encodeFrame, isRleFrame, type RleFrame } from './pixelCodec';
-import { PIXELLAB_PACK } from './data/pixellabPack';
 
 const KEY_SPRITES = 'fishtank.sprites.v1';
 const KEY_INSTANCES = 'fishtank.instances.v1';
@@ -825,183 +822,6 @@ export function saveUiTheme(theme: UiTheme): void {
   writeKey(KEY_UI_THEME, theme);
 }
 
-export function emptyFrame(width: number, height: number): Frame {
-  return new Array(width * height).fill(null);
-}
-
-export function resampleFrame(frame: Frame, oldW: number, oldH: number, newW: number, newH: number): Frame {
-  if (oldW === newW && oldH === newH) return frame.slice();
-  const out = emptyFrame(newW, newH);
-  for (let y = 0; y < newH; y++) {
-    const srcY = Math.min(oldH - 1, Math.floor((y / newH) * oldH));
-    for (let x = 0; x < newW; x++) {
-      const srcX = Math.min(oldW - 1, Math.floor((x / newW) * oldW));
-      out[y * newW + x] = frame[srcY * oldW + srcX];
-    }
-  }
-  return out;
-}
-
-/** Where each 9-point ResizeAnchor sits as a 0..1 fraction across the resize delta - see padFrame. */
-export const RESIZE_ANCHOR_FRAC: Record<ResizeAnchor, { x: number; y: number }> = {
-  'top-left': { x: 0, y: 0 },
-  'top-center': { x: 0.5, y: 0 },
-  'top-right': { x: 1, y: 0 },
-  'middle-left': { x: 0, y: 0.5 },
-  'middle-center': { x: 0.5, y: 0.5 },
-  'middle-right': { x: 1, y: 0.5 },
-  'bottom-left': { x: 0, y: 1 },
-  'bottom-center': { x: 0.5, y: 1 },
-  'bottom-right': { x: 1, y: 1 },
-};
-
-/**
- * Crop/expand resize: places the old (oldW x oldH) frame's content at (offsetX, offsetY) inside a new
- * (newW x newH) canvas, unlike resampleFrame's stretch - pixels outside the new canvas are dropped,
- * and any newly-added area is left transparent. `offsetX`/`offsetY` are typically derived from
- * RESIZE_ANCHOR_FRAC (see usePixelEditor.ts's setGridSize) or from a content bounding box (see
- * usePixelEditor.ts's trimToContent, which crops with the exact offset needed to drop empty borders).
- */
-export function padFrame(frame: Frame, oldW: number, oldH: number, newW: number, newH: number, offsetX: number, offsetY: number): Frame {
-  const out = emptyFrame(newW, newH);
-  for (let y = 0; y < oldH; y++) {
-    const ny = y + offsetY;
-    if (ny < 0 || ny >= newH) continue;
-    for (let x = 0; x < oldW; x++) {
-      const nx = x + offsetX;
-      if (nx < 0 || nx >= newW) continue;
-      out[ny * newW + nx] = frame[y * oldW + x];
-    }
-  }
-  return out;
-}
-
-function setPixel(frame: Frame, width: number, height: number, x: number, y: number, color: string): void {
-  if (x < 0 || y < 0 || x >= width || y >= height) return;
-  frame[y * width + x] = color;
-}
-
-function inEllipse(x: number, y: number, cx: number, cy: number, rx: number, ry: number): boolean {
-  const dx = (x - cx) / rx;
-  const dy = (y - cy) / ry;
-  return dx * dx + dy * dy <= 1;
-}
-
-function inTriangle(
-  px: number,
-  py: number,
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number,
-  x3: number,
-  y3: number
-): boolean {
-  const sign = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number) =>
-    (ax - cx) * (by - cy) - (bx - cx) * (ay - cy);
-  const d1 = sign(px, py, x1, y1, x2, y2);
-  const d2 = sign(px, py, x2, y2, x3, y3);
-  const d3 = sign(px, py, x3, y3, x1, y1);
-  const hasNeg = d1 < 0 || d2 < 0 || d3 < 0;
-  const hasPos = d1 > 0 || d2 > 0 || d3 > 0;
-  return !(hasNeg && hasPos);
-}
-
-function buildFishFrame(size: number, tailPhase: number): Frame {
-  const frame = emptyFrame(size, size);
-  const cx = 10;
-  const cy = 8;
-  const rx = 4.5;
-  const ry = 3.5;
-  const tailY = 8 + tailPhase;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      if (inEllipse(x, y, cx, cy, rx + 1, ry + 1) || inTriangle(x, y, 1, tailY, 5, tailY - 3, 5, tailY + 3)) {
-        setPixel(frame, size, size, x, y, '#c8501c');
-      }
-    }
-  }
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      if (inEllipse(x, y, cx, cy, rx, ry) || inTriangle(x, y, 2, tailY, 5, tailY - 2, 5, tailY + 2)) {
-        setPixel(frame, size, size, x, y, '#ff7043');
-      }
-    }
-  }
-  for (let x = 0; x < size; x++) {
-    for (let y = Math.round(cy); y < size; y++) {
-      if (inEllipse(x, y, cx, cy + 1, rx - 1, ry - 1.5)) setPixel(frame, size, size, x, y, '#ffccbc');
-    }
-  }
-  setPixel(frame, size, size, 12, 6, '#1a1a1a');
-  return frame;
-}
-
-function buildPlantFrame(size: number, phase: number): Frame {
-  const frame = emptyFrame(size, size);
-  const stems = [4, 8, 12];
-  stems.forEach((baseX, si) => {
-    for (let y = size - 1; y >= 3; y--) {
-      const wave = Math.sin(y * 0.5 + phase + si * 1.3) * 1.4;
-      const x = Math.round(baseX + wave);
-      setPixel(frame, size, size, x, y, y % 3 === 0 ? '#66bb6a' : '#2e7d32');
-      setPixel(frame, size, size, x + 1, y, y % 3 === 0 ? '#66bb6a' : '#2e7d32');
-    }
-  });
-  return frame;
-}
-
-export function buildDefaultSprites(): Sprite[] {
-  return [
-    {
-      ...newRecordMeta(),
-      id: uid('sprite'),
-      name: 'Goldfish (sample)',
-      type: 'fish',
-      width: DEFAULT_GRID_SIZE,
-      height: DEFAULT_GRID_SIZE,
-      frames: [
-        [makeLayer(buildFishFrame(DEFAULT_GRID_SIZE, -2))],
-        [makeLayer(buildFishFrame(DEFAULT_GRID_SIZE, 2))],
-      ],
-      frameMs: DEFAULT_FRAME_MS,
-    },
-    {
-      ...newRecordMeta(),
-      id: uid('sprite'),
-      name: 'Seaweed (sample)',
-      type: 'object',
-      width: DEFAULT_GRID_SIZE,
-      height: DEFAULT_GRID_SIZE,
-      frames: [
-        [makeLayer(buildPlantFrame(DEFAULT_GRID_SIZE, 0))],
-        [makeLayer(buildPlantFrame(DEFAULT_GRID_SIZE, Math.PI / 2))],
-      ],
-      frameMs: DEFAULT_FRAME_MS,
-    },
-    ...buildPackSprites(),
-  ];
-}
-
-/** The PixelLab art pack (see data/pixellabPack.ts) as real sprites, seeded alongside the two
- *  procedural samples above so a first run opens on a library worth looking at rather than one
- *  goldfish. Decoded here rather than shipped as flat cell arrays because the pack's two scenes are
- *  320x200 and 348x224 - as plain JSON that is megabytes, and run-length encoded it is not. */
-function buildPackSprites(): Sprite[] {
-  return PIXELLAB_PACK.map((entry) => ({
-    ...newRecordMeta(),
-    id: uid('sprite'),
-    name: entry.name,
-    type: entry.type,
-    width: entry.width,
-    height: entry.height,
-    frames: entry.frames.map((frame) => [makeLayer(decodeFrame(frame))]),
-    frameMs: entry.frameMs ?? DEFAULT_FRAME_MS,
-  }));
-}
-
-/** Every localStorage key this app writes - kept as one list so backup/reset (see below) can't drift
- *  out of sync with a key added elsewhere in this file without updating this too. */
 const ALL_STORAGE_KEYS = [
   KEY_EDITOR_LAYOUT,
   KEY_UI_SCALE,

@@ -17,7 +17,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ZOOM_LEVELS } from '@/hooks/usePixelEditor';
 import type { PixelEditorEngine } from '@/hooks/usePixelEditor';
 import { useLanguage } from '@/lib/i18n';
-import { GRID_SIZES, MAX_BACKGROUND_GRID_SIZE, MAX_GRID_SIZE, MIN_BACKGROUND_GRID_SIZE, MIN_GRID_SIZE, RESIZE_ANCHOR_FRAC } from '@/lib/storage';
+import { GRID_SIZES, MAX_BACKGROUND_GRID_SIZE, MAX_GRID_SIZE, MIN_BACKGROUND_GRID_SIZE, MIN_GRID_SIZE } from '@/lib/storage';
+import { RESIZE_ANCHOR_FRAC } from '@/lib/pixelMath';
 import type { CanvasBackground, ResizeAnchor, ResizeMode, SpriteType } from '@/lib/types';
 
 const CUSTOM_SIZE_VALUE = 'custom';

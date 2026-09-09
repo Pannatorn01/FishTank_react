@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import * as storage from '../storage';
+import { emptyFrame } from '../pixelMath';
 import type { Sprite } from '../types';
 
 /** vitest's default (node) environment has no `localStorage` - a minimal in-memory stand-in, since
@@ -40,7 +41,7 @@ function validSprite(overrides: Partial<Sprite> = {}): Sprite {
     type: 'fish',
     width,
     height,
-    frames: [[storage.makeLayer(storage.emptyFrame(width, height))]],
+    frames: [[storage.makeLayer(emptyFrame(width, height))]],
     frameMs: storage.DEFAULT_FRAME_MS,
     // The shape normalizeSprite guarantees on load, so a round-trip compares like with like.
     visibility: 'private',
@@ -298,7 +299,7 @@ describe('run-length encoded frames (P2)', () => {
   it('shrinks a realistic sprite well below its raw size', () => {
     const width = 32;
     const height = 32;
-    const cells = storage.emptyFrame(width, height);
+    const cells = emptyFrame(width, height);
     for (let i = 300; i < 700; i += 1) cells[i] = '#ff7043';
     storage.saveSprites([
       validSprite({ width, height, frames: [[storage.makeLayer(cells)]] }),

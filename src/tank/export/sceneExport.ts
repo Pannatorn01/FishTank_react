@@ -27,9 +27,11 @@ const MAX_NAME_LENGTH = 40;
  */
 export function exportBaseName(tankName: string): string {
   const cleaned = tankName
-    // Control characters, plus the set Windows reserves in a filename. Written as escapes rather
-    // than as the characters themselves: as literals the class holds raw NUL..US and DEL bytes,
-    // which no editor renders and no reviewer can check.
+    // Control characters, plus the set Windows reserves in a filename. Written as escapes rather than
+    // as the characters themselves: as literals the class holds raw NUL..US and DEL bytes, which no
+    // editor renders and no reviewer can check. Stripping them is the whole point of this line, so the
+    // rule that flags control characters in a regex has nothing useful to say about it.
+    // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f<>:"/\\|?*]+/g, '-')
     .replace(/\s+/g, '-')
     .replace(/-{2,}/g, '-')
