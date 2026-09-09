@@ -2,7 +2,7 @@ import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
 import { t } from '@/lib/i18n';
 import { pixelateImageFile } from '@/lib/imageImport';
-import { downloadBlob } from '@/lib/download';
+import { SceneExport } from '@/tank/export/sceneExport';
 import { paintLayers } from '@/lib/pixelMath';
 import { getRepos, type TankState, type TankSummary } from '@/lib/data';
 import * as storage from '@/lib/storage';
@@ -325,11 +325,12 @@ export class TankEngine {
    *  as fits the viewport" (see TankCanvas's auto-fit computation, which multiplies this in). */
   zoomIndex = TANK_ZOOM_STEPS.length - 1;
 
-  /** In-progress video export - see startVideoExport/stopVideoExport. null the rest of the time. */
-  private exportRecording: { recorder: MediaRecorder; timer: number } | null = null;
-  /** True for the duration of an exportGif() call - guards against starting a second one (and two
-   *  competing downloads) while the first is still sampling frames. */
-  exportingGif = false;
+  /** Saving the tank as a picture, a GIF or a video (src/tank/export/sceneExport.ts). It is handed
+   *  one callback - the scene at time t - and knows nothing else about the tank. */
+  private readonly sceneExport = new SceneExport(
+    (timeMs) => this.compositeScene(timeMs),
+    () => this.reactNotify()
+  );
 
   /** The actual on-screen-pixels-per-logical-pixel ratio right now (auto-fit scale x zoom step),
    *  computed and kept in sync by TankCanvas since only it knows the live viewport size. Every
@@ -521,6 +522,10 @@ export class TankEngine {
 
   destroy(): void {
     if (this.rafId) cancelAnimationFrame(this.rafId);
+    // A video recording in progress was previously left running here: its redraw interval kept firing
+    // against a canvas nothing was showing any more, and since nothing called stop() the recorder's
+    // onstop never fired either - so the leak did not even buy a downloaded file.
+    this.sceneExport.destroy();
     document.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('beforeunload', this.onBeforeUnload);
   }
@@ -1306,107 +1311,32 @@ export class TankEngine {
     return out;
   }
 
-  /** A still photo of the tank exactly as it looks right now (one frame of compositeScene, timeMs=0
-   *  so every room item draws its first frame) - the simplest of the three export formats, and what
-   *  GIF/video export both build on top of. */
+  // The three export formats (still PNG, animated GIF, WebM recording) live in
+  // src/tank/export/sceneExport.ts. They only ever ask for "the scene at time t", which is what
+  // compositeScene above provides - nothing about saving a file needs to know what is in the tank.
+
   exportPng(): void {
-    const canvas = this.compositeScene(0);
-    canvas.toBlob((blob) => downloadBlob(blob, `${this.exportBaseName()}.png`));
+    this.sceneExport.png();
   }
 
-  private exportBaseName(): string {
-    return 'fish-tank';
+  exportGif(durationMs?: number): Promise<void> {
+    return this.sceneExport.gif(durationMs);
   }
 
-  /**
-   * Records the live, already-animating scene as a WebM video via MediaRecorder - the browser-native
-   * way to turn a canvas into a video with no encoding library of its own, at the cost of only ever
-   * producing WebM (no MP4 without a much heavier ffmpeg-in-the-browser dependency this app doesn't
-   * carry). Runs in real time, on its own short timer independent of the tank's own simulation loop,
-   * redrawing compositeScene every ~50ms and feeding each frame to the stream - stop with
-   * stopVideoExport (or exportRecording being cleared some other way) to finalize and download it.
-   */
   startVideoExport(): void {
-    if (this.exportRecording) return;
-    const canvas = this.compositeScene(0);
-    const stream = canvas.captureStream(20);
-    const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find((m) => MediaRecorder.isTypeSupported(m));
-    if (!mimeType) return;
-    const recorder = new MediaRecorder(stream, { mimeType });
-    const chunks: Blob[] = [];
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunks.push(e.data);
-    };
-    recorder.onstop = () => {
-      downloadBlob(new Blob(chunks, { type: mimeType }), `${this.exportBaseName()}.webm`);
-    };
-    const startedAt = performance.now();
-    const redraw = () => {
-      const ctx = canvas.getContext('2d')!;
-      const next = this.compositeScene(performance.now() - startedAt);
-      if (canvas.width !== next.width || canvas.height !== next.height) {
-        canvas.width = next.width;
-        canvas.height = next.height;
-      }
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(next, 0, 0);
-    };
-    const timer = window.setInterval(redraw, 50);
-    this.exportRecording = { recorder, timer };
-    recorder.start();
-    this.reactNotify();
+    this.sceneExport.startVideo();
   }
 
   stopVideoExport(): void {
-    if (!this.exportRecording) return;
-    window.clearInterval(this.exportRecording.timer);
-    this.exportRecording.recorder.stop();
-    this.exportRecording = null;
-    this.reactNotify();
+    this.sceneExport.stopVideo();
   }
 
   get isRecordingVideo(): boolean {
-    return this.exportRecording !== null;
+    return this.sceneExport.isRecording;
   }
 
-  /**
-   * Samples the live scene at a fixed interval over `durationMs` and encodes the frames as an
-   * animated GIF (gifenc - a small, dependency-free, main-thread encoder; no web worker asset to wire
-   * up the way the more common gif.js needs). Each frame gets its own 256-color palette (gifenc's
-   * plain quantize/applyPalette pair) rather than one shared palette across the whole clip - simpler,
-   * and this app's flat pixel-art color fills rarely come close to the 256-color ceiling anyway, so
-   * the trade-off is invisible in practice for a several-second loop.
-   */
-  async exportGif(durationMs = 3000): Promise<void> {
-    if (this.exportingGif) return;
-    this.exportingGif = true;
-    this.reactNotify();
-    try {
-      const { GIFEncoder, quantize, applyPalette } = await import('gifenc');
-      const frameDelayMs = 100;
-      const frameCount = Math.max(1, Math.round(durationMs / frameDelayMs));
-      const gif = GIFEncoder();
-      const start = performance.now();
-      for (let i = 0; i < frameCount; i++) {
-        const canvas = this.compositeScene(i * frameDelayMs);
-        const ctx = canvas.getContext('2d')!;
-        const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const palette = quantize(data, 256);
-        const indexed = applyPalette(data, palette);
-        gif.writeFrame(indexed, canvas.width, canvas.height, { palette, delay: frameDelayMs });
-        // One real animation frame's worth of wait between samples, so this reads the tank's own
-        // already-running simulation loop rather than freezing it or racing ahead of it - the same
-        // "record what's actually happening" approach the video export takes.
-        const target = start + i * frameDelayMs;
-        const wait = target - performance.now();
-        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-      }
-      gif.finish();
-      downloadBlob(new Blob([gif.bytes() as BlobPart], { type: 'image/gif' }), `${this.exportBaseName()}.gif`);
-    } finally {
-      this.exportingGif = false;
-      this.reactNotify();
-    }
+  get exportingGif(): boolean {
+    return this.sceneExport.encodingGif;
   }
 
   /** Drops a new room decoration at the given screen point, converted through the same canvasPoint()
