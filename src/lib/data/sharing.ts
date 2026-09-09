@@ -1,6 +1,9 @@
 import { getSupabase } from '../supabase';
 import type { Instance, RoomInstance, Sprite, TankGroup } from '../types';
-import type { TankState } from './adapter';
+// `emptyTankState` lives on the adapter module because that is where TankState itself is declared -
+// not because a remote tank has anything to do with local storage. It reaches for the type's own
+// default, not for another reader's copy of it.
+import { emptyTankState, type TankState } from './adapter';
 import { rowToChild, rowToSprite, type ChildRow, type SpriteRow, type TankSettings } from './rows';
 
 /**
@@ -194,7 +197,11 @@ export async function fetchSharedTank(tankId: string, slug: string | null): Prom
 
   const settings = bundle.tank.settings ?? {};
   const state: TankState = {
-    ...emptySharedTankState(),
+    // The empty state's `lastTickAt: null` is what carries here, and it matters: a tank being looked
+    // at is not a tank being simulated forward, and null is what stops the engine replaying however
+    // many days of hunger and evaporation happened since its owner last saved, onto a copy the viewer
+    // cannot feed or refill. The owner's own settings are laid over the rest.
+    ...emptyTankState(),
     ...settings,
     instances: bundle.instances.map((row) => rowToChild<Instance>(row)),
     groups: bundle.groups.map((row) => rowToChild<TankGroup>(row)),
@@ -209,27 +216,3 @@ export async function fetchSharedTank(tankId: string, slug: string | null): Prom
   };
 }
 
-/** The tank's own fields as they stand before the owner's settings are laid over them. Identical in
- *  spirit to the adapters' empty state; kept here rather than exported from one of them because a
- *  remote tank is never written anywhere and has no business reaching into local storage's code. */
-function emptySharedTankState(): TankState {
-  return {
-    instances: [],
-    groups: [],
-    roomInstances: [],
-    width: null,
-    height: null,
-    shape: 'rectangle',
-    cornerRadiusFrac: 0.22,
-    ovalTopCutFrac: 0.28,
-    backgroundSpriteId: null,
-    roomBackgroundSpriteId: null,
-    backgroundTransform: { x: 0, y: 0, scale: 1, rotation: 0 },
-    waterLevel: 1,
-    algae: 0,
-    // A tank being looked at is not a tank being simulated forward: leaving this null is what stops
-    // the engine replaying however many days of hunger and evaporation happened since its owner last
-    // saved, onto a copy the viewer cannot feed or refill.
-    lastTickAt: null,
-  };
-}

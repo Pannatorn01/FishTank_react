@@ -6,7 +6,7 @@ import {
   TankEngine,
 } from '../useTank';
 import type { Instance, Sprite, TankGroup } from '@/lib/types';
-import type { TankState } from '@/lib/data';
+import { emptyTankState, type TankState } from '@/lib/data';
 
 /** vitest's node env has no localStorage - a minimal in-memory stand-in (copied from storage.test.ts).
  *  useTank never calls init() in these tests, but undo()/redo()/refresh() and persist paths still
@@ -544,23 +544,11 @@ describe('setInstanceSpeed', () => {
 // P6-3 - a tank somebody else shared
 // ─────────────────────────────────────────────────────────────────────────────
 describe('read-only engine (a shared tank)', () => {
-  function sharedState(instances: Instance[]) {
-    return {
-      instances,
-      groups: [],
-      roomInstances: [],
-      width: 400,
-      height: 300,
-      shape: 'rectangle' as const,
-      cornerRadiusFrac: 0.22,
-      ovalTopCutFrac: 0.28,
-      backgroundSpriteId: null,
-      roomBackgroundSpriteId: null,
-      backgroundTransform: { x: 0, y: 0, scale: 1, rotation: 0 },
-      waterLevel: 1,
-      algae: 0,
-      lastTickAt: null,
-    };
+  /** Built from the real `emptyTankState`, not a hand-written copy of it: a test that lists every
+   *  field itself stops compiling the moment one is added, which teaches nothing, and a fixture that
+   *  drifts from the shape production actually produces is worse than no fixture. */
+  function sharedState(instances: Instance[]): TankState {
+    return { ...emptyTankState(), instances, width: 400, height: 300 };
   }
 
   it('loads its contents from the source it was given, not from local storage', async () => {
@@ -603,23 +591,7 @@ describe('read-only engine (a shared tank)', () => {
 
 describe('refresh (switching tanks / reloading after a remote sync)', () => {
   function stateWith(over: Partial<TankState> = {}): TankState {
-    return {
-      instances: [],
-      groups: [],
-      roomInstances: [],
-      width: 400,
-      height: 300,
-      shape: 'rectangle' as const,
-      cornerRadiusFrac: 0.22,
-      ovalTopCutFrac: 0.28,
-      backgroundSpriteId: null,
-      roomBackgroundSpriteId: null,
-      backgroundTransform: { x: 0, y: 0, scale: 1, rotation: 0 },
-      waterLevel: 1,
-      algae: 0,
-      lastTickAt: null,
-      ...over,
-    };
+    return { ...emptyTankState(), width: 400, height: 300, ...over };
   }
 
   /** An engine whose source hands back whichever state the test most recently set. */

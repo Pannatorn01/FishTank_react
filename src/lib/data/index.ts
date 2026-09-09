@@ -6,6 +6,7 @@ import { EditorPrefsRepo, SpriteRepo, TankRepo } from './repository';
 import { SyncEngine } from './syncEngine';
 
 export type { EditorPrefs, StorageAdapter, TankState, TankSummary } from './adapter';
+export { emptyTankState } from './adapter';
 export { IndexedDbAdapter } from './indexedDbAdapter';
 export { LocalStorageAdapter } from './localAdapter';
 export { EditorPrefsRepo, SpriteRepo, TankRepo } from './repository';

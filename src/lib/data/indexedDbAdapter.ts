@@ -1,6 +1,6 @@
 import { normalizeSprite, encodeSprite, uid, type StoredSprite } from '../storage';
 import type { Sprite } from '../types';
-import type { EditorPrefs, StorageAdapter, TankState, TankSummary } from './adapter';
+import { emptyTankState, type EditorPrefs, type StorageAdapter, type TankState, type TankSummary } from './adapter';
 import { del, getAll, get, openDb, put, replaceAll } from './idb';
 import type { OutboxEntry } from './outbox';
 import { LocalStorageAdapter, SINGLE_TANK_ID } from './localAdapter';
@@ -333,25 +333,6 @@ function stripRecordFields(record: TankRecord): TankState {
   // existed has no such key at all - default it here rather than letting `undefined` reach the engine
   // and read as "no backdrop chosen yet" only by accident.
   return { ...state, roomBackgroundSpriteId: state.roomBackgroundSpriteId ?? null };
-}
-
-function emptyTankState(): TankState {
-  return {
-    instances: [],
-    groups: [],
-    roomInstances: [],
-    width: null,
-    height: null,
-    shape: 'rectangle',
-    cornerRadiusFrac: 0.22,
-    ovalTopCutFrac: 0.28,
-    backgroundSpriteId: null,
-    roomBackgroundSpriteId: null,
-    backgroundTransform: { x: 0, y: 0, scale: 1, rotation: 0 },
-    waterLevel: 1,
-    algae: 0,
-    lastTickAt: null,
-  };
 }
 
 function emptyPrefs(): EditorPrefs {

@@ -32,6 +32,45 @@ export interface TankState {
   lastTickAt: number | null;
 }
 
+/**
+ * A tank with nothing in it - what a brand new tank starts as, and the base a partially-specified tank
+ * (a remote one, a test fixture) is filled in from.
+ *
+ * It lives here, beside the interface, because it is the one thing every producer of a `TankState`
+ * needs and none of them should get from each other: the IndexedDB adapter and the remote-share reader
+ * both built this list of fields by hand, identically, and a tank that a viewer is only looking at has
+ * no business importing local storage's code to get it. That arrangement is the same shape of mistake
+ * that let `TankEngine.refresh` fall three fields behind `loadEverything` and carry one tank's water
+ * level and algae onto another.
+ *
+ * This is the one *default*, not the only place a `TankState` is built. Two others construct one from a
+ * real source and legitimately have to name every field - `TankEngine.snapshotForStorage` (from the
+ * engine's live fields) and `LocalStorageAdapter.loadTankState` (from its per-key reads) - and the
+ * compiler stops on both when a field is added, which is exactly what should happen: each has to decide
+ * where the new value comes from. Anything that just wants "an empty tank" uses this.
+ *
+ * `lastTickAt: null` means "never simulated", which is the right default for both callers of this but
+ * for different reasons - see each one.
+ */
+export function emptyTankState(): TankState {
+  return {
+    instances: [],
+    groups: [],
+    roomInstances: [],
+    width: null,
+    height: null,
+    shape: 'rectangle',
+    cornerRadiusFrac: 0.22,
+    ovalTopCutFrac: 0.28,
+    backgroundSpriteId: null,
+    roomBackgroundSpriteId: null,
+    backgroundTransform: { x: 0, y: 0, scale: 1, rotation: 0 },
+    waterLevel: 1,
+    algae: 0,
+    lastTickAt: null,
+  };
+}
+
 /** One tank in the list, without its contents - enough to show a picker (plan P4-4) without loading
  *  every fish in every tank. */
 export interface TankSummary {
