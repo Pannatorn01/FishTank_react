@@ -145,7 +145,7 @@ const PREDATOR_FEAST_MS = 3_000;
 /** Where beside the tank the cat settles to stalk and pounce from, as a fraction of the room
  *  artwork's width. Two spots, one each side, so the raid does not always come from the same
  *  direction; the cat starts from whichever edge is further away and walks in. */
-const PREDATOR_TANK_SIDES = [0.34, 0.66] as const;
+const PREDATOR_TANK_SIDES = [0.26, 0.74] as const;
 
 /** Matches tankScene.ts's Pixi version exactly - see the hunger-bar comment in drawInstance(). */
 const HUNGER_BAR_HEIGHT = 4;

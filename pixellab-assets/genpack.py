@@ -7,7 +7,8 @@ from PIL import Image
 SRC = sys.argv[1]
 OUT = sys.argv[2]
 
-# name, type, [source files - more than one means an animation], optional ms per frame.
+# name, type, [source files - more than one means an animation], ms per frame or None,
+# and whether to snap the colours to the shared palette (default True).
 #
 # Every entry here is art the *renderer* uses - the room's cats, their emote bubbles, and the room
 # itself. None of it is seeded into the user's sprite library any more. It used to be, and the
@@ -49,7 +50,9 @@ CAST = [
     ("Food pellets",   "object", ["food-pellet-32.png"]),
     # The room itself. Also render-only: the backdrop is the room Life mode draws, not a picture the
     # user has to keep filed in their library to stop the room going blank.
-    ("Room by the window", "background", ["room-window-348x224.png"]),
+    # The room the cats live in. Its landmarks are measured in ROOM_ART (roomScene.ts) - a different
+    # backdrop needs its own numbers, so replacing this file means re-measuring, not just swapping.
+    ("Room by the window", "background", ["room-cats-512x220.png"], None, False),
 ]
 
 
@@ -92,7 +95,7 @@ def snap(c):
     return _snap_cache[c]
 
 
-def rle(path):
+def rle(path, snap_colors=True):
     """Same encoding as encodeFrame: a flat [count, paletteIndex, ...] list with
     index 0 reserved for transparent, so palette entries are 1-based."""
     im = Image.open(path).convert("RGBA")
@@ -103,7 +106,7 @@ def rle(path):
         if a < 128:
             idx = 0
         else:
-            key = "#%02x%02x%02x" % snap((r, g, b))
+            key = "#%02x%02x%02x" % (snap((r, g, b)) if snap_colors else (r, g, b))
             if key not in index_of:
                 palette.append(key)
                 index_of[key] = len(palette)
@@ -189,6 +192,11 @@ def emit(entries):
     for entry in entries:
         name, kind, files = entry[0], entry[1], entry[2]
         frame_ms = entry[3] if len(entry) > 3 else None
+        # A room photographed rather than drawn to the shared ramp keeps its own colours: the
+        # 20-colour palette was built around the cats and a blue-and-brown room, and forcing a warm
+        # pastel interior through it turned the beige walls grey and speckled the table pink. Such a
+        # file is expected to arrive already reduced to a sane number of colours.
+        snap_colors = entry[4] if len(entry) > 4 else True
         if not sources_present(files):
             if name not in CARRIED:
                 raise SystemExit("no art and no previous entry for %r" % name)
@@ -198,7 +206,7 @@ def emit(entries):
         frames = []
         w = h = None
         for f in files:
-            fw, fh, pal, runs = rle(os.path.join(SRC, f))
+            fw, fh, pal, runs = rle(os.path.join(SRC, f), snap_colors=snap_colors)
             if w is None:
                 w, h = fw, fh
             elif (fw, fh) != (w, h):
