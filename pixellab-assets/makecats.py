@@ -21,6 +21,14 @@ POSES = {
     'sit': ('sit', range(4, 9)),
     'pounce': ('jump', range(0, 8)),
     'eat': ('eat', range(0, 7)),
+    'drink': ('drink', range(0, 6)),
+    'groom': ('lick', range(0, 12)),
+    'run': ('run', range(0, 8)),
+    # Like the sleep and sit loops, these three are the tails of their animations - the lead-in
+    # frames are the cat still walking into the pose.
+    'play': ('play', range(4, 9)),
+    'watch': ('window', range(4, 9)),
+    'stretch': ('stretch', range(4, 9)),
 }
 # Hue window covering every warm fur tone in the source (350..70 deg, wrapping through 0). The
 # green eyes fall outside it and so keep their colour in every coat.

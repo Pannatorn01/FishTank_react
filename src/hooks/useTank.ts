@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useEffect, useRef, useState } from 'react';
-import { CAT_VARIANTS } from '@/lib/data/pixellabPack';
+import { CAT_VARIANTS, type CatVariant } from '@/lib/data/pixellabPack';
 import { t } from '@/lib/i18n';
 import { pixelateImageFile } from '@/lib/imageImport';
 import { SceneExport } from '@/tank/export/sceneExport';
@@ -22,7 +22,7 @@ import {
   roundedCornerRadius,
 } from '@/tank/sim/geometry';
 import { type AlgaePatch, generateAlgaePatches } from '@/tank/sim/algae';
-import type { BackgroundTransform, FoodItem, Instance, PredatorEvent, PredatorPhase, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape, WasteItem } from '@/lib/types';
+import type { BackgroundTransform, CatActivity, CatZone, FoodItem, Instance, PredatorEvent, PredatorPhase, RoomCat, RoomInstance, SelectionBox, Sprite, SwimSpeed, TankGroup, TankShape, WasteItem } from '@/lib/types';
 
 /** Re-exported from geometry.ts (their canonical home as of P3 - see docs/PIXI_MIGRATION_PLAN.md) so
  *  existing `from '@/hooks/useTank'` import sites (TankCanvas.tsx's shape sliders) didn't need to
@@ -147,6 +147,64 @@ const PREDATOR_FEAST_MS = 3_000;
  *  direction; the cat starts from whichever edge is further away and walks in. */
 const PREDATOR_TANK_SIDES = [0.26, 0.74] as const;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The room's cats (docs/CAT_ROOM_DESIGN.md). Three of them live in Life mode's room, each running
+// the same loop: a need rises, the cat walks to the zone that answers it, does the thing, and goes
+// back to idling. Transient state - see RoomCat's doc comment in types.ts.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Where each activity happens, as a fraction of the room artwork's width. Measured against the
+ *  painted furniture in pixellab-assets/room-cats-512x220.png - the same picture ROOM_ART is
+ *  measured off. A different backdrop moves these. */
+const CAT_ZONE_X: Record<CatZone, number> = {
+  bowls: 0.1,
+  bed: 0.28,
+  toy: 0.68,
+  post: 0.84,
+  litter: 0.95,
+  windowLeft: 0.06,
+  windowRight: 0.93,
+};
+
+/** How fast a need fills, in units per second. A cat left alone gets hungry in about ten minutes,
+ *  bored in about four, and sleepy in about eight - fast enough that the room keeps changing while
+ *  someone watches it, slow enough that it is not frantic. */
+const NEED_RATE = { hunger: 1 / 600, tired: 1 / 480, boredom: 1 / 240, bladder: 0 } as const;
+/** Bladder does not drift on its own - it fills from eating, so the litter trip reads as a
+ *  consequence of the meal rather than as a timer. */
+const BLADDER_PER_MEAL = 0.55;
+/** A need has to get this high before it is worth crossing the room for. Below it the cat idles:
+ *  sleeps, grooms, sits. Without a floor the cats twitch between activities constantly. */
+const NEED_THRESHOLD = 0.45;
+/** Sleeping is the exception - a cat that is only slightly tired will still nap if nothing else is
+ *  pressing, which is what cats do. */
+const TIRED_NAP_THRESHOLD = 0.2;
+/** Room widths per second on foot. Matches the raid's approach so one cat does not walk visibly
+ *  faster than another. */
+const CAT_WALK_FRAC_PER_S = 0.09;
+const CAT_RUN_FRAC_PER_S = 0.26;
+/** How far along the room a chase runs before turning. Kept off the very edges so the cats do not
+ *  disappear behind the window frames painted at either end. */
+const CHASE_BOUNDS: readonly [number, number] = [0.12, 0.88];
+/** How often a bored cat looks for someone to chase rather than going to the toy on its own. */
+const CHASE_CHANCE = 0.6;
+/** How long each activity lasts, in ms [min, max]. Sleeping is much longer than anything else: a
+ *  room where all three cats are always busy reads as agitated, not as a home. */
+const ACTIVITY_MS: Record<CatActivity, readonly [number, number]> = {
+  sleeping: [25_000, 60_000],
+  stretching: [1_600, 1_600],
+  walking: [0, 0],
+  sitting: [4_000, 12_000],
+  grooming: [5_000, 11_000],
+  eating: [5_000, 8_000],
+  drinking: [3_000, 5_000],
+  playing: [6_000, 14_000],
+  watching: [5_000, 12_000],
+  window: [8_000, 20_000],
+  litter: [4_000, 7_000],
+  chasing: [4_000, 9_000],
+};
+
 /** Matches tankScene.ts's Pixi version exactly - see the hunger-bar comment in drawInstance(). */
 const HUNGER_BAR_HEIGHT = 4;
 const HUNGER_BAR_GAP = 4;
@@ -269,6 +327,14 @@ export class TankEngine {
    *  it. Transient like `predator` itself: closing the app resets the clock rather than banking
    *  hunger while nobody is watching. */
   private nextRaidAt = 0;
+
+  /** The three cats living in the room (Life mode). Transient - see RoomCat in types.ts. */
+  cats: RoomCat[] = [];
+
+  /** How much food is in the cats' bowl, 0..1. Drops as they eat and is refilled by tapping the
+   *  bowl. An empty bowl is what turns a hungry cat toward the fish tank, so this is the lever the
+   *  player has over the raids rather than a separate difficulty setting. */
+  bowlFood = 1;
 
   /** Logical tank size (the actual simulation space fish swim in) set via the size controls or by
    *  dragging the resize handle - null only very briefly before init() runs. A view/layout
@@ -535,6 +601,19 @@ export class TankEngine {
     // here rather than in the shared helpers above because `refresh` (a tab switch, a remote sync)
     // deliberately must not restart the clock.
     this.nextRaidAt = now + randomBetween(PREDATOR_FIRST_HUNGER_MS);
+    this.cats = CAT_VARIANTS.map((variant, i) => ({
+      variant,
+      activity: 'sleeping' as CatActivity,
+      // Spread along the floor so they do not all start in the bed on top of each other.
+      xFrac: [CAT_ZONE_X.bed, 0.55, CAT_ZONE_X.post][i] ?? 0.5,
+      facingLeft: i === 2,
+      targetXFrac: 0,
+      nextActivity: 'sitting' as CatActivity,
+      // Staggered so the three do not wake up in unison and cross the room as a block.
+      needs: { hunger: 0.1 * i, tired: 0.5 - 0.15 * i, boredom: 0.15 * i, bladder: 0 },
+      startedAt: now,
+      endsAt: now + randomBetween(ACTIVITY_MS.sleeping) * (0.4 + 0.3 * i),
+    }));
   }
 
   destroy(): void {
@@ -2260,6 +2339,7 @@ export class TankEngine {
     this.tickBreeding(elapsedMs);
 
     this.stepPredator(dt);
+    this.stepCats(dt);
     this.stepFood(dt);
     this.stepPooping();
     this.stepWaste(dt);
@@ -2303,6 +2383,11 @@ export class TankEngine {
       case 'pounce':
         if (now >= predator.expiresAt) {
           this.stealRandomFish();
+          const raider = this.cats.find((c) => c.variant === predator.variant);
+          if (raider) {
+            raider.needs.hunger = 0;
+            raider.needs.bladder = Math.min(1, raider.needs.bladder + BLADDER_PER_MEAL);
+          }
           this.enterPredatorPhase('feast', now);
         }
         break;
@@ -2320,6 +2405,193 @@ export class TankEngine {
     }
   }
 
+  /** Advances the room's cats one frame: needs drift, activities end, and a cat that wants
+   *  something walks to the zone that answers it. `dt` is seconds, as everywhere else here.
+   *
+   *  The cat currently raiding the tank is skipped: its whole behaviour is stepPredator's, and
+   *  letting both run would have it walking to the litter box while it was up at the glass. */
+  private stepCats(dt: number): void {
+    const now = Date.now();
+    const raiding = this.predator?.variant ?? null;
+    for (const cat of this.cats) {
+      if (cat.variant === raiding) continue;
+      this.driftNeeds(cat, dt);
+      if (cat.activity === 'walking') {
+        this.stepCatWalk(cat, dt, now);
+        continue;
+      }
+      if (cat.activity === 'chasing') this.stepCatChase(cat, dt);
+      if (now >= cat.endsAt) {
+        this.finishActivity(cat, now);
+      }
+    }
+  }
+
+  /** Needs rise on their own clocks. Sleeping is the only activity that pays one down while it
+   *  runs; the rest are settled in finishActivity, when the cat has actually done the thing. */
+  private driftNeeds(cat: RoomCat, dt: number): void {
+    const n = cat.needs;
+    n.hunger = Math.min(1, n.hunger + NEED_RATE.hunger * dt);
+    n.boredom = Math.min(1, n.boredom + NEED_RATE.boredom * dt);
+    if (cat.activity === 'sleeping') {
+      // Twice as fast down as up, so a nap is worth taking rather than something a cat needs to do
+      // constantly to keep even.
+      n.tired = Math.max(0, n.tired - NEED_RATE.tired * dt * 2);
+      n.boredom = Math.max(0, n.boredom - NEED_RATE.boredom * dt * 0.5);
+    } else {
+      n.tired = Math.min(1, n.tired + NEED_RATE.tired * dt);
+    }
+  }
+
+  private stepCatWalk(cat: RoomCat, dt: number, now: number): void {
+    const remaining = cat.targetXFrac - cat.xFrac;
+    const step = CAT_WALK_FRAC_PER_S * dt;
+    if (Math.abs(remaining) <= step) {
+      cat.xFrac = cat.targetXFrac;
+      this.beginActivity(cat, cat.nextActivity, now);
+      return;
+    }
+    cat.xFrac += Math.sign(remaining) * step;
+    cat.facingLeft = remaining < 0;
+  }
+
+  /** A chase is a run back and forth across the open floor, turning at the walls. Two cats doing it
+   *  at once, started together and facing opposite ways, read as chasing each other - which is
+   *  cheaper and looks better than trying to generate a two-cat animation. */
+  private stepCatChase(cat: RoomCat, dt: number): void {
+    cat.xFrac += (cat.facingLeft ? -1 : 1) * CAT_RUN_FRAC_PER_S * dt;
+    if (cat.xFrac <= CHASE_BOUNDS[0]) {
+      cat.xFrac = CHASE_BOUNDS[0];
+      cat.facingLeft = false;
+    } else if (cat.xFrac >= CHASE_BOUNDS[1]) {
+      cat.xFrac = CHASE_BOUNDS[1];
+      cat.facingLeft = true;
+    }
+  }
+
+  /** Tries to start a chase between this cat and another one that is also at a loose end. Returns
+   *  false if there is nobody to chase, in which case the caller falls back to the lone toy. */
+  private startChase(cat: RoomCat, now: number): boolean {
+    const raiding = this.predator?.variant ?? null;
+    const partner = this.cats.find(
+      (other) =>
+        other !== cat &&
+        other.variant !== raiding &&
+        other.activity !== 'sleeping' &&
+        other.activity !== 'chasing' &&
+        other.needs.tired < NEED_THRESHOLD,
+    );
+    if (!partner) return false;
+    // Facing opposite ways and a little apart, so the first thing they do is run past each other.
+    cat.facingLeft = false;
+    partner.facingLeft = true;
+    partner.xFrac = Math.min(CHASE_BOUNDS[1], cat.xFrac + 0.12);
+    this.beginActivity(cat, 'chasing', now);
+    this.beginActivity(partner, 'chasing', now);
+    return true;
+  }
+
+  /** The activity just ended: settle whatever need it was answering, then choose the next thing. */
+  private finishActivity(cat: RoomCat, now: number): void {
+    const n = cat.needs;
+    switch (cat.activity) {
+      case 'eating':
+        n.hunger = 0;
+        n.bladder = Math.min(1, n.bladder + BLADDER_PER_MEAL);
+        break;
+      case 'drinking':
+        n.hunger = Math.max(0, n.hunger - 0.15);
+        break;
+      case 'litter':
+        n.bladder = 0;
+        break;
+      case 'playing':
+      case 'chasing':
+        n.boredom = 0;
+        // Playing is work: it costs energy the way sleeping earns it.
+        n.tired = Math.min(1, n.tired + 0.2);
+        break;
+      case 'watching':
+      case 'window':
+        n.boredom = Math.max(0, n.boredom - 0.5);
+        break;
+      case 'sleeping':
+        // A cat that has just woken up stretches before it does anything else, which is what makes
+        // waking read as waking rather than as teleporting into the next activity.
+        this.beginActivity(cat, 'stretching', now);
+        return;
+      default:
+        break;
+    }
+    this.chooseActivity(cat, now);
+  }
+
+  /** Picks what a cat does next from whichever need is highest, and sends it walking if that
+   *  happens somewhere else. A cat with nothing pressing idles where it already is. */
+  private chooseActivity(cat: RoomCat, now: number): void {
+    const n = cat.needs;
+    const wants: { activity: CatActivity; zone: CatZone; level: number }[] = [
+      // An empty bowl is not a reason to stop being hungry - it is what sends the cat to the tank
+      // instead (see stepPredator). So the trip to the bowls is only worth making if there is food.
+      { activity: 'eating', zone: 'bowls', level: this.bowlFood > 0.05 ? n.hunger : 0 },
+      { activity: 'litter', zone: 'litter', level: n.bladder },
+      { activity: 'playing', zone: 'toy', level: n.boredom },
+      { activity: 'sleeping', zone: 'bed', level: n.tired },
+    ];
+    const top = wants.reduce((a, b) => (b.level > a.level ? b : a));
+    if (top.level >= NEED_THRESHOLD) {
+      // Boredom is the one need another cat can answer. Chasing beats batting a toy alone, so it
+      // is tried first and the toy is what a cat with nobody to play with settles for.
+      if (top.activity === 'playing' && Math.random() < CHASE_CHANCE && this.startChase(cat, now)) return;
+      this.sendCatTo(cat, top.zone, top.activity, now);
+      return;
+    }
+    if (n.tired >= TIRED_NAP_THRESHOLD) {
+      this.sendCatTo(cat, 'bed', 'sleeping', now);
+      return;
+    }
+    // Nothing pressing. Idle in place, or go and look out of a window - the one activity a
+    // contented cat crosses the room for.
+    const idle: CatActivity[] = ['sitting', 'grooming', 'sitting', 'window'];
+    const pick = idle[Math.floor(Math.random() * idle.length)];
+    if (pick === 'window') {
+      this.sendCatTo(cat, cat.xFrac < 0.5 ? 'windowLeft' : 'windowRight', 'window', now);
+      return;
+    }
+    this.beginActivity(cat, pick, now);
+  }
+
+  /** Walks the cat to a zone and remembers what it meant to do there. Already-there is not a
+   *  special case worth writing: stepCatWalk arrives on its first frame. */
+  private sendCatTo(cat: RoomCat, zone: CatZone, activity: CatActivity, now: number): void {
+    cat.targetXFrac = CAT_ZONE_X[zone];
+    cat.nextActivity = activity;
+    cat.facingLeft = cat.targetXFrac < cat.xFrac;
+    this.beginActivity(cat, 'walking', now);
+  }
+
+  private beginActivity(cat: RoomCat, activity: CatActivity, now: number): void {
+    cat.activity = activity;
+    cat.startedAt = now;
+    cat.endsAt = activity === 'walking' ? Number.POSITIVE_INFINITY : now + randomBetween(ACTIVITY_MS[activity]);
+    if (activity === 'eating') this.bowlFood = Math.max(0, this.bowlFood - 0.34);
+  }
+
+  /** Petting (a tap on a cat in Life mode). Boredom drops, and a cat woken out of a nap is put on
+   *  its feet rather than left asleep under a heart bubble. */
+  petCat(variant: CatVariant): void {
+    const cat = this.cats.find((c) => c.variant === variant);
+    if (!cat || this.predator?.variant === variant) return;
+    cat.needs.boredom = Math.max(0, cat.needs.boredom - 0.4);
+    if (cat.activity === 'sleeping') this.beginActivity(cat, 'stretching', Date.now());
+  }
+
+  /** Refills the cats' bowl (a tap on it in Life mode). The one action that reduces raids: a cat
+   *  only goes for the fish when it is hungry and there is nothing in the bowl. */
+  refillBowl(): void {
+    this.bowlFood = 1;
+  }
+
   /** One cat wakes up hungry and starts across the room. Skipped if there is nothing in the tank
    *  worth taking - a cat that stalks an empty tank is just a cat walking into a wall - and in that
    *  case the clock is simply pushed back so it tries again later. */
@@ -2332,10 +2604,14 @@ export class TankEngine {
     // the far one, so the approach is actually visible rather than a step and a half.
     const targetXFrac = PREDATOR_TANK_SIDES[Math.floor(Math.random() * PREDATOR_TANK_SIDES.length)];
     const fromLeft = targetXFrac >= 0.5;
+    // The hungriest cat goes, if the bowl is empty enough that going is what a hungry cat would do.
+    // Otherwise any of them might, on the timer alone - a well-fed room should still see a cat try
+    // its luck occasionally rather than fall silent.
+    const hungriest = this.bowlFood <= 0.05
+      ? this.cats.reduce((a, b) => (b.needs.hunger > a.needs.hunger ? b : a), this.cats[0])
+      : undefined;
     this.predator = {
-      // Which of the room's cats gets up. Uniform across the coats: they are the same animal in
-      // three colours, so there is no reason for one to raid more often than another.
-      variant: CAT_VARIANTS[Math.floor(Math.random() * CAT_VARIANTS.length)],
+      variant: hungriest?.variant ?? CAT_VARIANTS[Math.floor(Math.random() * CAT_VARIANTS.length)],
       phase: 'approach',
       xFrac: fromLeft ? -0.05 : 1.05,
       targetXFrac,
@@ -2347,8 +2623,15 @@ export class TankEngine {
     };
   }
 
-  /** The visit is over, however it went, and the next one is scheduled from here. */
+  /** The visit is over, however it went, and the next one is scheduled from here. The cat rejoins
+   *  the room's own loop where the raid left it standing, so it walks back to whatever it wants
+   *  next instead of reappearing in its bed. */
   private endRaid(now: number): void {
+    const raider = this.predator && this.cats.find((c) => c.variant === this.predator?.variant);
+    if (raider && this.predator) {
+      raider.xFrac = this.predator.xFrac;
+      this.chooseActivity(raider, now);
+    }
     this.predator = null;
     this.nextRaidAt = now + randomBetween(PREDATOR_NEXT_HUNGER_MS);
   }

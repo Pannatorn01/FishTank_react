@@ -255,6 +255,63 @@ export interface WasteItem {
   createdAt: number;
 }
 
+/** What a cat is doing right now. Each one draws in its own pose (PHASE_POSE's sibling
+ *  ACTIVITY_POSE in roomScene.ts) and, apart from `walking`, happens at a fixed spot in the room.
+ *
+ *  `walking` is the glue: a cat that wants to do something somewhere else walks there first, which
+ *  is what makes three cats read as living in a room rather than as three loops playing at once. */
+export type CatActivity =
+  | 'sleeping'
+  | 'stretching'
+  | 'walking'
+  | 'sitting'
+  | 'grooming'
+  | 'eating'
+  | 'drinking'
+  | 'playing'
+  | 'watching'
+  | 'window'
+  | 'litter'
+  | 'chasing';
+
+/** Where in the room an activity happens. Positions are fractions of the backdrop artwork's width
+ *  (see ROOM_ART), so they follow the painted furniture rather than the viewport. */
+export type CatZone = 'bed' | 'bowls' | 'litter' | 'toy' | 'post' | 'windowLeft' | 'windowRight';
+
+/** What a cat wants. Each is 0..1 and drifts on its own clock; the highest one decides what the cat
+ *  does next. This is the whole of the "it is a cat game, not a screensaver" mechanism - the
+ *  player's actions push these numbers down, so looking after the room changes what happens in it. */
+export interface CatNeeds {
+  hunger: number;
+  /** Tiredness, not energy: 1 means it needs to sleep. Named for what it asks for, like the rest. */
+  tired: number;
+  boredom: number;
+  bladder: number;
+}
+
+/** One of the three cats living in the room (Life mode only - see roomScene.ts).
+ *
+ *  Transient, like PredatorEvent and the food/waste items: never written to localStorage. Closing
+ *  the app resets the cats to a fresh nap rather than banking hunger while nobody is watching, which
+ *  would mean opening the app to three cats mid-crisis through no fault of the player. */
+export interface RoomCat {
+  variant: CatVariant;
+  activity: CatActivity;
+  /** Fraction of the room artwork's width. Animated while walking or chasing, fixed otherwise. */
+  xFrac: number;
+  /** The cat art is drawn facing right, so this is what tells the renderer to mirror it. */
+  facingLeft: boolean;
+  /** Where the current walk is heading, and what the cat means to do when it arrives. */
+  targetXFrac: number;
+  nextActivity: CatActivity;
+  needs: CatNeeds;
+  /** When the current activity began, and how long it runs for. A finished activity picks a new
+   *  one. Durations live in the engine rather than in the renderer so the room can be simulated
+   *  (and tested) with nothing drawn at all. */
+  startedAt: number;
+  endsAt: number;
+}
+
 /** One of the room's cats getting up to try to steal a fish (P5 §6 item 7,
  *  docs/PIXI_MIGRATION_PLAN.md §9 Q6) - rolled once per app load (see TankEngine.init()), not
  *  something that keeps re-appearing while the app stays open. Lives in the *room* around the tank

@@ -18,7 +18,7 @@ import {
   PACK_SPRITE_NAMES,
 } from '@/lib/data/pixellabPack';
 import { buildCastSprites, castRoomSprite, roomSceneMargin } from '@/lib/storage';
-import type { PredatorPhase, Sprite } from '@/lib/types';
+import type { CatActivity, PredatorPhase, RoomCat, Sprite } from '@/lib/types';
 import { createTankScene, type TankSceneHandle } from './tankScene';
 import { textureFor } from './textureCache';
 
@@ -136,6 +136,31 @@ const PHASE_POSE: Record<PredatorPhase, CatPose> = {
 /** The phases that happen on the floor on the way to the tank, rather than up beside the glass. A
  *  cat walking in is crossing the floorboards; only once it settles does it get up to the table. */
 const FLOOR_PHASES: ReadonlySet<PredatorPhase> = new Set<PredatorPhase>(['approach', 'flee']);
+/** The pose each of a cat's own activities is drawn in. Several activities share one - watching
+ *  another cat and watching out of a window are the same upright, head-up sit, and chasing is the
+ *  run - because the difference between them is where the cat is and what it is looking at, which
+ *  the room already shows. */
+const ACTIVITY_POSE: Record<CatActivity, CatPose> = {
+  sleeping: 'asleep',
+  stretching: 'stretching',
+  walking: 'walking',
+  sitting: 'sitting',
+  grooming: 'grooming',
+  eating: 'eating',
+  drinking: 'drinking',
+  playing: 'playing',
+  watching: 'watching',
+  window: 'watching',
+  litter: 'eating',
+  chasing: 'running',
+};
+/** What a cat is thinking, when it is thinking anything. Most activities show nothing: a bubble
+ *  over every cat all the time is UI clutter, not life. */
+const ACTIVITY_EMOTE: Partial<Record<CatActivity, EmoteKind>> = {
+  sleeping: 'sleepy',
+  eating: 'happy',
+  playing: 'happy',
+};
 /** What the raiding cat is thinking at each stage. The angry face on a fleeing cat is doing real
  *  work: the flee pose is the walk cycle mirrored, which on its own says "leaving", not "you won" -
  *  the bubble is what makes a successful scare feel like one. */
@@ -153,11 +178,18 @@ const EMOTE_WIDTH_FRAC = 0.055;
 /** Gap between the top of an animal and the bottom of its bubble, in fractions of the artwork's
  *  height, so the bubble floats clear of the head at any window size. */
 const EMOTE_GAP_FRAC = 0.02;
-/** The sleeping cats take turns showing a sleepy bubble rather than all wearing one at once: three
- *  permanent bubbles read as UI clutter, while one drifting between them reads as a quiet room. */
-const SLEEPY_CYCLE_MS = 9_000;
+/** The food bowls painted into the backdrop, and how big a target to put over them. Matches
+ *  CAT_ZONE_X.bowls in useTank.ts - the spot the cats walk to in order to eat is the spot the
+ *  player taps to fill. */
+const BOWL_X_FRAC = 0.1;
+const BOWL_BOTTOM_Y_FRAC = 1;
+const BOWL_TAP_WIDTH_FRAC = 0.14;
+const BOWL_TAP_HEIGHT_FRAC = 0.18;
+/** The cats take turns showing a bubble rather than all wearing one at once: three permanent
+ *  bubbles read as UI clutter, while one drifting between them reads as a quiet room. */
+const EMOTE_CYCLE_MS = 9_000;
 /** How much of each turn the bubble is actually up for - the rest of the cycle nobody shows one. */
-const SLEEPY_VISIBLE_FRAC = 0.45;
+const EMOTE_VISIBLE_FRAC = 0.45;
 /** How long each frame of an awake animal's animation holds. Only the awake poses animate - a
  *  sleeping animal is deliberately a still frame, per the brief: they stir only when they come for
  *  the fish. */
@@ -259,15 +291,32 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
   // draws over its own sleeping self if the two ever overlap. One view per coat, in CAT_VARIANTS
   // order, so each keeps its own texture between frames instead of the three fighting over one.
   const catResidents = CAT_VARIANTS.map(() => new PixiSprite());
-  for (const resident of catResidents) {
+  catResidents.forEach((resident, i) => {
     resident.visible = false;
-    resident.eventMode = 'none';
+    // Tappable, to pet the cat. Unlike the raider - which is a container with an explicit hit
+    // rectangle because its pose sprite has to stay uninteractive - a resident is a lone Sprite, so
+    // Pixi can hit-test its own drawn bounds directly.
+    resident.eventMode = 'static';
+    resident.cursor = 'pointer';
+    resident.on('pointertap', () => currentEngine?.petCat(CAT_VARIANTS[i]));
     // The real anchor is set per sprite from its content box - see placeCastMember.
     stage.addChild(resident);
-  }
+  });
+
+  /** The food bowl, as a tap target only - the bowl itself is painted into the backdrop. Invisible
+   *  rather than drawn: adding a second bowl on top of the painted one would look like two bowls,
+   *  and the painted one is already exactly where the cats walk to eat. */
+  const bowlTapArea = new Graphics();
+  bowlTapArea.eventMode = 'static';
+  bowlTapArea.cursor = 'pointer';
+  bowlTapArea.on('pointertap', () => currentEngine?.refillBowl());
+  stage.addChild(bowlTapArea);
   // Emote bubbles: one shared between the sleeping cats (only ever one is up at a time - see
   // SLEEPY_CYCLE_MS) and one for whichever cat is raiding. Both sit at room level rather than
   // inside any animal, so a bubble is never scaled or mirrored along with the cat under it.
+  /** Where the top of each drawn cat ended up last frame, so a bubble can sit above the right one.
+   *  Only knowable at draw time - see placeCastMember's return value. */
+  const catHeadYs: (number | null)[] = CAT_VARIANTS.map(() => null);
   const residentEmote = new PixiSprite();
   const predatorEmote = new PixiSprite();
   for (const emote of [residentEmote, predatorEmote]) {
@@ -488,41 +537,74 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     artRect = { x: roomBackdrop.x, y: roomBackdrop.y, width: roomBackdrop.width, height: roomBackdrop.height };
   }
 
-  /** The three cats that live in the room. Each is shown asleep unless it is the one currently
-   *  raiding the tank, in which case drawPredator draws it up at the glass instead and this leaves
-   *  its spot on the floor empty - the same cat cannot be both asleep in the corner and pouncing.
+  /** The three cats that live in the room, each drawn wherever its own activity has put it (see
+   *  RoomCat in types.ts). A cat that is currently raiding the tank is skipped: drawPredator draws
+   *  that one, and the same cat cannot be asleep in its bed and up at the glass at once.
    *
-   *  The sleeping pose animates, unlike the old still frame: it is a slow breathing loop (420ms a
-   *  frame, set in genpack.py) rather than motion, and a room where nothing at all moves reads as a
-   *  frozen screenshot. */
+   *  Nothing here is a still frame any more. Even sleeping animates - it is a slow breathing loop
+   *  rather than motion, and a room where nothing at all moves reads as a screenshot. */
   function drawResidents(engine: TankEngine): void {
     const raiding = engine.predator?.variant ?? null;
-    const headYs = CAT_VARIANTS.map((variant, i) =>
-      placeCastMember(
-        catResidents[i],
-        raiding === variant ? undefined : castSprite(catSpriteName(variant, 'asleep')),
-        ROOM_ART.catXFracs[i],
+    const cats = engine.cats;
+    for (let i = 0; i < catResidents.length; i++) {
+      const cat: RoomCat | undefined = cats[i];
+      const view = catResidents[i];
+      if (!cat || cat.variant === raiding) {
+        view.visible = false;
+        catHeadYs[i] = null;
+        continue;
+      }
+      const headY = placeCastMember(
+        view,
+        castSprite(catSpriteName(cat.variant, ACTIVITY_POSE[cat.activity])),
+        cat.xFrac,
         ROOM_ART.floorTopYFrac,
         CAT_WIDTH_FRAC,
         true,
-      ),
-    );
-    drawSleepyBubble(headYs);
+      );
+      // Same trick as the raider: mirror the sprite, not the container, so nothing stacked on top
+      // of the cat gets mirrored with it.
+      view.scale.x = Math.abs(view.scale.x) * (cat.facingLeft ? -1 : 1);
+      catHeadYs[i] = headY;
+    }
+    drawCatBubbles(engine);
+    drawBowlTapArea();
   }
 
-  /** One sleepy bubble at a time, moving from cat to cat and going away between turns. A cat that
-   *  is off raiding is skipped rather than given an empty turn: the bubble would be floating over
-   *  a patch of empty floorboards. */
-  function drawSleepyBubble(headYs: (number | null)[]): void {
-    const cycle = Date.now() % (SLEEPY_CYCLE_MS * CAT_VARIANTS.length);
-    const slot = Math.floor(cycle / SLEEPY_CYCLE_MS);
-    const withinSlot = (cycle % SLEEPY_CYCLE_MS) / SLEEPY_CYCLE_MS;
-    const headY = headYs[slot];
-    if (withinSlot > SLEEPY_VISIBLE_FRAC || headY === null) {
+  /** Keeps the bowl's tap target over the painted bowls as the room is resized. Sized generously:
+   *  the bowls are a small painted detail, and a target that matches them exactly is a hard thing
+   *  to hit. */
+  function drawBowlTapArea(): void {
+    const w = artRect.width * BOWL_TAP_WIDTH_FRAC;
+    const h = artRect.height * BOWL_TAP_HEIGHT_FRAC;
+    bowlTapArea.position.set(
+      artRect.x + artRect.width * BOWL_X_FRAC - w / 2,
+      artRect.y + artRect.height * BOWL_BOTTOM_Y_FRAC - h,
+    );
+    bowlTapArea.hitArea = new Rectangle(0, 0, w, h);
+  }
+
+  /** One bubble at a time, over whichever cat has something to say, cycling between the cats that
+   *  do. Three permanent bubbles read as UI clutter; one moving between them reads as a room. */
+  function drawCatBubbles(engine: TankEngine): void {
+    const speakers: { index: number; kind: EmoteKind }[] = [];
+    engine.cats.forEach((cat, i) => {
+      const kind = ACTIVITY_EMOTE[cat.activity];
+      if (kind && catHeadYs[i] !== null) speakers.push({ index: i, kind });
+    });
+    if (!speakers.length) {
       residentEmote.visible = false;
       return;
     }
-    placeEmote(residentEmote, 'sleepy', ROOM_ART.catXFracs[slot], headY);
+    const cycle = Date.now() % (EMOTE_CYCLE_MS * speakers.length);
+    const slot = speakers[Math.floor(cycle / EMOTE_CYCLE_MS)];
+    const withinSlot = (cycle % EMOTE_CYCLE_MS) / EMOTE_CYCLE_MS;
+    const headY = catHeadYs[slot.index];
+    if (withinSlot > EMOTE_VISIBLE_FRAC || headY === null) {
+      residentEmote.visible = false;
+      return;
+    }
+    placeEmote(residentEmote, slot.kind, engine.cats[slot.index].xFrac, headY);
   }
 
   /** Puts a bubble immediately above something whose top edge is at `headY` (viewport px, as

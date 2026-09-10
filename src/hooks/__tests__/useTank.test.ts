@@ -5,7 +5,8 @@ import {
   STARVATION_DEATH_MS,
   TankEngine,
 } from '../useTank';
-import type { Instance, PredatorEvent, PredatorPhase, Sprite, TankGroup } from '@/lib/types';
+import type { CatActivity, CatNeeds, Instance, PredatorEvent, PredatorPhase, Sprite, TankGroup } from '@/lib/types';
+import { CAT_VARIANTS } from '@/lib/data/pixellabPack';
 import { emptyTankState, type TankState } from '@/lib/data';
 
 /** vitest's node env has no localStorage - a minimal in-memory stand-in (copied from storage.test.ts).
@@ -919,5 +920,201 @@ describe('when a cat gets hungry', () => {
     call(engine, 'stepPredator', 0.1);
     expect(engine.predator).toBeNull();
     expect((engine as unknown as { nextRaidAt: number }).nextRaidAt).toBeGreaterThan(NOW + 5_000);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The room's cats (docs/CAT_ROOM_DESIGN.md)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** An engine with three cats parked mid-nap, the way init() leaves them. The needs are set per
+ *  test: the whole point of the system is that whichever need is highest decides what happens. */
+function roomEngine(over: Partial<CatNeeds> = {}, activity: CatActivity = 'sitting') {
+  const engine = makeEngine([fish()]);
+  engine.cats = CAT_VARIANTS.map((variant, i) => ({
+    variant,
+    activity,
+    xFrac: 0.5,
+    facingLeft: false,
+    targetXFrac: 0.5,
+    nextActivity: 'sitting' as CatActivity,
+    needs: { hunger: 0, tired: 0, boredom: 0, bladder: 0, ...(i === 0 ? over : {}) },
+    startedAt: NOW,
+    endsAt: NOW + 1_000,
+  }));
+  return engine;
+}
+
+const firstCat = (engine: TankEngine) => engine.cats[0];
+
+describe("the room's cats", () => {
+  it('walks a hungry cat to the bowls when its activity ends', () => {
+    const engine = roomEngine({ hunger: 0.9 });
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepCats', 0.1);
+    const cat = firstCat(engine);
+    expect(cat.activity).toBe('walking');
+    expect(cat.nextActivity).toBe('eating');
+    expect(cat.targetXFrac).toBeCloseTo(0.1);
+  });
+
+  it('sends a hungry cat somewhere else entirely when the bowl is empty', () => {
+    const engine = roomEngine({ hunger: 0.9, tired: 0.5 });
+    engine.bowlFood = 0;
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepCats', 0.1);
+    // Hunger is the highest need but the bowls cannot answer it, so the next-highest wins.
+    expect(firstCat(engine).nextActivity).toBe('sleeping');
+  });
+
+  it('arrives, and starts the activity it set out to do', () => {
+    const engine = roomEngine({ bladder: 0.9 });
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepCats', 0.1);
+    expect(firstCat(engine).activity).toBe('walking');
+
+    // Long enough to cross the whole room.
+    call(engine, 'stepCats', 20);
+    const cat = firstCat(engine);
+    expect(cat.activity).toBe('litter');
+    expect(cat.xFrac).toBeCloseTo(0.95);
+  });
+
+  it('faces the way it is walking', () => {
+    const engine = roomEngine({ hunger: 0.9 });
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepCats', 0.1);
+    call(engine, 'stepCats', 0.1);
+    // The bowls are at 0.1 and the cat starts at 0.5, so it is heading left.
+    expect(firstCat(engine).facingLeft).toBe(true);
+  });
+
+  it('settles the need the activity was for, and only then', () => {
+    const engine = roomEngine({}, 'eating');
+    const cat = firstCat(engine);
+    cat.needs.hunger = 1;
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepCats', 0.1);
+    expect(cat.needs.hunger).toBe(0);
+    // Eating fills the bladder, which is what sends a cat to the litter box later.
+    expect(cat.needs.bladder).toBeGreaterThan(0);
+  });
+
+  it('stretches on waking rather than jumping straight into the next thing', () => {
+    const engine = roomEngine({}, 'sleeping');
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepCats', 0.1);
+    expect(firstCat(engine).activity).toBe('stretching');
+  });
+
+  it('pays down tiredness while it sleeps and builds it while it does not', () => {
+    const asleep = roomEngine({ tired: 0.5 }, 'sleeping');
+    call(asleep, 'stepCats', 10);
+    expect(firstCat(asleep).needs.tired).toBeLessThan(0.5);
+
+    const awake = roomEngine({ tired: 0.5 }, 'sitting');
+    call(awake, 'stepCats', 10);
+    expect(firstCat(awake).needs.tired).toBeGreaterThan(0.5);
+  });
+
+  it('leaves the raiding cat to the raid, so it is not in two places at once', () => {
+    const engine = roomEngine({ hunger: 1 });
+    engine.predator = {
+      variant: engine.cats[0].variant,
+      phase: 'stalk',
+      xFrac: 0.3,
+      targetXFrac: 0.3,
+      facingLeft: false,
+      phaseStartedAt: NOW,
+      spawnedAt: NOW,
+      expiresAt: NOW + 6_000,
+    };
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepCats', 0.1);
+    expect(firstCat(engine).activity).toBe('sitting');
+  });
+
+  it('sends the hungriest cat at the tank once the bowl runs dry', () => {
+    const engine = roomEngine();
+    engine.bowlFood = 0;
+    engine.cats[2].needs.hunger = 0.95;
+    call(engine, 'beginRaid', NOW);
+    expect(engine.predator?.variant).toBe(engine.cats[2].variant);
+  });
+
+  it('feeds the cat that actually got a fish', () => {
+    const engine = roomEngine();
+    engine.cats[1].needs.hunger = 1;
+    engine.predator = {
+      variant: engine.cats[1].variant,
+      phase: 'pounce',
+      xFrac: 0.3,
+      targetXFrac: 0.3,
+      facingLeft: false,
+      phaseStartedAt: NOW,
+      spawnedAt: NOW,
+      expiresAt: NOW + 1_000,
+    };
+    vi.setSystemTime(NOW + 1_001);
+    call(engine, 'stepPredator', 0.1);
+    expect(engine.cats[1].needs.hunger).toBe(0);
+  });
+
+  it('petting a cat cuts its boredom and gets a sleeping one on its feet', () => {
+    const engine = roomEngine({ boredom: 1 }, 'sleeping');
+    engine.petCat(engine.cats[0].variant);
+    const cat = firstCat(engine);
+    expect(cat.needs.boredom).toBeLessThan(1);
+    expect(cat.activity).toBe('stretching');
+  });
+
+  it('refilling the bowl gives the cats somewhere to eat again', () => {
+    const engine = roomEngine({ hunger: 0.9 });
+    engine.bowlFood = 0;
+    engine.refillBowl();
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepCats', 0.1);
+    expect(firstCat(engine).nextActivity).toBe('eating');
+  });
+
+  it('empties the bowl as the cats eat from it', () => {
+    const engine = roomEngine({ hunger: 0.9 });
+    const before = engine.bowlFood;
+    call(engine, 'beginActivity', engine.cats[0], 'eating', NOW);
+    expect(engine.bowlFood).toBeLessThan(before);
+  });
+});
+
+describe('two cats chasing each other', () => {
+  it('pairs a bored cat with another that is free, rather than sending it to the toy alone', () => {
+    const engine = roomEngine({ boredom: 1 });
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepCats', 0.1);
+    expect(engine.cats[0].activity).toBe('chasing');
+    expect(engine.cats.filter((c) => c.activity === 'chasing')).toHaveLength(2);
+    vi.mocked(Math.random).mockRestore();
+  });
+
+  it('sends a bored cat to the toy when every other cat is asleep', () => {
+    const engine = roomEngine({ boredom: 1 });
+    engine.cats[1].activity = 'sleeping';
+    engine.cats[2].activity = 'sleeping';
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    vi.setSystemTime(NOW + 2_000);
+    call(engine, 'stepCats', 0.1);
+    expect(engine.cats[0].activity).toBe('walking');
+    expect(engine.cats[0].nextActivity).toBe('playing');
+    vi.mocked(Math.random).mockRestore();
+  });
+
+  it('turns at the walls instead of running out of the room', () => {
+    const engine = roomEngine({}, 'chasing');
+    const cat = engine.cats[0];
+    cat.xFrac = 0.87;
+    cat.facingLeft = false;
+    call(engine, 'stepCatChase', cat, 1);
+    expect(cat.xFrac).toBeLessThanOrEqual(0.88);
+    expect(cat.facingLeft).toBe(true);
   });
 });

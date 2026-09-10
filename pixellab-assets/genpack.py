@@ -17,25 +17,43 @@ OUT = sys.argv[2]
 # Leave the fourth item off for the app's default pace (DEFAULT_FRAME_MS, 350ms); give it for
 # anything whose motion has its own tempo - a drifting sky wants a much slower hold than a fish tail.
 CAST = [
-    # The Life-mode cast: three cats in the five poses a raid runs through - asleep on the floor,
-    # walking over, sitting and staring at the glass, pouncing, and eating what it got. The poses
-    # the scene has no state for (angry, running, licking, yawning, standing, drinking) stay in
-    # pixellab-assets/cat-orange/ until it does.
-    ("Cat orange asleep",   "room", ["cats/orange/asleep-%d.png" % i for i in range(5)], 420),
-    ("Cat orange walking",  "room", ["cats/orange/walk-%d.png" % i for i in range(8)], 130),
-    ("Cat orange sitting",  "room", ["cats/orange/sit-%d.png" % i for i in range(5)], 380),
+    # The Life-mode cast: three cats in every pose the room's activities draw them in. One pose per
+    # activity (see CAT_ACTIVITIES in useTank.ts), plus the walk that carries them between zones.
+    # Poses generated but still unused - angry, yawning, idle, standing - stay in
+    # pixellab-assets/cat-orange/ rather than padding the bundle out.
+    ("Cat orange asleep", "room", ["cats/orange/asleep-%d.png" % i for i in range(5)], 420),
+    ("Cat orange walking", "room", ["cats/orange/walk-%d.png" % i for i in range(8)], 130),
+    ("Cat orange sitting", "room", ["cats/orange/sit-%d.png" % i for i in range(5)], 380),
     ("Cat orange pouncing", "room", ["cats/orange/pounce-%d.png" % i for i in range(8)], 110),
-    ("Cat orange eating",   "room", ["cats/orange/eat-%d.png" % i for i in range(7)], 200),
-    ("Cat grey asleep",   "room", ["cats/grey/asleep-%d.png" % i for i in range(5)], 420),
-    ("Cat grey walking",  "room", ["cats/grey/walk-%d.png" % i for i in range(8)], 130),
-    ("Cat grey sitting",  "room", ["cats/grey/sit-%d.png" % i for i in range(5)], 380),
+    ("Cat orange eating", "room", ["cats/orange/eat-%d.png" % i for i in range(7)], 200),
+    ("Cat orange drinking", "room", ["cats/orange/drink-%d.png" % i for i in range(6)], 220),
+    ("Cat orange grooming", "room", ["cats/orange/groom-%d.png" % i for i in range(12)], 180),
+    ("Cat orange running", "room", ["cats/orange/run-%d.png" % i for i in range(8)], 90),
+    ("Cat orange playing", "room", ["cats/orange/play-%d.png" % i for i in range(5)], 200),
+    ("Cat orange watching", "room", ["cats/orange/watch-%d.png" % i for i in range(5)], 400),
+    ("Cat orange stretching", "room", ["cats/orange/stretch-%d.png" % i for i in range(5)], 240),
+    ("Cat grey asleep", "room", ["cats/grey/asleep-%d.png" % i for i in range(5)], 420),
+    ("Cat grey walking", "room", ["cats/grey/walk-%d.png" % i for i in range(8)], 130),
+    ("Cat grey sitting", "room", ["cats/grey/sit-%d.png" % i for i in range(5)], 380),
     ("Cat grey pouncing", "room", ["cats/grey/pounce-%d.png" % i for i in range(8)], 110),
-    ("Cat grey eating",   "room", ["cats/grey/eat-%d.png" % i for i in range(7)], 200),
-    ("Cat cream asleep",   "room", ["cats/cream/asleep-%d.png" % i for i in range(5)], 420),
-    ("Cat cream walking",  "room", ["cats/cream/walk-%d.png" % i for i in range(8)], 130),
-    ("Cat cream sitting",  "room", ["cats/cream/sit-%d.png" % i for i in range(5)], 380),
+    ("Cat grey eating", "room", ["cats/grey/eat-%d.png" % i for i in range(7)], 200),
+    ("Cat grey drinking", "room", ["cats/grey/drink-%d.png" % i for i in range(6)], 220),
+    ("Cat grey grooming", "room", ["cats/grey/groom-%d.png" % i for i in range(12)], 180),
+    ("Cat grey running", "room", ["cats/grey/run-%d.png" % i for i in range(8)], 90),
+    ("Cat grey playing", "room", ["cats/grey/play-%d.png" % i for i in range(5)], 200),
+    ("Cat grey watching", "room", ["cats/grey/watch-%d.png" % i for i in range(5)], 400),
+    ("Cat grey stretching", "room", ["cats/grey/stretch-%d.png" % i for i in range(5)], 240),
+    ("Cat cream asleep", "room", ["cats/cream/asleep-%d.png" % i for i in range(5)], 420),
+    ("Cat cream walking", "room", ["cats/cream/walk-%d.png" % i for i in range(8)], 130),
+    ("Cat cream sitting", "room", ["cats/cream/sit-%d.png" % i for i in range(5)], 380),
     ("Cat cream pouncing", "room", ["cats/cream/pounce-%d.png" % i for i in range(8)], 110),
-    ("Cat cream eating",   "room", ["cats/cream/eat-%d.png" % i for i in range(7)], 200),
+    ("Cat cream eating", "room", ["cats/cream/eat-%d.png" % i for i in range(7)], 200),
+    ("Cat cream drinking", "room", ["cats/cream/drink-%d.png" % i for i in range(6)], 220),
+    ("Cat cream grooming", "room", ["cats/cream/groom-%d.png" % i for i in range(12)], 180),
+    ("Cat cream running", "room", ["cats/cream/run-%d.png" % i for i in range(8)], 90),
+    ("Cat cream playing", "room", ["cats/cream/play-%d.png" % i for i in range(5)], 200),
+    ("Cat cream watching", "room", ["cats/cream/watch-%d.png" % i for i in range(5)], 400),
+    ("Cat cream stretching", "room", ["cats/cream/stretch-%d.png" % i for i in range(5)], 240),
     # Emote bubbles shown above a cat (roomScene.ts). Single frames: the bubble pops in and out
     # rather than animating, so its whole motion belongs to the scene, not to the sprite.
     ("Emote happy",    "room",   ["emotes/happy.png"]),
@@ -257,7 +275,18 @@ lines.append("/** The three cats that live in the room. Same drawing in three co
 lines.append(" *  pixellab-assets/cats/, built by recolouring the one generated cat rather than generating three. */")
 lines.append("export const CAT_VARIANTS = ['orange', 'grey', 'cream'] as const;")
 lines.append("export type CatVariant = (typeof CAT_VARIANTS)[number];")
-lines.append("export type CatPose = 'asleep' | 'walking' | 'sitting' | 'pouncing' | 'eating';")
+lines.append("export type CatPose =")
+lines.append("  | 'asleep'")
+lines.append("  | 'walking'")
+lines.append("  | 'sitting'")
+lines.append("  | 'pouncing'")
+lines.append("  | 'eating'")
+lines.append("  | 'drinking'")
+lines.append("  | 'grooming'")
+lines.append("  | 'running'")
+lines.append("  | 'playing'")
+lines.append("  | 'watching'")
+lines.append("  | 'stretching';")
 lines.append("")
 lines.append("/** The pack entry name for one cat in one pose. Kept as a function rather than a table so a new")
 lines.append(" *  coat only has to be added to CAT_VARIANTS and to genpack.py's PACK. */")
