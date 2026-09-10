@@ -26,6 +26,14 @@ import { invalidateAll, invalidateSprite } from '@/tank/render/textureCache';
  * scenes (a full room vs. just the tank+margin) shown one at a time, not two views of one canvas.
  * Uses `autoDensity: true` (unlike TankPixiLayer) since this canvas fills its own container directly
  * rather than being stretched by external CSS math tied to the tank's logical pixel size.
+ *
+ * The scene is redrawn from the app's own ticker (see the ticker note in TankPixiLayer.tsx for why
+ * that beats a separate requestAnimationFrame loop), and that ticker is stopped whenever this panel
+ * isn't the visible mode - this is the more expensive of the two scenes (a whole room: backdrop,
+ * cats, predator, status bars, *plus* an entire nested tank scene) and Build mode is a click away, so
+ * leaving it drawing 60 rooms a second behind a hidden panel is pure waste. Only drawing pauses:
+ * every care mechanic (hunger, evaporation, algae, predators) is simulated by TankEngine itself and
+ * keeps running regardless - render() here only reads that state.
  */
 export function LifePanel({ engine, active }: { engine: TankEngine; active: boolean }) {
   const { t } = useLanguage();
@@ -33,6 +41,10 @@ export function LifePanel({ engine, active }: { engine: TankEngine; active: bool
   const appRef = useRef<Application | null>(null);
   const sceneRef = useRef<RoomSceneHandle | null>(null);
   const [armedTool, setArmedTool] = useState<ArmedTool>(null);
+  /** Kept up to date by the `active` effect below, and read inside the (async) app-creation callback,
+   *  which can resolve long after the effect that started it captured `active` - the ref always has
+   *  the current value there. */
+  const activeRef = useRef(active);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -40,7 +52,6 @@ export function LifePanel({ engine, active }: { engine: TankEngine; active: bool
     let cancelled = false;
     let app: Application | null = null;
     let scene: RoomSceneHandle | null = null;
-    let rafId = 0;
 
     const onSpritesUpdated = () => invalidateAll();
     const onSpriteDeleted = (e: Event) => invalidateSprite((e as CustomEvent<{ id: string }>).detail.id);
@@ -67,19 +78,19 @@ export function LifePanel({ engine, active }: { engine: TankEngine; active: bool
       scene = createRoomScene(app.stage);
       sceneRef.current = scene;
 
-      const tick = () => {
+      app.ticker.add(() => {
         if (cancelled || !app || !scene) return;
         scene.render(engine, app.renderer.width, app.renderer.height);
-        rafId = requestAnimationFrame(tick);
-      };
-      rafId = requestAnimationFrame(tick);
+      });
+      if (!activeRef.current) app.ticker.stop();
     });
 
     return () => {
       cancelled = true;
       window.removeEventListener('ft:sprites-updated', onSpritesUpdated);
       window.removeEventListener('ft:sprite-deleted', onSpriteDeleted);
-      if (rafId) cancelAnimationFrame(rafId);
+      // No explicit ticker.remove(): destroyPixiApp tears the whole app (its ticker included) down a
+      // line later, and `cancelled` already makes any callback that slips in between a no-op.
       scene?.destroy();
       if (app) destroyPixiApp(app);
       appRef.current = null;
@@ -87,14 +98,24 @@ export function LifePanel({ engine, active }: { engine: TankEngine; active: bool
     };
   }, [engine]);
 
-  // Same defensive re-measurement as the one right after app creation above, but for every later
-  // Build->Life switch, not just the very first mount - see that comment for the full explanation.
+  // Drawing runs only while this panel is the visible mode (see this component's doc comment), and
+  // the switch back into it carries the same defensive re-measurement done right after app creation
+  // above - see that comment for the full explanation of why `resizeTo` alone isn't enough here.
+  // Order matters: resize before restarting the ticker, so the first frame drawn after the switch is
+  // already at the right size rather than one frame of the stale one.
   useEffect(() => {
-    if (!active) return;
+    activeRef.current = active;
     const app = appRef.current;
+    // Nothing more to do when the app hasn't finished initializing yet - the creation callback above
+    // reads activeRef itself and starts out stopped if this panel isn't the visible mode.
+    if (!app) return;
+    if (!active) {
+      app.ticker.stop();
+      return;
+    }
     const host = hostRef.current;
-    if (!app || !host) return;
-    app.renderer.resize(host.clientWidth, host.clientHeight);
+    if (host) app.renderer.resize(host.clientWidth, host.clientHeight);
+    app.ticker.start();
   }, [active]);
 
   /** Toggles a tool on/off (clicking the already-armed one disarms it) rather than only ever arming -

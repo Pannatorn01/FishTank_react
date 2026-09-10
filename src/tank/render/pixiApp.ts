@@ -22,9 +22,19 @@ export interface CreatePixiAppOptions {
  * front so nothing downstream has to remember to set it per-sprite:
  *
  * - `antialias: false` - Pixi's own line/shape antialiasing (Graphics strokes, etc.) off by default;
- *   individual sprite crispness is still controlled per-texture (see textureCache.ts's `scaleMode`).
+ *   sprite crispness is a separate thing, handled once globally in textureCache.ts (`scaleMode`).
+ * - `roundPixels: true` - the renderer-wide version of the per-sprite flag of the same name: every
+ *   draw snaps to whole pixels. The simulation moves instances by fractional amounts every frame
+ *   (`Instance.x/y` are floats), and a nearest-neighbour pixel-art sprite drawn at x=10.4 samples its
+ *   texels off-grid - which reads as individual rows/columns of the artwork shimmering as a fish
+ *   drifts across the tank. Snapping costs nothing and matches what Canvas2D's own integer-ish
+ *   blitting effectively already did.
  * - `backgroundAlpha: 0` - the canvas itself stays transparent; the tank scene (see tankScene.ts)
  *   paints its own water/background so this app's own clear color is never visible through anything.
+ *
+ * `autoStart` is left at Pixi's default (on) deliberately: the app's own ticker is what drives both
+ * the caller's per-frame scene update and the render that follows it - see the ticker comments at
+ * TankPixiLayer.tsx / LifePanel.tsx for why neither runs a requestAnimationFrame loop of its own.
  *
  * With the default `autoDensity: true`, the app is sized to fill `container` at the display's real
  * pixel density and its own CSS size is kept in sync automatically - the right choice for a
@@ -42,6 +52,7 @@ export async function createPixiApp(container: HTMLElement, options: CreatePixiA
     await app.init({
       resizeTo: container,
       antialias: false,
+      roundPixels: true,
       resolution: resolution ?? window.devicePixelRatio ?? 1,
       autoDensity: true,
       backgroundAlpha: 0,
@@ -54,6 +65,7 @@ export async function createPixiApp(container: HTMLElement, options: CreatePixiA
       width: 1,
       height: 1,
       antialias: false,
+      roundPixels: true,
       resolution: 1,
       autoDensity: false,
       backgroundAlpha: 0,
@@ -63,6 +75,22 @@ export async function createPixiApp(container: HTMLElement, options: CreatePixiA
   return app;
 }
 
+/**
+ * `texture: false` on purpose. Every sprite in these scenes draws a texture owned by the shared,
+ * module-level cache in textureCache.ts - the *same* Texture object is handed out to Build mode's
+ * TankPixiLayer and Life mode's LifePanel, both of which are mounted at the same time (one is merely
+ * hidden). Letting a destroyed app take its children's textures down with it would leave the cache
+ * holding destroyed textures the surviving renderer then tries to draw, with nothing to invalidate
+ * them since the cache was never told. Texture lifetime belongs to invalidateSprite()/invalidateAll()
+ * alone.
+ *
+ * This was not hypothetical. With `texture: true` here, Life mode rendered as an empty panel in dev,
+ * throwing "Cannot read properties of null (reading 'clear')" out of Pixi's own render pass
+ * (DefaultBatcher.break, under StencilMaskPipe). React's StrictMode runs every effect twice, so the
+ * first, immediately-cancelled Application got destroyed *while the second was live* - taking the
+ * shared cache's textures with it, out from under the app still drawing them. Flipping only this one
+ * flag reproduces and fixes it on demand.
+ */
 export function destroyPixiApp(app: Application): void {
-  app.destroy(true, { children: true, texture: true });
+  app.destroy(true, { children: true, texture: false });
 }
