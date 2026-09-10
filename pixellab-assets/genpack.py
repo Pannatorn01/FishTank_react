@@ -60,12 +60,24 @@ CAST = [
     ("Emote angry",    "room",   ["emotes/angry.png"]),
     ("Emote sleepy",   "room",   ["emotes/sleepy.png"]),
     ("Emote hungry",   "room",   ["emotes/hungry.png"]),
+    # Tank grime and litter. The algae comes in two densities: a thin tuft for a glass that is only
+    # starting to go, and a thick mat once it has been left. Waste is drawn as two different things -
+    # a strand drifting down, then a pile once it lands - because a falling pile looks like a bug.
+    # Algae keeps its own greens. The shared palette has exactly two of them, so snapping the
+    # generated art to it collapsed the base into near-black and the fronds into one flat tone -
+    # the tuft came out looking like a clump of dirt rather than something growing.
+    ("Algae thin",     "object", ["algae-sway/%d.png" % i for i in range(7)], 190, False),
+    ("Algae thick",    "object", ["algae-thick-32.png"], None, False),
+    ("Waste sinking",  "object", ["fishpoop-sinking-32-a35.png",
+                                  "fishpoop-sinking-32-a60.png",
+                                  "fishpoop-sinking-32-a80.png"], 260),
+    ("Waste settled",  "object", ["fishpoop-32.png"]),
     # The two tools the player actually uses on the tank: the sponge that follows a scrub drag, and
     # the pellets that fall through the water after a feed. Both were drawn as flat Pixi shapes (a
     # yellow rounded rectangle, a plain circle) next to pixel-art fish, which looked exactly like
     # what it was.
     ("Tank brush",     "room",   ["brush-40x32.png"]),
-    ("Food pellets",   "object", ["food-pellet-32.png"]),
+    ("Food pellets",   "object", ["food-sink/%d.png" % i for i in range(7)], 150),
     # The room itself. Also render-only: the backdrop is the room Life mode draws, not a picture the
     # user has to keep filed in their library to stop the room going blank.
     # The room the cats live in. Its landmarks are measured in ROOM_ART (roomScene.ts) - a different
@@ -260,6 +272,10 @@ lines.append("export const PACK_SPRITE_NAMES = {")
 lines.append("  roomScene: 'Room by the window',")
 lines.append("  scrubBrush: 'Tank brush',")
 lines.append("  foodPellet: 'Food pellets',")
+lines.append("  algaeThin: 'Algae thin',")
+lines.append("  algaeThick: 'Algae thick',")
+lines.append("  wasteSinking: 'Waste sinking',")
+lines.append("  wasteSettled: 'Waste settled',")
 lines.append("} as const;")
 lines.append("")
 lines.append("/** The emote bubble shown above a cat (roomScene.ts drawEmote). Names match the pack entries. */")

@@ -9,7 +9,7 @@ import {
 } from 'pixi.js';
 import { t } from '@/lib/i18n';
 import { spriteDims } from '@/lib/pixelMath';
-import { TANK_SIZE_MAX, type TankEngine } from '@/hooks/useTank';
+import type { TankEngine } from '@/hooks/useTank';
 import {
   CAT_VARIANTS,
   type CatPose,
@@ -37,10 +37,10 @@ const FLOOR_FRAC = 0.22;
 /** The tank never fills the whole room - it's an object placed inside one, so it's kept to a fraction
  *  of the available headroom no matter how big the room viewport or the tank itself.
  *
- *  Raised from 0.62 with the room that has the higher table: 0.62 of that room's headroom left the
- *  glass short and marooned in the middle of a tall empty wall. The wall above the table is bare in
- *  this backdrop, so the tank can use most of it. */
-const TANK_FIT_FRAC = 0.8;
+ *  Raised twice: first from 0.62 with the room that has the higher table, then again to 0.92. The
+ *  tank is what the game is about and it was reading as an ornament on a very large table. The wall
+ *  above the table is bare in this backdrop, so there is nothing for it to cover. */
+const TANK_FIT_FRAC = 0.92;
 /**
  * The room's status panel: tank cleanliness (P5 §6 item 3, §9 Q3 - "สถานะความสะอาดตู้") and how much
  * food is left in the cats' bowl. Fixed in the top-left corner, not tied to any one fish the way the
@@ -81,9 +81,14 @@ const TAP_VS_DRAG_THRESHOLD = 6;
  *  down to fit.
  *
  *  Drawn from the pixel-art sponge in the art pack; the flat rounded rectangle below is only the
- *  fallback for a build with no art, and looked like exactly what it was next to pixel-art fish. */
-const SCRUB_BRUSH_WIDTH = 34;
-const SCRUB_BRUSH_HEIGHT = 22;
+ *  fallback for a build with no art, and looked like exactly what it was next to pixel-art fish.
+ *
+ *  Sized against a fish rather than against the glass: at the old 34px it was a smudge under the
+ *  cursor, small enough that it was not obvious the drag was doing anything at all. These are
+ *  tank-logical px, so the room's own scale shrinks them again on the way to the screen - which is
+ *  why 34 came out at barely a dozen pixels and why this number has to be this large. */
+const SCRUB_BRUSH_WIDTH = 110;
+const SCRUB_BRUSH_HEIGHT = 70;
 const SCRUB_BRUSH_COLOR = 0xf4d35e;
 const SCRUB_BRUSH_OUTLINE = 0x8a6d1f;
 /** Predator (P5 §6 item 7) - sits on the room floor beside the tank (room-level coordinates, a sibling
@@ -132,7 +137,21 @@ const ROOM_ART = {
  *  as standing on the table rather than overhanging both ends of it. This is the allowance for the
  *  *largest* tank the app allows (TANK_SIZE_MAX), not for whatever tank happens to be loaded - see
  *  fitTankSlot. */
-const TANK_ON_TABLE_FRAC = 0.86;
+const TANK_ON_TABLE_FRAC = 0.95;
+/**
+ * The tank size the room's scale is anchored to: a tank this big exactly fills the space above the
+ * table, anything smaller is drawn proportionally smaller, and anything larger is clamped to the
+ * table by the `scale` line below.
+ *
+ * It used to be TANK_SIZE_MAX (1400x900), the largest the app allows - which almost nobody builds.
+ * The default 900x600 tank was therefore drawn at two thirds of the available headroom and read as
+ * an ornament on a very large table, along with everything inside it: the scrub sponge came out a
+ * yellow speck for the same reason, since it is drawn in the tank's own scaled space.
+ *
+ * Anchoring to the default size instead makes the common case fill the wall, and still leaves a
+ * genuinely big tank looking bigger, up to the table's own limit.
+ */
+const TANK_REFERENCE_SIZE = { width: 900, height: 600 };
 /**
  * Sizes of the cast, as fractions of the artwork's *width*, measured against each sprite's drawn
  * pixels rather than its canvas (see contentBox).
@@ -697,10 +716,10 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     // shrink-to-fit. Fitting each tank to the table is what made Build mode's width/height boxes look
     // inert in here: a 300-wide tank and a 1400-wide one both came out spanning the same table, and
     // the only visible difference was that the fish in the big one were drawn tiny. Anchoring the
-    // scale to the largest tank the app allows (TANK_SIZE_MAX) instead draws the tank at its real
-    // relative size - a small tank is a small box on the table, a maxed-out one fills it, and a fish
-    // is the same size on screen in either.
-    const unit = Math.min(maxW / TANK_SIZE_MAX.width, maxH / TANK_SIZE_MAX.height, 1);
+    // scale to a fixed reference size instead draws the tank at its real relative size - a small tank
+    // is a small box on the table, a large one fills it, and a fish is the same size on screen in
+    // either.
+    const unit = Math.min(maxW / TANK_REFERENCE_SIZE.width, maxH / TANK_REFERENCE_SIZE.height, 1);
     // Still clamped to the table itself: a tank taller than it is wide, or a room backdrop whose
     // table is proportioned differently from the shipped one, could otherwise overhang the table
     // edges or the headroom above it.

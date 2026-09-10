@@ -2686,7 +2686,7 @@ export class TankEngine {
       // no fish left for the waste to have come from.
       if (!inst || inst.dead) return;
       const { pw, ph } = this.spritePx(this.spriteFor(inst));
-      this.wasteItems.push({ id: storage.uid('waste'), x: inst.x + pw / 2, y: inst.y + ph / 2, createdAt: now });
+      this.wasteItems.push({ id: storage.uid('waste'), x: inst.x + pw / 2, y: inst.y + ph / 2, createdAt: now, settled: false });
     });
   }
 
@@ -2697,6 +2697,9 @@ export class TankEngine {
     const floorY = this.canvas.height - 10;
     this.wasteItems.forEach((w) => {
       w.y = Math.min(floorY, w.y + WASTE_FALL_SPEED * dt);
+      // Sticky once set: a strand that reached the floor stays drawn as a settled pile even if the
+      // tank is later resized taller, rather than flicking back to a falling strand under it.
+      if (w.y >= floorY) w.settled = true;
     });
   }
 

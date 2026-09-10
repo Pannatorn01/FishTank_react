@@ -253,6 +253,11 @@ export interface WasteItem {
   x: number;
   y: number;
   createdAt: number;
+  /** True once the strand has reached the tank floor and stopped. Falling waste and settled waste
+   *  are drawn as different things - a thin strand drifting down, then a small pile on the sand -
+   *  so the renderer needs to know which without re-deriving it from the floor height, which is the
+   *  simulation's business and not the renderer's. */
+  settled: boolean;
 }
 
 /** What a cat is doing right now. Each one draws in its own pose (PHASE_POSE's sibling

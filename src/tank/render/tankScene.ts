@@ -40,8 +40,20 @@ const FOOD_SPRITE_WIDTH = FOOD_RADIUS * 4;
 const WASTE_COLOR = 0x6b4a2f;
 const WASTE_RADIUS_X = 3;
 const WASTE_RADIUS_Y = 5;
+/** Waste sizes in tank-logical px. The settled pile is sized by width - it has landed and spread,
+ *  so width is what says how much of it there is.
+ *
+ *  The falling strand is sized by HEIGHT instead, because it is far taller than it is wide: giving
+ *  it a width made it come out three times a fish's height, a dark totem hanging in the water. */
+const WASTE_SINKING_HEIGHT = 13;
+const WASTE_SETTLED_WIDTH = 22;
 /** Matches useTank.ts's Canvas2D drawAlgae() stroke color exactly. */
 const ALGAE_COLOR = 0x4ade80;
+/** Algae tuft width in tank-logical px, and the growth level at which the thin tuft gives way to
+ *  the thick mat. Two sprites rather than one scaled up: algae that has been left does not just get
+ *  bigger, it closes over, and a scaled-up tuft cannot show that. */
+const ALGAE_SPRITE_WIDTH = 26;
+const ALGAE_THICK_FROM = 0.55;
 /** Matches useTank.ts's Canvas2D BABY_SCALE_FRAC exactly - see growthScale() below. */
 const BABY_SCALE_FRAC = 0.5;
 
@@ -165,6 +177,22 @@ export function createTankScene(stage: Container): TankSceneHandle {
   const backgroundSprite = new Sprite();
   const waterline = new Graphics();
   const algaeLayer = new Graphics();
+  /** Pooled sprites for the grime: one per algae patch and one per waste item on screen, hidden
+   *  rather than destroyed when there are fewer. Both used to be drawn with Graphics - a green
+   *  squiggle and a brown ellipse - which read as debug shapes next to pixel-art fish. */
+  const algaeSpriteLayer = new Container();
+  const algaeSprites: Sprite[] = [];
+  const wasteSpriteLayer = new Container();
+  const wasteSprites: Sprite[] = [];
+  const cast = buildCastSprites();
+  const algaeArt = {
+    thin: cast.get(PACK_SPRITE_NAMES.algaeThin),
+    thick: cast.get(PACK_SPRITE_NAMES.algaeThick),
+  };
+  const wasteArt = {
+    sinking: cast.get(PACK_SPRITE_NAMES.wasteSinking),
+    settled: cast.get(PACK_SPRITE_NAMES.wasteSettled),
+  };
   const zoneBelowLayer = new Container();
   const wasteLayer = new Graphics();
   const foodLayer = new Graphics();
@@ -172,7 +200,7 @@ export function createTankScene(stage: Container): TankSceneHandle {
    *  than replacing it: the plain circle stays as the fallback for a build with no art. */
   const foodSpriteLayer = new Container();
   const foodSprites: Sprite[] = [];
-  const foodArt = buildCastSprites().get(PACK_SPRITE_NAMES.foodPellet);
+  const foodArt = cast.get(PACK_SPRITE_NAMES.foodPellet);
   const instanceLayer = new Container();
   const overlayLayer = new Container();
   const outline = new Graphics();
@@ -181,7 +209,7 @@ export function createTankScene(stage: Container): TankSceneHandle {
   backgroundSprite.visible = false;
   backgroundSprite.anchor.set(0.5);
 
-  root.addChild(air, water, backgroundSprite, waterline, algaeLayer, zoneBelowLayer, wasteLayer, foodLayer, foodSpriteLayer, instanceLayer, overlayLayer);
+  root.addChild(air, water, backgroundSprite, waterline, algaeLayer, algaeSpriteLayer, zoneBelowLayer, wasteLayer, wasteSpriteLayer, foodLayer, foodSpriteLayer, instanceLayer, overlayLayer);
   // `mask` is added as root's own child (not left floating outside the scene graph) specifically so
   // it inherits root's transform - a mask that's never actually parented anywhere keeps Pixi's
   // default identity transform regardless of where the container using it as a mask ends up moving.
@@ -394,14 +422,41 @@ export function createTankScene(stage: Container): TankSceneHandle {
     // Canvas2D's drawAlgae() would show for the same tank (both read the one engine-owned layout).
     algaeLayer.clear();
     const visibleAlgaeCount = Math.round(engine.algae * engine.algaePatches.length);
-    for (let i = 0; i < visibleAlgaeCount; i++) {
-      const patch = engine.algaePatches[i];
-      algaeLayer.moveTo(patch.x + patch.points[0].x, patch.y + patch.points[0].y);
-      for (let p = 1; p < patch.points.length; p++) {
-        algaeLayer.lineTo(patch.x + patch.points[p].x, patch.y + patch.points[p].y);
+    if (algaeArt.thin && algaeArt.thick) {
+      // Which sprite: the whole glass turns over at once rather than patch by patch, so crossing
+      // ALGAE_THICK_FROM reads as the tank having got away from you rather than as a slow blur.
+      const art = engine.algae >= ALGAE_THICK_FROM ? algaeArt.thick : algaeArt.thin;
+      const texture = textureFor(art);
+      for (let i = 0; i < visibleAlgaeCount; i++) {
+        const patch = engine.algaePatches[i];
+        let view = algaeSprites[i];
+        if (!view) {
+          view = new Sprite();
+          // Bottom-centre: algae grows up off whatever it is stuck to, so its base is what should
+          // land on the patch's anchor point.
+          view.anchor.set(0.5, 1);
+          view.eventMode = 'none';
+          algaeSprites.push(view);
+          algaeSpriteLayer.addChild(view);
+        }
+        view.texture = texture;
+        view.scale.set(ALGAE_SPRITE_WIDTH / (texture.width || 1));
+        // Mirroring alternate patches stops fourteen copies of one tuft reading as wallpaper.
+        view.scale.x *= i % 2 === 0 ? 1 : -1;
+        view.position.set(patch.x, patch.y);
+        view.visible = true;
       }
+      for (let i = visibleAlgaeCount; i < algaeSprites.length; i++) algaeSprites[i].visible = false;
+    } else {
+      for (let i = 0; i < visibleAlgaeCount; i++) {
+        const patch = engine.algaePatches[i];
+        algaeLayer.moveTo(patch.x + patch.points[0].x, patch.y + patch.points[0].y);
+        for (let p = 1; p < patch.points.length; p++) {
+          algaeLayer.lineTo(patch.x + patch.points[p].x, patch.y + patch.points[p].y);
+        }
+      }
+      if (visibleAlgaeCount > 0) algaeLayer.stroke({ width: 4, color: ALGAE_COLOR, cap: 'round', join: 'round' });
     }
-    if (visibleAlgaeCount > 0) algaeLayer.stroke({ width: 4, color: ALGAE_COLOR, cap: 'round', join: 'round' });
 
     const bgSprite = engine.backgroundSpriteId
       ? engine.sprites.find((s) => s.id === engine.backgroundSpriteId && s.type === 'background')
@@ -424,16 +479,57 @@ export function createTankScene(stage: Container): TankSceneHandle {
     }
 
     wasteLayer.clear();
-    engine.wasteItems.forEach((w) => {
-      wasteLayer.ellipse(w.x, w.y, WASTE_RADIUS_X, WASTE_RADIUS_Y).fill(WASTE_COLOR);
-    });
+    // Hoisted out of the callback: narrowing a property does not survive into a closure, and
+    // these two are fixed for the whole pass anyway.
+    const sinkingArt = wasteArt.sinking;
+    const settledArt = wasteArt.settled;
+    if (sinkingArt && settledArt) {
+      engine.wasteItems.forEach((w, i) => {
+        const art = w.settled ? settledArt : sinkingArt;
+        // The sinking strand is a three-frame loop; the settled pile is a still. Offsetting each
+        // item's frame by its index keeps a cloud of falling waste from tumbling in lockstep.
+        const frames = Math.max(1, art.frames.length);
+        const frame = frames > 1 ? (Math.floor(Date.now() / (art.frameMs || 260)) + i) % frames : 0;
+        const texture = textureFor(art, frame);
+        let view = wasteSprites[i];
+        if (!view) {
+          view = new Sprite();
+          view.anchor.set(0.5, w.settled ? 1 : 0.5);
+          view.eventMode = 'none';
+          wasteSprites.push(view);
+          wasteSpriteLayer.addChild(view);
+        }
+        // Re-set every frame: an item that lands changes both its art and where its origin is.
+        view.anchor.set(0.5, w.settled ? 1 : 0.5);
+        view.texture = texture;
+        view.scale.set(
+          w.settled
+            ? WASTE_SETTLED_WIDTH / (texture.width || 1)
+            : WASTE_SINKING_HEIGHT / (texture.height || 1),
+        );
+        view.position.set(w.x, w.y);
+        view.visible = true;
+      });
+      for (let i = engine.wasteItems.length; i < wasteSprites.length; i++) wasteSprites[i].visible = false;
+    } else {
+      engine.wasteItems.forEach((w) => {
+        wasteLayer.ellipse(w.x, w.y, WASTE_RADIUS_X, WASTE_RADIUS_Y).fill(WASTE_COLOR);
+      });
+    }
 
     foodLayer.clear();
     if (foodArt) {
       // Grow the pool as needed and hide the tail of it, rather than making and destroying Sprites
       // every frame - feeding drops a handful of pellets at once and this runs per frame.
-      const texture = textureFor(foodArt);
+      // The pellets tumble as they sink. Each item is offset by its index so a handful dropped at
+      // once does not turn in perfect unison, which reads as one object rather than several.
+      const foodFrames = Math.max(1, foodArt.frames.length);
       engine.foodItems.forEach((food, i) => {
+        const frame =
+          foodFrames > 1
+            ? (Math.floor(Date.now() / (foodArt.frameMs || 150)) + i) % foodFrames
+            : 0;
+        const texture = textureFor(foodArt, frame);
         let view = foodSprites[i];
         if (!view) {
           view = new Sprite();
@@ -502,6 +598,8 @@ export function createTankScene(stage: Container): TankSceneHandle {
     instanceViews.clear();
     roomViews.clear();
     foodSprites.length = 0;
+    algaeSprites.length = 0;
+    wasteSprites.length = 0;
     sceneRoot.destroy({ children: true });
   }
 
