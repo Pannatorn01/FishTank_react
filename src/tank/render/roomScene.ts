@@ -7,7 +7,7 @@ import {
   Rectangle,
 } from 'pixi.js';
 import { spriteDims } from '@/lib/pixelMath';
-import type { TankEngine } from '@/hooks/useTank';
+import { TANK_SIZE_MAX, type TankEngine } from '@/hooks/useTank';
 import {
   CAT_VARIANTS,
   type CatPose,
@@ -99,7 +99,9 @@ const ROOM_ART = {
   catXFracs: [0.1, 0.34, 0.72],
 } as const;
 /** How much of the painted table's width the tank is allowed to take up. Under 1 so the glass reads
- *  as standing on the table rather than overhanging both ends of it. */
+ *  as standing on the table rather than overhanging both ends of it. This is the allowance for the
+ *  *largest* tank the app allows (TANK_SIZE_MAX), not for whatever tank happens to be loaded - see
+ *  fitTankSlot. */
 const TANK_ON_TABLE_FRAC = 0.86;
 /**
  * Sizes of the cast, as fractions of the artwork's *width*, measured against each sprite's drawn
@@ -564,7 +566,18 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     const maxW = artRect.width * ROOM_ART.tableWidthFrac * TANK_ON_TABLE_FRAC;
     // Whatever headroom there is between the top of the room and the table it stands on.
     const maxH = (tableTopY - artRect.y) * TANK_FIT_FRAC;
-    const scale = Math.min(maxW / w, maxH / h, 1);
+    // One room-pixels-per-tank-pixel scale, fixed for a given room size, rather than a per-tank
+    // shrink-to-fit. Fitting each tank to the table is what made Build mode's width/height boxes look
+    // inert in here: a 300-wide tank and a 1400-wide one both came out spanning the same table, and
+    // the only visible difference was that the fish in the big one were drawn tiny. Anchoring the
+    // scale to the largest tank the app allows (TANK_SIZE_MAX) instead draws the tank at its real
+    // relative size - a small tank is a small box on the table, a maxed-out one fills it, and a fish
+    // is the same size on screen in either.
+    const unit = Math.min(maxW / TANK_SIZE_MAX.width, maxH / TANK_SIZE_MAX.height, 1);
+    // Still clamped to the table itself: a tank taller than it is wide, or a room backdrop whose
+    // table is proportioned differently from the shipped one, could otherwise overhang the table
+    // edges or the headroom above it.
+    const scale = Math.min(unit, maxW / w, maxH / h);
     tankSlot.scale.set(scale);
     tankSlot.position.set(tableCenterX - (marginX + w / 2) * scale, tableTopY - (marginY + h) * scale);
 
