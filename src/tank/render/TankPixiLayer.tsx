@@ -19,9 +19,14 @@ import { createTankScene, type TankSceneHandle } from './tankScene';
  * existing `.tank-canvas` class already relies on (see index.css) still applies - so this component's
  * own host <canvas> only needs the same CSS rule, no extra scale math of its own.
  *
- * Runs its own requestAnimationFrame loop reading the engine's already-simulated, live-mutated state
- * every frame (`engine.instances`, `engine.tankShape`, etc.) exactly the way the engine's own
- * Canvas2D draw() loop always has - nothing here drives simulation, undo, persistence, or input;
+ * Reads the engine's already-simulated, live-mutated state every frame (`engine.instances`,
+ * `engine.tankShape`, etc.) exactly the way the engine's own Canvas2D draw() loop always has - from
+ * the app's own ticker, not a second requestAnimationFrame loop beside it. Pixi's TickerPlugin
+ * already registers `app.render()` on that ticker at UPDATE_PRIORITY.LOW, so a scene update added at
+ * the default NORMAL priority is guaranteed to run *before* the render that shows it. A separate rAF
+ * loop has no such ordering: whichever of the two callbacks the browser happened to schedule first
+ * won, and when it lost, the frame on screen showed the previous frame's positions. Nothing here
+ * drives simulation, undo, persistence, or input;
  * TankEngine keeps owning all of that regardless of which renderer is chosen (see
  * docs/PIXI_MIGRATION_PLAN.md §4/§6).
  */
@@ -34,7 +39,6 @@ export function TankPixiLayer({ engine, style }: { engine: TankEngine; style: Re
     let cancelled = false;
     let app: Application | null = null;
     let scene: TankSceneHandle | null = null;
-    let rafId = 0;
     let lastSize = { w: 0, h: 0 };
 
     const onSpritesUpdated = () => invalidateAll();
@@ -54,6 +58,12 @@ export function TankPixiLayer({ engine, style }: { engine: TankEngine; style: Re
       // so root.mask/instances/etc are all authored directly in tank-logical coordinates, matching
       // Instance.x/y with zero extra scale math.
       app.canvas.classList.add('tank-canvas', 'tank-pixi-canvas');
+      // Nothing in this scene is pointer-interactive - the host div is `pointer-events: none` (see
+      // .tank-pixi-host in index.css) and every drag/select still goes to the Canvas2D canvas and the
+      // DOM RoomLayer underneath (see tankScene.ts's doc comment). Telling Pixi that up front skips
+      // the hit-test walk over the whole scene graph on every pointer move.
+      app.stage.eventMode = 'none';
+      app.stage.interactiveChildren = false;
       scene = createTankScene(app.stage);
 
       const tick = () => {
@@ -66,16 +76,16 @@ export function TankPixiLayer({ engine, style }: { engine: TankEngine; style: Re
           app.renderer.resize(sceneWidth, sceneHeight);
         }
         scene.render(engine);
-        rafId = requestAnimationFrame(tick);
       };
-      rafId = requestAnimationFrame(tick);
+      app.ticker.add(tick);
     });
 
     return () => {
       cancelled = true;
       window.removeEventListener('ft:sprites-updated', onSpritesUpdated);
       window.removeEventListener('ft:sprite-deleted', onSpriteDeleted);
-      if (rafId) cancelAnimationFrame(rafId);
+      // No explicit ticker.remove(): destroyPixiApp tears the whole app (its ticker included) down a
+      // line later, and `cancelled` already makes any callback that slips in between a no-op.
       scene?.destroy();
       if (app) destroyPixiApp(app);
     };

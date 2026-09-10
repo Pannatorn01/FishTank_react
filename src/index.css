@@ -1859,7 +1859,12 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
   min-height: 0;
   overflow: hidden;
 }
-.tank-canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+/* image-rendering:pixelated for the same reason every other pixel-art surface in this app sets it
+ * (see .pixelated): both tank renderers draw into a backing store at the tank's own logical pixel
+ * size and let CSS stretch the element to the viewport's effective scale, so without this the
+ * browser resamples that stretch bilinearly and softens artwork the renderers went out of their way
+ * to keep hard-edged (Canvas2D's own DISPLAY_SCALE blit, Pixi's 'nearest' scaleMode). */
+.tank-canvas { display: block; width: 100%; height: 100%; touch-action: none; image-rendering: pixelated; }
 .tank-canvas.drawing-zone { cursor: crosshair; }
 /* Pixi tank renderer (see src/tank/render/) - opacity:0, not display:none/visibility:hidden, so the
  * Canvas2D canvas underneath still receives every pointer event exactly as before; see the comment

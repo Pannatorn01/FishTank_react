@@ -317,11 +317,15 @@ export function createTankScene(stage: Container): TankSceneHandle {
     if (!inst.visible) return;
 
     v.container.position.set(inst.x + pw / 2, renderY + ph / 2);
-    v.sprite.texture = textureFor(sprite, frameIndex);
+    const texture = textureFor(sprite, frameIndex);
+    v.sprite.texture = texture;
     const flipSign = inst.kind === 'fish' && inst.dir < 0 ? -1 : 1;
-    v.sprite.width = pw;
-    v.sprite.height = ph;
-    v.sprite.scale.x = Math.abs(v.sprite.scale.x) * flipSign;
+    // One scale.set() rather than assigning `width`/`height` and then re-signing `scale.x` for the
+    // flip: those setters derive a scale from the texture's size internally, which means reading the
+    // just-written scale back out and re-deriving the flip from its sign every frame. Since the
+    // texture here is rasterized at exactly DISPLAY_SCALE (see textureCache.ts), the scale wanted is
+    // just the growth factor - computed directly, with the flip folded into the same call.
+    v.sprite.scale.set((pw / (texture.width || 1)) * flipSign, ph / (texture.height || 1));
     v.sprite.filters = inst.dead ? [DEAD_FISH_FILTER] : null;
 
     v.outline.clear();

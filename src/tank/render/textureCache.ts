@@ -1,6 +1,14 @@
-import { Texture } from 'pixi.js';
+import { Texture, TextureSource } from 'pixi.js';
 import { paintLayers, spriteDims } from '@/lib/pixelMath';
 import type { Sprite } from '@/lib/types';
+
+// The one line every pixel-art-on-Pixi guide warns about, set once for the whole app rather than on
+// each texture as it's made. Pixi's default is bilinear ('linear'), which blurs a scaled-up sprite
+// exactly the way this app's `.pixelated` CSS class (image-rendering: pixelated) exists to prevent on
+// the Canvas2D side. TextureSource's constructor merges these defaults in (`{...defaultOptions,
+// ...options}`), so this covers every texture any renderer here creates - including any future one
+// that doesn't come from textureFor() below and whose author would otherwise have to remember.
+TextureSource.defaultOptions.scaleMode = 'nearest';
 
 /** Same raster density every sprite in the tank has always been painted at (see DISPLAY_SCALE in
  *  useTank.ts) - kept identical here so a Pixi-rendered sprite is pixel-for-pixel the same crispness
@@ -46,12 +54,10 @@ export function textureFor(sprite: Sprite, frameIndex = 0, scale = DISPLAY_SCALE
   const frame = sprite.frames[frameIndex] ?? sprite.frames[0];
   if (frame) paintLayers(ctx, frame, width, height, scale);
 
+  // 'nearest' scaling comes from TextureSource.defaultOptions at the top of this file - skipping it
+  // is the single most likely way P0's crispness comparison would fail, which is why it's set once
+  // there rather than per-texture here.
   const texture = Texture.from(canvas);
-  // The one line every pixel-art-on-Pixi guide warns about: Pixi's default is bilinear ('linear'),
-  // which blurs a scaled-up sprite exactly the way this app's `.pixelated` CSS class (image-rendering:
-  // pixelated) exists to prevent on the Canvas2D side. Skipping this is the single most likely way
-  // P0's crispness comparison would fail.
-  texture.source.scaleMode = 'nearest';
   cache.set(key, texture);
   return texture;
 }
