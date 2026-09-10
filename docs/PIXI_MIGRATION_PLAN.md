@@ -468,6 +468,9 @@ age > lifespan                              → ตาย
 | P3 แยก model/sim/render | 🟡 partial | 2026-09-08 | (pending) | ดู §14 — geometry.ts เสร็จ+verify แล้ว (เจอ+แก้บั๊ก mask จริงจาก P2 ระหว่างทำ), swim.ts/model extraction ยังไม่ทำ |
 | P4 ฉากห้อง + สลับโหมด | ⬜ not started | | | รอ asset ห้องจากผู้ใช้ (§9.2) — ทำโครงไปก่อนได้ |
 | P5 กลไกเลี้ยง | ⬜ not started | | | **ไม่ blocked แล้ว** — ค่า balance เริ่มต้นอยู่ §9.1 |
+| Pixi render-loop cleanup | ✅ done | 2026-09-10 | `a1ca4ac` | ดู §24 — ไล่ตาม official pixijs skills (vendor ไว้ที่ `.agents/skills/` แล้ว) |
+
+> ⚠️ แถว P4/P5 ข้างบนค้างอยู่ที่ "not started" แต่ §23 บันทึกว่า P5 ครบทั้ง 7 ข้อแล้ว — **ยึด §11–§24 เป็นความจริง ตารางนี้ไม่ได้อัปเดตตามทุกครั้ง**
 
 ### สถานะโค้ดตอนวางแผน (baseline)
 - branch `main` สะอาด · commit ล่าสุด `c9c91c2 feat : can move layout column`
@@ -1075,3 +1078,70 @@ code-split bundle ของ tank engine ออกจาก editor เหมื�
 7. ✅ แมว/นก (§23)
 
 เกมเลี้ยงปลาตาม Phase 1 ที่ผู้ใช้ตั้งใจไว้ตอนเริ่มโปรเจกต์ ("เอาตู้ปลาที่เราสร้างไปวางไว้ในห้องเรา แล้วเราต้องดูแลตู้ปลา") เสร็จสมบูรณ์ตามสเปกเดิมแล้ว งานที่เหลือ (ถ้าต้องการต่อ) คือของค้างจาก P2/P3 เดิม (input consolidation, ลบ Canvas2D fallback) หรือ P4's room artwork จริงเมื่อผู้ใช้เตรียม asset พร้อม
+
+---
+
+## 24. Pixi render-loop cleanup (2026-09-10)
+
+งานบำรุงรักษา ไม่ใช่ Phase ใหม่ — ตรวจโค้ด Pixi ที่มีอยู่เทียบกับ **official pixijs skills**
+(`npx skills add https://github.com/pixijs/pixijs-skills` → vendor ไว้ที่ `.agents/skills/` +
+`.claude/skills/`, ล็อกเวอร์ชันที่ `skills-lock.json`) ตาม 3 แหล่งที่ผู้ใช้ให้มา:
+pixijs.com/8.x, agentskills.io, github.com/pixijs/pixijs-skills
+
+### 24.1 บั๊กจริงที่เจอ — Life mode พังอยู่แล้วบน `main`
+
+Life mode ขึ้นเป็นแผงเปล่า พร้อม `Cannot read properties of null (reading 'clear')` 2 ครั้ง
+โยนออกมาจาก render pass ของ Pixi เอง (`DefaultBatcher.break` ใต้ `StencilMaskPipe`)
+
+**สาเหตุ:** `destroyPixiApp()` ส่ง `texture: true` แต่ texture พวกนั้นเป็นของ cache ระดับ module ใน
+`textureCache.ts` ที่ TankPixiLayer กับ LifePanel **ใช้ Texture object เดียวกัน** พอ React StrictMode
+mount effect ซ้ำ → Application ตัวแรกที่ถูก cancel ถูก destroy ขณะที่ตัวที่สองยังวาดอยู่ → ลาก texture
+ของ cache ลงไปด้วย
+
+ยืนยันด้วยการสลับ flag ตัวนี้ตัวเดียวไป-กลับ (รีโปรได้/หายได้ตามต้องการ) บน dev server สะอาด ไม่ใช่ HMR
+artifact · อายุ texture เป็นของ `invalidateSprite()`/`invalidateAll()` เท่านั้น
+
+### 24.2 render loop ซ้อนกันสองชั้น
+
+ทั้ง `TankPixiLayer.tsx` และ `LifePanel.tsx` เปิด `requestAnimationFrame` ของตัวเอง ขณะที่ ticker ของ
+Application (autoStart, ไม่เคยปิด) ก็ render ทุกเฟรมอยู่แล้ว — สอง loop ไม่มีลำดับต่อกัน เฟรมไหนที่
+ticker ชนะ ภาพที่ออกจะเป็นตำแหน่งของเฟรมก่อนหน้า
+
+แก้เป็น `app.ticker.add()` ที่ priority NORMAL ซึ่ง Pixi รับประกันว่าทำงานก่อน `app.render()` ที่
+TickerPlugin ลงทะเบียนไว้ที่ LOW (ดู `.agents/skills/pixijs-ticker/SKILL.md`)
+
+ผลพลอยได้: Life mode มีสวิตช์ปิด — ฉากห้อง (backdrop + แมว + นักล่า + status bar + **tank scene ซ้อน
+ข้างใน**) เคยวาด 60 ครั้ง/วินาทีหลังแผงที่ซ่อนอยู่ตลอดเวลาที่อยู่โหมด Build ตอนนี้หยุดพร้อมแผง
+**หยุดแค่การวาด** — hunger/evaporation/algae/predator เป็นของ TankEngine เดินต่อเหมือนเดิม
+
+### 24.3 ของเล็กที่แก้ไปด้วย
+
+| แก้ | ที่ | เหตุผล |
+|---|---|---|
+| `roundPixels: true` | `pixiApp.ts` (renderer-wide) | `Instance.x/y` เป็น float — sprite nearest-neighbour ที่ sample หลุด grid จะสั่นเป็นแถว ๆ ตอนปลาว่าย |
+| `TextureSource.defaultOptions.scaleMode = 'nearest'` | `textureCache.ts` (module scope) | ตั้งครั้งเดียวแทนต่อ texture — texture ที่สร้างที่อื่นในอนาคตพลาดไม่ได้ |
+| `stage.eventMode = 'none'` | `TankPixiLayer.tsx` | host div เป็น `pointer-events:none` อยู่แล้ว — ตัด hit-test walk ทั้ง scene graph ต่อ pointer move |
+| `image-rendering: pixelated` | `.tank-canvas` (index.css) | ทั้งสอง renderer วาดที่ logical size แล้วให้ CSS ยืด — เบราว์เซอร์ resample แบบ bilinear ทำให้ภาพที่อุตส่าห์ทำให้คมเบลอทิ้ง |
+| `scale.set()` ครั้งเดียว | `tankScene.ts` updateInstanceView | แทน width/height setter แล้วอ่าน sign ของ scale ที่เพิ่งเขียนกลับมา flip |
+
+### 24.4 ผลวัด (Playwright, `?tankRenderer=pixi`)
+
+| | `main` ก่อนแก้ | หลังแก้ |
+|---|---|---|
+| rAF/วินาที (Build) | 242 | 72 |
+| rAF/วินาที (Life) | 242 | 18 |
+| console errors | 2 | 0 |
+| Life mode | เปล่า | ห้อง+แมว+ตู้ ครบ |
+
+242 คงที่ทุกโหมด = 4 loop วิ่งพร้อมกันไม่ว่าจะเปิดแท็บไหน (รวม Life ที่ crash ไปแล้วก็ยังวิ่ง)
+เลข Life 18 คือต้นทุนวาดห้องจริงบน software GL ของ headless ไม่ใช่การ throttle
+
+verify เพิ่ม: วาดสไปรท์ → save → ลากลงตู้ → ปลาแสดงผลคม พร้อม hunger bar · สลับโหมดไปกลับหลายรอบ
+console สะอาด · `tsc -b` / `oxlint` / `vitest` (343 tests) / `build` ผ่านหมด
+
+### 24.5 ยังไม่ได้ทำ (คิดแล้วว่ายังไม่คุ้ม)
+
+- `ParticleContainer` สำหรับ food pellets / waste — จำนวนยังน้อยเกินกว่าจะคุ้ม (ดู
+  `.agents/skills/pixijs-scene-particle-container/`)
+- `cacheAsTexture` บนฉากห้องส่วนที่นิ่ง
+- input consolidation ไป Pixi event system (ของค้างจาก P2/P3 เดิม — ดู doc comment ของ `tankScene.ts`)
