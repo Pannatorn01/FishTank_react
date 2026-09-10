@@ -33,8 +33,12 @@ const WALL_BOTTOM = 0x1a1521;
 const FLOOR_COLOR = 0x120d16;
 const FLOOR_FRAC = 0.22;
 /** The tank never fills the whole room - it's an object placed inside one, so it's kept to a fraction
- *  of the available floor space (both axes) no matter how big the room viewport or the tank itself. */
-const TANK_FIT_FRAC = 0.62;
+ *  of the available headroom no matter how big the room viewport or the tank itself.
+ *
+ *  Raised from 0.62 with the room that has the higher table: 0.62 of that room's headroom left the
+ *  glass short and marooned in the middle of a tall empty wall. The wall above the table is bare in
+ *  this backdrop, so the tank can use most of it. */
+const TANK_FIT_FRAC = 0.8;
 /** Tank cleanliness readout (P5 §6 item 3, §9 Q3 - "สถานะความสะอาดตู้") - a small fixed bar in the
  *  room's top-left corner, not tied to any one fish the way the hunger bars are. */
 const CLEANLINESS_BAR_WIDTH = 90;
@@ -75,28 +79,30 @@ const PREDATOR_TAP_PADDING = 10;
 const PREDATOR_FALLBACK_TAP = new Rectangle(-26, -34, 52, 52);
 /**
  * Where the things in the room belong, as fractions of the backdrop artwork's own width and height -
- * not of the viewport. Measured off the shipped room art (pixellab-assets/room-window-348x224.png, a
- * table in front of a curtained window): the table top edge is at y=164 of 224, the table spans
- * x=88..262 of 348, the floorboards start at y=200, and the curtain rod crosses the top at y=16.
+ * not of the viewport. Measured off the shipped room art (pixellab-assets/room-cats-512x220.png, a
+ * long low table between two windows, with a cat bed under it, bowls at the left, and a scratching
+ * post, litter box and rug at the right): the table surface starts at y=124 of 220 and spans
+ * x=96..420 of 512, and things standing on the floor under the table sit on y=192.
  *
  * Art fractions, not viewport fractions, are the whole point: the tank has to stand *on the painted
- * table* and the cat *on the painted floor*, so their anchors have to follow the artwork when the
+ * table* and the cats *on the painted floor*, so their anchors have to follow the artwork when the
  * window is resized. That is also why fitRoomBackground letterboxes rather than crops - a cover-fit
  * would slide the table out from under the tank as the viewport changed shape.
  *
- * These are tuned to that one picture. Another room backdrop with its table somewhere else needs its
- * own numbers; there is no way to find a painted table automatically.
+ * These are tuned to that one picture. Another room backdrop needs its own numbers; there is no way
+ * to find a painted table automatically. A second room means turning this into a record keyed by
+ * sprite name - see docs/CAT_ROOM_DESIGN.md.
  */
 const ROOM_ART = {
-  tableCenterXFrac: 0.5,
-  tableTopYFrac: 164 / 224,
-  tableWidthFrac: (262 - 88) / 348,
-  floorTopYFrac: 200 / 224,
-  /** Where each cat sleeps along the floorboards, in the order CAT_VARIANTS lists them. Two are
-   *  left of the table's near leg and clear of the curtain; the third takes the strip of floor on
-   *  the far side, which the tank never covers either. Spread wide enough that three cats read as
-   *  three animals rather than one pile. */
-  catXFracs: [0.1, 0.34, 0.72],
+  tableCenterXFrac: (96 + 420) / 2 / 512,
+  tableTopYFrac: 124 / 220,
+  tableWidthFrac: (420 - 96) / 512,
+  floorTopYFrac: 192 / 220,
+  /** Where each cat sleeps, in the order CAT_VARIANTS lists them: in the bed under the table, on
+   *  the open floor to its right, and over by the scratching post. Kept clear of the bowls at the
+   *  far left and the litter box at the far right, both of which are floor-level scenery a cat
+   *  would look like it was standing inside. */
+  catXFracs: [0.28, 0.6, 0.84],
 } as const;
 /** How much of the painted table's width the tank is allowed to take up. Under 1 so the glass reads
  *  as standing on the table rather than overhanging both ends of it. This is the allowance for the

@@ -39,6 +39,44 @@ VARIANTS = {
 }
 
 
+def despeckle(im, min_size=12):
+    """Drops small islands of pixels that are not part of the cat.
+
+    v3 animations occasionally leave a few stray coloured pixels floating well clear of the body -
+    the play animation came back with yellow specks a dozen rows above the cat's head. Left in, they
+    widen the animation's shared bounding box and then show up in game as a speck hovering over the
+    sprite, because every frame is cropped to the union of all of them."""
+    px = im.load()
+    w, h = im.size
+    seen = [[False] * w for _ in range(h)]
+    islands = []
+    for y in range(h):
+        for x in range(w):
+            if seen[y][x] or px[x, y][3] < 128:
+                continue
+            stack, island = [(x, y)], []
+            seen[y][x] = True
+            while stack:
+                cx, cy = stack.pop()
+                island.append((cx, cy))
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = cx + dx, cy + dy
+                    if 0 <= nx < w and 0 <= ny < h and not seen[ny][nx] and px[nx, ny][3] >= 128:
+                        seen[ny][nx] = True
+                        stack.append((nx, ny))
+            islands.append(island)
+    if not islands:
+        return im
+    biggest = max(len(i) for i in islands)
+    out = im.copy()
+    op = out.load()
+    for island in islands:
+        if len(island) < min(min_size, biggest):
+            for cx, cy in island:
+                op[cx, cy] = (0, 0, 0, 0)
+    return out
+
+
 def recolour(im, fn):
     if fn is None:
         return im
@@ -59,7 +97,8 @@ def recolour(im, fn):
 
 
 for pose, (folder, rng) in POSES.items():
-    frames = [Image.open(os.path.join(SRC, folder, '%d.png' % i)).convert('RGBA') for i in rng]
+    frames = [despeckle(Image.open(os.path.join(SRC, folder, '%d.png' % i)).convert('RGBA'))
+              for i in rng]
     # One bounding box for the whole animation, so the cat moves inside its frame instead of every
     # frame being re-centred on its own pixels - which reads as a jitter, not as walking.
     boxes = [f.getbbox() for f in frames]
