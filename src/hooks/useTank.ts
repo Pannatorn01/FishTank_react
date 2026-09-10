@@ -188,6 +188,10 @@ const CAT_RUN_FRAC_PER_S = 0.26;
 const CHASE_BOUNDS: readonly [number, number] = [0.12, 0.88];
 /** How often a bored cat looks for someone to chase rather than going to the toy on its own. */
 const CHASE_CHANCE = 0.6;
+/** How far apart cats stand when more than one wants the same zone, as a fraction of the room's
+ *  width. Without it two cats that both decide to sleep draw exactly on top of each other in the
+ *  bed, which reads as one two-headed cat rather than as two cats sharing. */
+const ZONE_SLOT_FRAC = 0.075;
 /** How long each activity lasts, in ms [min, max]. Sleeping is much longer than anything else: a
  *  room where all three cats are always busy reads as agitated, not as a home. */
 const ACTIVITY_MS: Record<CatActivity, readonly [number, number]> = {
@@ -2564,10 +2568,25 @@ export class TankEngine {
   /** Walks the cat to a zone and remembers what it meant to do there. Already-there is not a
    *  special case worth writing: stepCatWalk arrives on its first frame. */
   private sendCatTo(cat: RoomCat, zone: CatZone, activity: CatActivity, now: number): void {
-    cat.targetXFrac = CAT_ZONE_X[zone];
+    cat.targetXFrac = CAT_ZONE_X[zone] + this.zoneSlotOffset(cat, zone);
     cat.nextActivity = activity;
     cat.facingLeft = cat.targetXFrac < cat.xFrac;
     this.beginActivity(cat, 'walking', now);
+  }
+
+  /** Where in a zone this cat stands, given who else is already there. The zone's own x is the
+   *  middle slot; extra cats fan out to alternating sides of it, so two cats in the bed lie beside
+   *  each other and three at the bowls make a row rather than a pile. */
+  private zoneSlotOffset(cat: RoomCat, zone: CatZone): number {
+    const zoneX = CAT_ZONE_X[zone];
+    const taken = this.cats.filter(
+      (other) => other !== cat && Math.abs(other.targetXFrac - zoneX) < ZONE_SLOT_FRAC * 1.5,
+    ).length;
+    if (taken === 0) return 0;
+    // 1 -> +1 slot, 2 -> -1 slot, so the pair straddles the zone rather than drifting off one side.
+    const side = taken % 2 === 1 ? 1 : -1;
+    const step = Math.ceil(taken / 2);
+    return Math.max(-0.5, Math.min(0.5, side * step * ZONE_SLOT_FRAC));
   }
 
   private beginActivity(cat: RoomCat, activity: CatActivity, now: number): void {

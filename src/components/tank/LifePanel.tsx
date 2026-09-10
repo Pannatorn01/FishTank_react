@@ -186,7 +186,11 @@ export function LifePanel({ engine, active }: { engine: TankEngine; active: bool
           <span>{t('life.scrubTool')}</span>
         </button>
       </div>
-      <p className="life-hint">{t('life.hint')}</p>
+      <p className="life-hint">
+        {t('life.hint')}
+        <br />
+        {t('life.petHint')}
+      </p>
     </div>
   );
 }

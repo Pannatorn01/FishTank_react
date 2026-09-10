@@ -1919,21 +1919,26 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
 }
 /* Top-center, clear of the cleanliness bar (top-left, Pixi-drawn) and the refill button (top-right) -
  * moved up here (was bottom-center) once the tools row below needed the bottom edge for itself. */
+/* The room's hint line. Sits with the tools at the bottom rather than floating across the middle of
+ * the room: over a painted scene a centred banner reads as a caption stuck to the picture, and it
+ * covered whatever was on the table behind it. Down here it belongs to the toolbar it explains. */
 .life-hint {
   position: absolute;
-  left: 50%;
-  top: 10px;
-  transform: translateX(-50%);
+  left: 78px;
+  right: 10px;
+  bottom: 14px;
   margin: 0;
-  padding: 4px 10px;
-  max-width: min(80%, 420px);
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
+  padding: 6px 12px;
+  max-width: 520px;
+  background: rgba(20, 16, 28, 0.86);
+  border: 2px solid var(--bevel-light);
+  color: #efe6f7;
   font-size: 0.68rem;
-  text-align: center;
-  border-radius: 4px;
+  line-height: 1.5;
+  text-align: left;
   pointer-events: none;
 }
+
 /* Feed/Scrub tool select (P5 §6 items 2/5) - bottom-left, out of the way of everything else in the
  * scene. Click to arm one (see LifePanel.tsx's toggleTool), then tap/drag directly on the tank - the
  * armed item stays highlighted (.life-tool-item-active) so it's clear which mode, if any, is active. */
@@ -1942,31 +1947,41 @@ main { display: flex; flex-direction: column; flex: 1; overflow: auto; padding: 
   left: 10px;
   bottom: 10px;
   display: flex;
+  flex-direction: column;
   gap: 6px;
 }
+/* Square, hard-edged and bordered like the rest of the pixel UI - the old rounded pills read as web
+ * chrome sitting on top of a game rather than as part of one. Stacked vertically so the row along
+ * the bottom belongs to the hint line instead of competing with it. */
 .life-tool-item {
   appearance: none;
   margin: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  width: 56px;
-  padding: 6px 4px;
-  background: rgba(20, 16, 28, 0.85);
-  border: 1px solid var(--bevel-light);
-  border-radius: 6px;
-  color: #fff;
+  justify-content: center;
+  gap: 3px;
+  width: 58px;
+  height: 54px;
+  padding: 4px;
+  background: rgba(20, 16, 28, 0.88);
+  border: 2px solid var(--bevel-light);
+  color: #efe6f7;
   font: inherit;
-  font-size: 0.6rem;
+  font-size: 0.58rem;
   text-align: center;
   cursor: pointer;
   user-select: none;
+  transition: background 90ms steps(2), transform 90ms steps(2);
 }
-.life-tool-item i { font-size: 1.05rem; }
+.life-tool-item i { font-size: 1.15rem; }
+.life-tool-item:hover { background: rgba(46, 36, 62, 0.92); }
+/* Pressed-in, not just tinted: the armed tool is a mode the room is now in, and a button that looks
+ * physically held down says that more plainly than a colour change on its own. */
 .life-tool-item-active {
-  background: color-mix(in srgb, var(--pixel-accent) 55%, rgba(20, 16, 28, 0.85));
+  background: color-mix(in srgb, var(--pixel-accent) 55%, rgba(20, 16, 28, 0.88));
   border-color: var(--pixel-accent);
+  transform: translateY(2px);
 }
 
 /* A fixed strip below the canvas (not floating over it) that hosts every contextual action -

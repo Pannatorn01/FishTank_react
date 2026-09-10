@@ -11,6 +11,9 @@ const en: Dict = {
   'life.scrubTool': 'Scrub',
   'life.scrubToolTitle': 'Select, then drag back and forth across the glass to wipe algae off',
   'life.hint': 'Select Feed or Scrub, then use it on the tank • tap a piece of waste to collect it',
+  'life.hudTank': 'Tank',
+  'life.hudBowl': 'Cat bowl',
+  'life.petHint': 'Tap a cat to pet it • tap the food bowl to fill it',
   'life.roomScene': 'Room',
   'life.roomSceneTitle': 'Pick the room the tank stands in - any background-type sprite from your library',
 

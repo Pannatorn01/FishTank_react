@@ -5,7 +5,9 @@ import {
   Graphics,
   Sprite as PixiSprite,
   Rectangle,
+  Text,
 } from 'pixi.js';
+import { t } from '@/lib/i18n';
 import { spriteDims } from '@/lib/pixelMath';
 import { TANK_SIZE_MAX, type TankEngine } from '@/hooks/useTank';
 import {
@@ -39,11 +41,33 @@ const FLOOR_FRAC = 0.22;
  *  glass short and marooned in the middle of a tall empty wall. The wall above the table is bare in
  *  this backdrop, so the tank can use most of it. */
 const TANK_FIT_FRAC = 0.8;
-/** Tank cleanliness readout (P5 §6 item 3, §9 Q3 - "สถานะความสะอาดตู้") - a small fixed bar in the
- *  room's top-left corner, not tied to any one fish the way the hunger bars are. */
-const CLEANLINESS_BAR_WIDTH = 90;
-const CLEANLINESS_BAR_HEIGHT = 8;
-const CLEANLINESS_BAR_MARGIN = 14;
+/**
+ * The room's status panel: tank cleanliness (P5 §6 item 3, §9 Q3 - "สถานะความสะอาดตู้") and how much
+ * food is left in the cats' bowl. Fixed in the top-left corner, not tied to any one fish the way the
+ * hunger bars are.
+ *
+ * Drawn as a panel rather than as the bare coloured line it used to be. A single unlabelled bar
+ * floating on the wall does not say what it measures or that anything can be done about it; a framed
+ * card with a label per row reads as a game's HUD, which is what it is.
+ *
+ * Hard-edged and 2px-bordered on purpose - a rounded, soft panel would sit oddly over pixel art.
+ */
+const HUD_MARGIN = 14;
+const HUD_PADDING = 10;
+const HUD_ROW_GAP = 8;
+const HUD_LABEL_WIDTH = 74;
+const HUD_BAR_WIDTH = 96;
+const HUD_BAR_HEIGHT = 10;
+const HUD_ROW_HEIGHT = 14;
+const HUD_PANEL_BG = 0x1b1622;
+const HUD_PANEL_BORDER = 0x4a3f57;
+const HUD_BAR_TRACK = 0x0d0a11;
+const HUD_LABEL_COLOR = 0xd9cfe4;
+/** Fill colours by how bad things are. Same three steps the fish hunger bars and the raid countdown
+ *  use, so "green is fine, red is act now" means one thing everywhere in the app. */
+const HUD_GOOD = 0x4ade80;
+const HUD_WARN = 0xfacc15;
+const HUD_BAD = 0xef4444;
 /** Below this total drag distance (px), a pointerdown->pointerup is treated as a tap (collect waste,
  *  or feed if the Feed tool is armed) rather than a scrub - matches TAP_MOVE_THRESHOLD useTank.ts's
  *  own marquee/drag code uses for the same tap-vs-drag distinction. */
@@ -173,11 +197,14 @@ const PHASE_EMOTE: Record<PredatorPhase, EmoteKind> = {
 };
 /** Bubble width as a fraction of the artwork, applied to every emote's drawn pixels. The four
  *  bubbles came out of PixelLab at noticeably different sizes; sizing them all by content width
- *  here is what stops them popping bigger and smaller as the mood changes. */
-const EMOTE_WIDTH_FRAC = 0.055;
+ *  here is what stops them popping bigger and smaller as the mood changes.
+ *
+ *  About a third of a cat's own width. It was over half, which made the bubble the loudest thing in
+ *  the room and left it looking detached from the animal underneath it rather than attached. */
+const EMOTE_WIDTH_FRAC = 0.034;
 /** Gap between the top of an animal and the bottom of its bubble, in fractions of the artwork's
  *  height, so the bubble floats clear of the head at any window size. */
-const EMOTE_GAP_FRAC = 0.02;
+const EMOTE_GAP_FRAC = 0.012;
 /** The food bowls painted into the backdrop, and how big a target to put over them. Matches
  *  CAT_ZONE_X.bowls in useTank.ts - the spot the cats walk to in order to eat is the spot the
  *  player taps to fill. */
@@ -221,7 +248,8 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
   const roomBackdrop = new PixiSprite();
   roomBackdrop.visible = false;
   roomBackdrop.eventMode = 'none';
-  const cleanlinessBar = new Graphics();
+  const hudPanel = new Graphics();
+  const hudLabels: Text[] = [];
   // The tank is rendered into its own sub-container rather than directly into `stage` so it can be
   // scaled/positioned as one unit to fit the room (see fitTankSlot below) without that transform
   // fighting createTankScene's own internal margin offset (see tankScene.ts's sceneRoot comment) -
@@ -235,7 +263,7 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
   tapHitArea.eventMode = 'static';
   tapHitArea.cursor = 'pointer';
   tankSlot.addChild(tapHitArea);
-  stage.addChild(background, floor, roomBackdrop, tankSlot, cleanlinessBar);
+  stage.addChild(background, floor, roomBackdrop, tankSlot, hudPanel);
 
   const tankScene: TankSceneHandle = createTankScene(tankSlot);
 
@@ -681,15 +709,56 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     }
   }
 
-  function drawCleanlinessBar(engine: TankEngine): void {
-    const cleanliness = engine.tankCleanliness;
-    cleanlinessBar.clear();
-    cleanlinessBar
-      .rect(0, 0, CLEANLINESS_BAR_WIDTH, CLEANLINESS_BAR_HEIGHT)
-      .fill({ color: 0x000000, alpha: 0.4 });
-    const fillColor = cleanliness > 0.5 ? 0x4ade80 : cleanliness > 0.2 ? 0xfacc15 : 0xef4444;
-    cleanlinessBar.rect(0, 0, CLEANLINESS_BAR_WIDTH * Math.max(0, cleanliness), CLEANLINESS_BAR_HEIGHT).fill(fillColor);
-    cleanlinessBar.position.set(CLEANLINESS_BAR_MARGIN, CLEANLINESS_BAR_MARGIN);
+  /** The status panel. Rebuilt every frame rather than diffed: it is two rectangles and two bars,
+   *  and a Graphics clear/redraw at that size costs less than tracking what changed. The labels are
+   *  Text objects, which are not cheap to re-create, so those are made once and only repositioned. */
+  function drawHud(engine: TankEngine): void {
+    const rows: { label: string; value: number }[] = [
+      { label: t('life.hudTank'), value: engine.tankCleanliness },
+      { label: t('life.hudBowl'), value: engine.bowlFood },
+    ];
+    const panelW = HUD_PADDING * 2 + HUD_LABEL_WIDTH + HUD_BAR_WIDTH;
+    const panelH = HUD_PADDING * 2 + rows.length * HUD_ROW_HEIGHT + (rows.length - 1) * HUD_ROW_GAP;
+
+    hudPanel.clear();
+    hudPanel
+      .rect(0, 0, panelW, panelH)
+      .fill({ color: HUD_PANEL_BG, alpha: 0.88 })
+      .stroke({ width: 2, color: HUD_PANEL_BORDER, alignment: 1 });
+
+    rows.forEach((row, i) => {
+      const y = HUD_PADDING + i * (HUD_ROW_HEIGHT + HUD_ROW_GAP);
+      const barX = HUD_PADDING + HUD_LABEL_WIDTH;
+      const barY = y + (HUD_ROW_HEIGHT - HUD_BAR_HEIGHT) / 2;
+      const value = Math.max(0, Math.min(1, row.value));
+      hudPanel.rect(barX, barY, HUD_BAR_WIDTH, HUD_BAR_HEIGHT).fill(HUD_BAR_TRACK);
+      if (value > 0) {
+        const color = value > 0.5 ? HUD_GOOD : value > 0.2 ? HUD_WARN : HUD_BAD;
+        hudPanel.rect(barX, barY, HUD_BAR_WIDTH * value, HUD_BAR_HEIGHT).fill(color);
+      }
+      hudPanel.rect(barX, barY, HUD_BAR_WIDTH, HUD_BAR_HEIGHT).stroke({ width: 1, color: HUD_PANEL_BORDER, alignment: 1 });
+
+      let label = hudLabels[i];
+      if (!label) {
+        label = new Text({
+          text: row.label,
+          style: {
+            // The app's own pixel face, with the same fallbacks index.css lists - Pixi renders text
+            // through the browser, so a font it cannot find silently becomes something generic.
+            fontFamily: ['Pixelify Sans', 'system-ui', 'sans-serif'],
+            fontSize: 13,
+            fill: HUD_LABEL_COLOR,
+          },
+        });
+        label.eventMode = 'none';
+        hudLabels[i] = label;
+        hudPanel.addChild(label);
+      }
+      label.text = row.label;
+      label.position.set(HUD_PADDING, y + (HUD_ROW_HEIGHT - label.height) / 2);
+    });
+
+    hudPanel.position.set(HUD_MARGIN, HUD_MARGIN);
   }
 
   function drawCatShape(g: Graphics): void {
@@ -797,7 +866,7 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     fitTankSlot(engine);
     tankScene.render(engine);
     drawResidents(engine);
-    drawCleanlinessBar(engine);
+    drawHud(engine);
     drawPredator(engine);
   }
 
@@ -813,7 +882,8 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     for (const resident of catResidents) resident.destroy();
     residentEmote.destroy();
     predatorEmote.destroy();
-    cleanlinessBar.destroy();
+    for (const label of hudLabels) label.destroy();
+    hudPanel.destroy();
     predatorContainer.destroy({ children: true });
   }
 
