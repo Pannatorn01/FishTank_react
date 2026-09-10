@@ -86,6 +86,18 @@ gotcha below) - a change to one hook's state shape usually needs a
 
 ## Gotchas hit while building this project
 
+- **"Invalid hook call ... Cannot read properties of null (reading 'useMemo')"
+  on `npm run dev` is a stale Vite dep cache, not your code.** The app boots
+  straight into the error boundary while `npm run build` passes cleanly. Fix:
+  stop the server, `rm -rf node_modules/.vite`, start it again. Worth checking
+  before debugging anything else, because the stack trace points at whatever
+  component happens to render first (a Radix `Select` in the header here) and
+  sends you looking in the wrong place.
+- **Screenshot bursts alias with the room's own timers.** Life mode's emote
+  bubbles run on a 9s slot per cat. Sampling every 1.8s hit the same phase
+  six times running and caught none of them. Use an interval that does not
+  divide the thing you are trying to see - 1.3s worked.
+
 - **Radix `Select` is not a native `<select>`.** `page.selectOption()`
   will silently no-op. Click the trigger (`[role="combobox"]`), wait for
   the popover, then click the option (`[role="option"]:has-text("...")`).

@@ -203,8 +203,17 @@ const PHASE_EMOTE: Record<PredatorPhase, EmoteKind> = {
  *  the room and left it looking detached from the animal underneath it rather than attached. */
 const EMOTE_WIDTH_FRAC = 0.034;
 /** Gap between the top of an animal and the bottom of its bubble, in fractions of the artwork's
- *  height, so the bubble floats clear of the head at any window size. */
-const EMOTE_GAP_FRAC = 0.012;
+ *  height, so the bubble floats clear of the head at any window size.
+ *
+ *  Small, because the measurement it sits on top of is already generous: a cat's content box is the
+ *  whole drawn sprite, and a sleeping cat's tail curls higher than its head does. Anything larger
+ *  and the bubble reads as unattached. */
+const EMOTE_GAP_FRAC = 0.004;
+/** How far toward the cat's head the bubble is nudged, as a fraction of the artwork's width. The
+ *  cat's xFrac is the middle of the animal, so a bubble centred on it hangs over the cat's back
+ *  rather than its head - which reads as belonging to the room, not to the cat. About a quarter of
+ *  a cat's length, in whichever direction it is facing. */
+const EMOTE_HEAD_OFFSET_FRAC = 0.026;
 /** The food bowls painted into the backdrop, and how big a target to put over them. Matches
  *  CAT_ZONE_X.bowls in useTank.ts - the spot the cats walk to in order to eat is the spot the
  *  player taps to fill. */
@@ -632,7 +641,9 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
       residentEmote.visible = false;
       return;
     }
-    placeEmote(residentEmote, slot.kind, engine.cats[slot.index].xFrac, headY);
+    const speaker = engine.cats[slot.index];
+    const towardHead = speaker.facingLeft ? -EMOTE_HEAD_OFFSET_FRAC : EMOTE_HEAD_OFFSET_FRAC;
+    placeEmote(residentEmote, slot.kind, speaker.xFrac + towardHead, headY);
   }
 
   /** Puts a bubble immediately above something whose top edge is at `headY` (viewport px, as
@@ -834,7 +845,13 @@ export function createRoomScene(stage: Container): RoomSceneHandle {
     if (headY === null) {
       predatorEmote.visible = false;
     } else {
-      placeEmote(predatorEmote, PHASE_EMOTE[predator.phase], predator.xFrac, raidY - (artRect.y - headY));
+      const towardHead = predator.facingLeft ? -EMOTE_HEAD_OFFSET_FRAC : EMOTE_HEAD_OFFSET_FRAC;
+      placeEmote(
+        predatorEmote,
+        PHASE_EMOTE[predator.phase],
+        predator.xFrac + towardHead,
+        raidY - (artRect.y - headY),
+      );
     }
 
     // Only the pounce runs a deadline, so it is the only phase that shows a bar. Drawing one during
